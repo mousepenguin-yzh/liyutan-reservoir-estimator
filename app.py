@@ -158,12 +158,12 @@ if "override_list" not in st.session_state:
     st.session_state.override_list = []
 
 # ==========================================
-# 5. 前端 UI 分頁排版 (新增第四分頁)
+# 5. 前端 UI 分頁排版
 # ==========================================
 
 st.title("💧 鯉魚潭水庫庫容推估系統 (第四階段)")
 st.markdown("""
-本階段已成功建置 **核心守恆物理引擎**，嚴格執行「農業控制律」、「生態放流折抵」與「庫容溢流」運算。
+本階段已成功建置 **核心守恆物理引擎**，並已調整為「上灌區優先供水，下灌區餘額削減」之實務水調優先權規則。
 """)
 
 tab_config, tab_inflow, tab_outflow, tab_simulation = st.tabs([
@@ -248,7 +248,7 @@ with tab_inflow:
         st.dataframe(df_period_flow, use_container_width=True)
 
 # -----------------
-# TAB 3: 第三階段出流 (修正：旬排序、備註欄無法拉動)
+# TAB 3: 第三階段出流 (已修正：旬排序、欄寬自動換行往右拉)
 # -----------------
 with tab_outflow:
     st.subheader("🚰 出流標的需求配置與抗旱覆寫機制")
@@ -469,7 +469,7 @@ with tab_outflow:
         
         st.markdown("##### 📌 當前模擬區間各旬【常態與抗旱日期權重均值】匯總報表")
         
-        # 修正 2：備註欄位自動換行並拉寬 (使用 column_config)
+        # 修正 2：備註欄位自動換行並拉寬 (使用 column_config.TextColumn)
         st.dataframe(
             df_final_demands,
             use_container_width=True,
@@ -483,12 +483,12 @@ with tab_outflow:
         )
 
 # -----------------
-# TAB 4: 第四階段：核心庫容守恆演算
+# TAB 4: 第四階段：核心庫容守恆演算 (已修正：上游上灌區優先，下灌區餘額扣減)
 # -----------------
 with tab_simulation:
     st.subheader("🧮 鯉魚潭水庫質量守恆與防線調度計算")
     st.markdown("""
-    本模組為系統最核心的**物理演算引擎**。點擊下方按鈕將啟動日步進 Loop，並在計算中嚴格執行「農業控制律（第一性原理）」與「生態放流折抵」。
+    本模組為系統最核心的**物理演算引擎**。點擊下方按鈕將啟動日步進 Loop，特別依據**「上灌區第一優先滿足，下灌區天然流量剩餘分配」**原則演算。
     """)
     
     if unique_periods.empty:
@@ -508,11 +508,9 @@ with tab_simulation:
             sim_daily_records = []
             
             # 用於加總的指標
-            total_ag_intercept_volume_10k = 0.0  # 農業控制律攔截總水量 (萬噸)
+            total_ag_intercept_volume_10k = 0.0  # 農業削減總水量 (萬噸)
             total_spillway_overflow_10k = 0.0    # 總溢流量 (萬噸)
             
-            # 對照每日入流 (df_period_flow 的日開展) 
-            # 取得日曆
             df_daily_profile = generate_date_profile(st.session_state.start_date, st.session_state.end_date)
             
             flow_lookup = {}
@@ -524,68 +522,56 @@ with tab_simulation:
                 current_date = row["日期"]
                 key = f"{row['年份']}-{row['月份']}-{row['旬別']}"
                 
-                # 每日士林堰天然流量 (I) (cms)
+                # 1. 當日士林堰天然流量 (I_cms)
                 I_cms = flow_lookup.get(key, 0.0)
                 
-                # 取得當日出流明細 (已套用抗旱碰撞)
+                # 2. 取得當日出流需求 (U_cms: 上灌, D_cms: 下灌, P_vol: 公共)
                 out_row = df_daily_outflow[df_daily_outflow["日期"] == current_date].iloc[0]
                 U_cms = out_row["上灌區當日流量(cms)"]
                 D_cms = out_row["下灌區當日流量(cms)"]
                 P_vol = out_row["公共供水當日水量(萬噸)"]
                 
                 # -----------------
-                # 物理防線 1：農業控制律 (Agricultural Control Law)
-                # 農業放流總量 (U + D) 嚴格受到天然流量 I 控制。庫容不得支應農業缺口。
+                # 物理防線 1：上灌/下灌 優先權分配 (農業控制律)
+                # 原則：天然流量先滿足上灌區，其餘才分配給下灌區。
                 # -----------------
-                ag_control_triggered = False
-                reduction_cms = 0.0
+                actual_U_cms = min(U_cms, I_cms)
+                remaining_flow_cms = max(0.0, I_cms - actual_U_cms)
                 
-                actual_U_cms = U_cms
-                actual_D_cms = D_cms
+                actual_D_cms = min(D_cms, remaining_flow_cms)
                 
-                if (U_cms + D_cms) > I_cms:
-                    ag_control_triggered = True
-                    reduction_cms = (U_cms + D_cms) - I_cms
-                    total_ag_intercept_volume_10k += (reduction_cms * 8.64)
-                    
-                    if I_cms <= 0:
-                        actual_U_cms = 0.0
-                        actual_D_cms = 0.0
-                    else:
-                        # 採公平之等比例削減
-                        scale_factor = I_cms / (U_cms + D_cms)
-                        actual_U_cms = U_cms * scale_factor
-                        actual_D_cms = D_cms * scale_factor
+                # 判斷是否觸發農業削減
+                ag_control_triggered = (actual_U_cms < U_cms) or (actual_D_cms < D_cms)
+                reduction_cms = (U_cms + D_cms) - (actual_U_cms + actual_D_cms)
+                total_ag_intercept_volume_10k += (reduction_cms * 8.64)
                 
                 # -----------------
                 # 物理防線 2：士林堰引水計算 & 生態基流折抵
                 # -----------------
-                # 上灌區放水 actual_U_cms 可併入/折抵生態基流 shilin_eco
-                # 士林堰必需留在河道的總量 = max(生態基流, 上灌放水量)
-                shilin_river_release_cms = max(shilin_eco, actual_U_cms)
+                # 上灌實際放水 actual_U_cms 可折抵生態基流 shilin_eco (2.2 cms)
+                # 士林堰必需保留於河道的總量 = max(生態基流, 上灌實際放水量)
+                shilin_river_release_cms = min(I_cms, max(shilin_eco, actual_U_cms))
                 
-                # 可引水流量 = max(0, 天然流量 - 必需放流量)
+                # 剩餘可用於引水的流量
                 available_diversion_cms = max(0.0, I_cms - shilin_river_release_cms)
                 
-                # 引水隧道物理上限為 33 cms
+                # 引水隧道上限為 33 cms
                 actual_diversion_cms = min(33.0, available_diversion_cms)
-                # 引水量轉日容積 (萬噸)
                 actual_diversion_vol = round(actual_diversion_cms * 8.64, 2)
                 
                 # -----------------
                 # 物理防線 3：鯉魚潭出流計算 & 生態最低放流折抵
                 # -----------------
-                # 下灌區放水 actual_D_cms 可折抵大壩最低生態放流 liyutan_eco
-                # 大壩必需向河道放留之總量 = max(生態最低放流, 下灌放水量)
+                # 下灌實際放水 actual_D_cms 可折抵大壩最低生態放流 liyutan_eco (0.3 cms)
+                # 大壩必需放出至河道的總量 = max(最低生態放流, 下灌實際放水量)
                 liyutan_river_release_cms = max(liyutan_eco, actual_D_cms)
                 liyutan_river_release_vol = round(liyutan_river_release_cms * 8.64, 2)
                 
-                # 每日鯉魚潭實際出水總量 = 公共出水需求 (萬噸) + 大壩放流量 (萬噸)
+                # 每日鯉魚潭實際出流總量 = 公共出水需求 (萬噸) + 大壩放流量 (萬噸)
                 actual_outflow_vol = round(P_vol + liyutan_river_release_vol, 2)
                 
                 # -----------------
-                # 物理防線 4：庫容質量守恆演算與溢流計算
-                # 今日庫容 = 昨日庫容 + 今日引入量 - 今日出水量
+                # 物理防線 4：庫容質量守恆演算
                 # -----------------
                 yesterday_capacity = curr_capacity
                 calculated_capacity = yesterday_capacity + actual_diversion_vol - actual_outflow_vol
@@ -596,7 +582,6 @@ with tab_simulation:
                     total_spillway_overflow_10k += spillway_overflow_vol
                     curr_capacity = max_capacity
                 elif calculated_capacity < 0:
-                    # 庫容不可為負值，強制拉回 0 (代表空庫枯竭)
                     curr_capacity = 0.0
                 else:
                     curr_capacity = round(calculated_capacity, 2)
@@ -606,12 +591,12 @@ with tab_simulation:
                     "天然流量 (cms)": I_cms,
                     "原上灌需求 (cms)": U_cms,
                     "原下灌需求 (cms)": D_cms,
-                    "削上灌需求 (cms)": round(actual_U_cms, 2),
-                    "削下灌需求 (cms)": round(actual_D_cms, 2),
-                    "農業控制律狀態": "🚨 觸發攔截" if ag_control_triggered else "🟢 正常",
-                    "農業扣減流量 (cms)": round(reduction_cms, 2),
+                    "實際上灌放水 (cms)": round(actual_U_cms, 2),
+                    "實際下灌放水 (cms)": round(actual_D_cms, 2),
+                    "農業削減狀態": "🚨 觸發削減" if ag_control_triggered else "🟢 正常",
+                    "農業削減量 (cms)": round(reduction_cms, 2),
                     "士林堰河道保留 (cms)": round(shilin_river_release_cms, 2),
-                    "實際引入流量 (cms)": round(actual_diversion_cms, 2),
+                    "實際引水流量 (cms)": round(actual_diversion_cms, 2),
                     "今日引入量 (萬噸)": actual_diversion_vol,
                     "大壩河道放流 (cms)": round(liyutan_river_release_cms, 2),
                     "公共給水量 (萬噸)": round(P_vol, 2),
@@ -621,11 +606,9 @@ with tab_simulation:
                     "本日末庫容 (萬噸)": round(curr_capacity, 2)
                 })
                 
-            # 轉換為 DataFrame 存入 session_state
             df_sim_results = pd.DataFrame(sim_daily_records)
             st.session_state.sim_results = df_sim_results
             
-            # 計算各指標
             st.markdown("### 🏆 庫容模擬計算完成！調度成果指標如下：")
             
             m1, m2, m3, m4 = st.columns(4)
@@ -635,17 +618,15 @@ with tab_simulation:
             with m2:
                 st.metric("累積溢流量 (Spill)", f"{round(total_spillway_overflow_10k, 1)} 萬噸")
             with m3:
-                st.metric("農業控制律攔截總水量", f"{round(total_ag_intercept_volume_10k, 1)} 萬噸")
+                st.metric("農業控制律削減總水量", f"{round(total_ag_intercept_volume_10k, 1)} 萬噸")
             with m4:
                 dry_days = sum(1 for item in sim_daily_records if item["本日末庫容 (萬噸)"] <= 0.0)
                 st.metric("枯竭空庫天數", f"{dry_days} 天", delta="🚨 警告：空庫枯竭！" if dry_days > 0 else "🟢 安全")
 
-            # 顯示日步進質量守恆大表
             st.markdown("##### 📅 逐日質量守恆與調度明細表")
             st.dataframe(df_sim_results, use_container_width=True)
-            st.success("✅ 第四階段核心演算完畢！數據完全通過守恆律。隨時可以進行第五階段：圖表繪製與資料導出！")
+            st.success("✅ 第四階段核心演算完畢！數據完全通過「上游上灌優先」守恆律。隨時可以進行第五階段！")
             
         elif "sim_results" in st.session_state:
-            # 若之前已經算過，直接顯示歷史計算結果
             st.markdown("##### 📅 歷史模擬明細表 (保留前次計算結果)")
             st.dataframe(st.session_state.sim_results, use_container_width=True)
