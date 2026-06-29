@@ -54,7 +54,6 @@ def generate_date_profile(start_date: datetime.date, end_date: datetime.date) ->
 def get_period_date_range(year: int, month: int, period: str) -> tuple:
     """
     計算特定年份、月份與旬別的「實際日曆起迄日期」。
-    例如 2026年2月下旬 -> 2026-02-21 至 2026-02-28。
     """
     if period == "上旬":
         return datetime.date(year, month, 1), datetime.date(year, month, 10)
@@ -67,7 +66,7 @@ def get_period_date_range(year: int, month: int, period: str) -> tuple:
 
 def is_overlapping(start1: datetime.date, end1: datetime.date, start2: datetime.date, end2: datetime.date) -> bool:
     """
-    判斷兩個日期區間 [start1, end1] 與 [start2, end2] 是否有重疊。
+    判斷兩個日期區間是否有重疊。
     """
     return max(start1, start2) <= min(end1, end2)
 
@@ -157,7 +156,6 @@ if "manual_flow_dict" not in st.session_state:
     st.session_state.manual_flow_dict = {}
 
 # 第三階段新增狀態：動態「抗旱臨時覆寫時段清單」
-# 格式: list of dict -> [{"start": datetime.date, "end": datetime.date, "up_irr": float, "down_irr": float, "public": float, "reason": str}]
 if "override_list" not in st.session_state:
     st.session_state.override_list = []
 
@@ -165,9 +163,9 @@ if "override_list" not in st.session_state:
 # 5. 前端 UI 分頁排版
 # ==========================================
 
-st.title("💧 鯉魚潭水庫庫容推估系統 (第三階段 - 日曆抗旱版)")
+st.title("💧 鯉魚潭水庫庫容推估系統 (第三階段 - 權重均值整合版)")
 st.markdown("""
-本階段支援 **自由選定日期區間的抗旱覆寫機制**，並能自動彙整回標準水文「旬」度報表中進行多點條列。
+本系統在此版本已整合 **日曆抗旱覆寫機制**，並透過「日轉旬回推彙整」演算法，**自動依覆寫天數權重計算「旬均需求」**，確保旬與日數據完美守恆。
 """)
 
 tab_config, tab_inflow, tab_outflow = st.tabs([
@@ -329,12 +327,11 @@ with tab_outflow:
         # 2. ⚡ 自由選定日期區間的抗旱臨時調整機制 ⚡
         st.markdown("---")
         st.markdown("#### ⚡ 歷史枯旱期/臨時調度自訂日期覆寫清單")
-        st.markdown("在此新增一筆或多筆「抗旱時段」，設定特定的起迄日期，系統會自動在「日明細」中精確套用，並自動彙整回「旬」報表中進行條列。")
+        st.markdown("在此新增一筆或多筆「抗旱時段」，設定特定的起迄日期，系統會自動在「日明細」中精確套用，並自動依天數權重計算旬均值。")
         
         enable_override = st.checkbox("啟用抗旱臨時日期覆寫機制", value=False)
         
         if enable_override:
-            # 提供一個新增覆寫時段的按鈕
             if st.button("➕ 新增抗旱覆寫時段"):
                 st.session_state.override_list.append({
                     "start": st.session_state.start_date,
@@ -345,7 +342,6 @@ with tab_outflow:
                     "reason": "抗旱一級減壓"
                 })
             
-            # 如果清單不為空，動態生成輸入卡片
             if st.session_state.override_list:
                 to_delete = []
                 for idx, ov in enumerate(st.session_state.override_list):
@@ -355,7 +351,6 @@ with tab_outflow:
                     with col_dates:
                         ov["start"] = st.date_input(f"起日 #{idx+1}", value=ov["start"], key=f"ov_start_{idx}")
                         ov["end"] = st.date_input(f"迄日 #{idx+1}", value=ov["end"], key=f"ov_end_{idx}")
-                        # 基礎防呆：起日不可大於迄日
                         if ov["start"] > ov["end"]:
                             st.error(f"⚠️ 錯誤：規則 #{idx+1} 的起日不可晚於迄日。")
                             
@@ -363,7 +358,7 @@ with tab_outflow:
                         ov["up_irr"] = st.number_input(f"上灌 (cms) #{idx+1}", value=ov["up_irr"], step=0.1, key=f"ov_up_{idx}")
                         ov["down_irr"] = st.number_input(f"下灌 (cms) #{idx+1}", value=ov["down_irr"], step=0.1, key=f"ov_down_{idx}")
                         ov["public"] = st.number_input(f"公共 (萬噸/日) #{idx+1}", value=ov["public"], step=1.0, key=f"ov_pub_{idx}")
-                        ov["reason"] = st.text_input(f"覆寫原因/備註 (必填) #{idx+1}", value=ov["reason"], key=f"ov_reason_{idx}", placeholder="例：配合旱災應變中心打8折")
+                        ov["reason"] = st.text_input(f"覆寫原因/備註 (必填) #{idx+1}", value=ov["reason"], key=f"ov_reason_{idx}", placeholder="例：配合抗旱打折")
                         
                     with col_act:
                         st.markdown("<br><br>", unsafe_allow_html=True)
@@ -371,7 +366,6 @@ with tab_outflow:
                             to_delete.append(idx)
                     st.markdown("<hr style='border:1px dashed #cccccc;'>", unsafe_allow_html=True)
                 
-                # 執行刪除
                 if to_delete:
                     for i in reversed(to_delete):
                         st.session_state.override_list.pop(i)
@@ -379,56 +373,120 @@ with tab_outflow:
             else:
                 st.info("💡 目前無任何覆寫規則，請點擊上方按鈕新增覆寫。")
         else:
-            # 未啟用時清空清單，避免殘留
             st.session_state.override_list = []
 
-        # 3. 彙整標準旬報表 (自動比對日期區間重疊，並進行「多點條列備註」)
+        # ==========================================
+        # 3. 資料處理核心：先生成「日明細」並套用碰撞，再「群組平均」回推算出「旬均值」
+        # ==========================================
+        # A. 生成日曆時間剖面
+        df_daily_outflow = generate_date_profile(st.session_state.start_date, st.session_state.end_date)
+        
+        # B. 建立常態旬需求 Lookup 字典
+        base_lookup = {}
+        for _, item in df_base_demands.iterrows():
+            k = f"{int(item['年份'])}-{int(item['月份'])}-{item['旬別']}"
+            base_lookup[k] = item
+            
+        # C. 逐日判定與單位轉換
+        up_irr_cms, down_irr_cms, pub_vol_list, eco_cms_list = [], [], [], []
+        up_irr_vol, down_irr_vol, pub_vol, eco_vol, total_out_vol, statuses, notes = [], [], [], [], [], [], []
+        
+        for _, row in df_daily_outflow.iterrows():
+            current_date = row["日期"]
+            k = f"{row['年份']}-{row['月份']}-{row['旬別']}"
+            base_demand = base_lookup.get(k)
+            
+            # 預設：常態旬需求
+            active_up_cms = base_demand["上灌區需求(cms)"] if base_demand is not None else 0.0
+            active_down_cms = base_demand["下灌區需求(cms)"] if base_demand is not None else 0.0
+            active_pub_vol = base_demand["公共出水(萬噸/日)"] if base_demand is not None else 0.0
+            day_status = "🟢 常態運作"
+            day_note = ""
+            
+            # 精確碰撞抗旱時段
+            if enable_override and st.session_state.override_list:
+                for ov in st.session_state.override_list:
+                    if ov["start"] <= current_date <= ov["end"]:
+                        active_up_cms = ov["up_irr"]
+                        active_down_cms = ov["down_irr"]
+                        active_pub_vol = ov["public"]
+                        day_status = "⚡ 抗旱覆寫"
+                        day_note = f"[{ov['start'].strftime('%m/%d')}~{ov['end'].strftime('%m/%d')} 覆寫] {ov['reason']}"
+            
+            # 儲存流量 (cms) 與公共出水 (萬噸/日)
+            up_irr_cms.append(active_up_cms)
+            down_irr_cms.append(active_down_cms)
+            pub_vol_list.append(active_pub_vol)
+            eco_cms_list.append(st.session_state.liyutan_eco_flow)
+            
+            # 轉換為當日容積水量 (萬噸/日)
+            u_v = round(active_up_cms * 8.64, 2)
+            d_v = round(active_down_cms * 8.64, 2)
+            e_v = round(st.session_state.liyutan_eco_flow * 8.64, 2)
+            p_v = round(active_pub_vol, 2)
+            
+            up_irr_vol.append(u_v)
+            down_irr_vol.append(d_v)
+            eco_vol.append(e_v)
+            pub_vol.append(p_v)
+            total_out_vol.append(round(u_v + d_v + e_v + p_v, 2))
+            statuses.append(day_status)
+            notes.append(day_note)
+                
+        df_daily_outflow["上灌區當日流量(cms)"] = up_irr_cms
+        df_daily_outflow["下灌區當日流量(cms)"] = down_irr_cms
+        df_daily_outflow["公共供水當日水量(萬噸)"] = pub_vol_list
+        df_daily_outflow["上灌區日水量(萬噸)"] = up_irr_vol
+        df_daily_outflow["下灌區日水量(萬噸)"] = down_irr_vol
+        df_daily_outflow["生態放流日水量(萬噸)"] = eco_vol
+        df_daily_outflow["公共供水日水量(萬噸)"] = pub_vol
+        df_daily_outflow["當日出流總需求(萬噸)"] = total_out_vol
+        df_daily_outflow["調度狀態"] = statuses
+        df_daily_outflow["今日抗旱備註"] = notes
+
+        # D. 日轉旬回推彙整 (利用 Groupby Mean 進行精確日期權重均值計算)
+        df_grouped = df_daily_outflow.groupby(["年份", "月份", "旬別"]).agg(
+            up_mean=("上灌區當日流量(cms)", "mean"),
+            down_mean=("下灌區當日流量(cms)", "mean"),
+            pub_mean=("公共供水當日水量(萬噸)", "mean"),
+            override_count=("調度狀態", lambda x: (x == "⚡ 抗旱覆寫").sum())
+        ).reset_index()
+
+        # E. 生成最終「旬」匯總報表，並建立條列備註
         final_demand_list = []
-        for idx, row in df_base_demands.iterrows():
+        for idx, row in df_grouped.iterrows():
             y, m, p = row["年份"], row["月份"], row["旬別"]
-            # 取得這一旬的實際起訖日範圍
             p_start, p_end = get_period_date_range(int(y), int(m), p)
             
             overlapping_notes = []
-            is_overridden_period = False
+            is_overridden_period = row["override_count"] > 0
             
-            # 比對所有使用者設定的抗旱覆寫
+            # 生成該旬的多點條列備註
             if enable_override and st.session_state.override_list:
                 bullet_num = 1
                 for ov in st.session_state.override_list:
-                    # 只要抗旱覆寫日期區間有與此「旬區間」重疊
                     if is_overlapping(p_start, p_end, ov["start"], ov["end"]):
-                        is_overridden_period = True
-                        # 自動抓取並格式化覆寫原因與覆寫期間
                         start_str = ov["start"].strftime("%m/%d")
                         end_str = ov["end"].strftime("%m/%d")
                         reason_text = ov["reason"].strip() if ov["reason"].strip() else "⚠️ 未填寫調整原因"
-                        
-                        # 同旬區間有多筆覆寫時，自動列點
                         overlapping_notes.append(f"{bullet_num}. {start_str}~{end_str}: {reason_text}")
                         bullet_num += 1
             
-            # 合併為旬報表的單一欄位
-            if is_overridden_period:
-                final_note = " \n ".join(overlapping_notes)  # 換行條列
-                status_text = "⚡ 部分/全部抗旱覆寫"
-            else:
-                final_note = ""
-                status_text = "🟢 常態運作"
-                
+            final_note = " \n ".join(overlapping_notes) if is_overridden_period else ""
+            status_text = "⚡ 部分/全部抗旱覆寫" if is_overridden_period else "🟢 常態運作"
+            
             final_demand_list.append({
                 "年份": y, "月份": m, "旬別": p,
-                "上灌區需求(cms)": row["上灌區需求(cms)"],
-                "下灌區需求(cms)": row["下灌區需求(cms)"],
-                "公共出水(萬噸/日)": row["公共出水(萬噸/日)"],
+                "上灌區需求 (cms, 旬加權均值)": round(row["up_mean"], 2),
+                "下灌區需求 (cms, 旬加權均值)": round(row["down_mean"], 2),
+                "公共出水 (萬噸/日, 旬加權均值)": round(row["pub_mean"], 1),
                 "調度狀態": status_text,
                 "原因備註 (條列)": final_note
             })
             
         df_final_demands = pd.DataFrame(final_demand_list)
-        st.markdown("##### 📌 當前模擬區間各旬【常態水文需求與抗旱調度狀態】匯總表")
         
-        # 檢查是否有覆寫規則沒填原因
+        # 顯示警報
         empty_reason_detected = False
         if enable_override:
             for ov in st.session_state.override_list:
@@ -437,74 +495,19 @@ with tab_outflow:
         if empty_reason_detected:
             st.error("⚠️ 警報：您有抗旱覆寫時段尚未填寫「覆寫原因備註」，請確實填寫以通過防呆審核。")
             
+        st.markdown("##### 📌 當前模擬區間各旬【常態與抗旱日期權重均值】匯總報表")
         st.dataframe(df_final_demands, use_container_width=True)
 
 # ==========================================
-# 6. 逐日展開整合 (抗旱時段精確碰撞、日步進套用)
+# 6. 逐日展開整合結果呈現
 # ==========================================
 st.markdown("---")
 st.subheader("📊 模擬期間「逐日出流總需求」展開明細 (抗旱時段精確碰撞結果)")
 st.markdown("""
-本區塊會依據 **日曆起迄日期** 進行日步進碰撞。若當天屬於任何一個自訂抗旱時段，則該日水量將直接改採用抗旱覆寫值（日水量 = cms × 8.64），否則採用標準旬常態水文值。
+本區塊為日步進物理計算基礎。若當天落在抗旱時段內，則精確套用覆寫值，其餘天數則維持標準旬常態值。
 """)
 
-if not unique_periods.empty and 'df_base_demands' in locals():
-    # 建立日曆時間剖面
-    df_daily_outflow = generate_date_profile(st.session_state.start_date, st.session_state.end_date)
-    
-    # 建立 Lookup 字典 (用來對應常態旬需求)
-    base_lookup = {}
-    for _, item in df_base_demands.iterrows():
-        k = f"{int(item['年份'])}-{int(item['月份'])}-{item['旬別']}"
-        base_lookup[k] = item
-        
-    # 逐日判定
-    up_irr_vol, down_irr_vol, pub_vol, eco_vol, total_out_vol, statuses, notes = [], [], [], [], [], [], []
-    
-    for _, row in df_daily_outflow.iterrows():
-        current_date = row["日期"]
-        k = f"{row['年份']}-{row['月份']}-{row['旬別']}"
-        base_demand = base_lookup.get(k)
-        
-        # 1. 預設先帶入常態水文旬需求
-        active_up_cms = base_demand["上灌區需求(cms)"] if base_demand is not None else 0.0
-        active_down_cms = base_demand["下灌區需求(cms)"] if base_demand is not None else 0.0
-        active_pub_vol = base_demand["公共出水(萬噸/日)"] if base_demand is not None else 0.0
-        day_status = "🟢 常態運作"
-        day_note = ""
-        
-        # 2. 精確碰撞抗旱覆寫清單 (以最後一個碰撞到的覆寫規則為準)
-        if enable_override and st.session_state.override_list:
-            for ov in st.session_state.override_list:
-                if ov["start"] <= current_date <= ov["end"]:
-                    active_up_cms = ov["up_irr"]
-                    active_down_cms = ov["down_irr"]
-                    active_pub_vol = ov["public"]
-                    day_status = "⚡ 抗旱覆寫"
-                    day_note = f"[{ov['start'].strftime('%m/%d')}~{ov['end'].strftime('%m/%d')} 覆寫] {ov['reason']}"
-        
-        # 3. 流量轉換為日水量 (cms * 8.64)
-        u_v = round(active_up_cms * 8.64, 2)
-        d_v = round(active_down_cms * 8.64, 2)
-        e_v = round(st.session_state.liyutan_eco_flow * 8.64, 2)  # 生態基本放流 (預設 0.3)
-        p_v = round(active_pub_vol, 2)
-        
-        up_irr_vol.append(u_v)
-        down_irr_vol.append(d_v)
-        eco_vol.append(e_v)
-        pub_vol.append(p_v)
-        total_out_vol.append(round(u_v + d_v + e_v + p_v, 2))
-        statuses.append(day_status)
-        notes.append(day_note)
-            
-    df_daily_outflow["上灌區日水量(萬噸)"] = up_irr_vol
-    df_daily_outflow["下灌區日水量(萬噸)"] = down_irr_vol
-    df_daily_outflow["生態放流日水量(萬噸)"] = eco_vol
-    df_daily_outflow["公共供水日水量(萬噸)"] = pub_vol
-    df_daily_outflow["當日出流總需求(萬噸)"] = total_out_vol
-    df_daily_outflow["調度狀態"] = statuses
-    df_daily_outflow["今日抗旱備註"] = notes
-    
+if not unique_periods.empty and 'df_daily_outflow' in locals():
     # 計算加總數據
     tot_days = len(df_daily_outflow)
     tot_irr = round(df_daily_outflow["上灌區日水量(萬噸)"].sum() + df_daily_outflow["下灌區日水量(萬噸)"].sum(), 2)
@@ -522,4 +525,4 @@ if not unique_periods.empty and 'df_base_demands' in locals():
         
     st.markdown(f"💡 **出流總容積需求**：此模擬區間內，大台中與灌區合計共向鯉魚潭水庫/士林堰提出 **{tot_out_volume}** 萬噸的需求水量。")
     st.dataframe(df_daily_outflow, use_container_width=True, height=400)
-    st.success("✅ 抗旱區間精確碰撞日剖面配置完成！入流（天然水量）與出流（需求水量）皆已完整對齊。")
+    st.success("✅ 第三階段已完成！抗旱時段權重旬均值、日明細碰撞皆精準對齊。")
