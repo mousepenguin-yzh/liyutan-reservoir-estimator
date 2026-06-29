@@ -3,14 +3,6 @@ import pandas as pd
 import datetime
 import calendar
 
-# 嘗試匯入 Plotly 以提供專業圖表，若無則降級 fallback
-try:
-    import plotly.graph_objects as go
-    from plotly.subplots import make_subplots
-    HAS_PLOTLY = True
-except ImportError:
-    HAS_PLOTLY = False
-
 # ==========================================
 # 1. 核心物理與曆法引擎 (Calendar Engine)
 # ==========================================
@@ -78,21 +70,6 @@ def is_overlapping(start1: datetime.date, end1: datetime.date, start2: datetime.
     """
     return max(start1, start2) <= min(end1, end2)
 
-
-def capacity_to_elevation(capacity_10k: float) -> float:
-    """
-    依據鯉魚潭水庫之水位庫容關係 (Rating Curve) 經驗公式，將庫容 (萬噸) 轉換為水位標高 (公尺)。
-    滿水位: 300 m, 滿庫容: 11584 萬噸
-    呆水位: 243 m, 呆庫容: 540 萬噸
-    """
-    if capacity_10k >= 540.0:
-        # 經驗冪函數擬合水位曲線
-        elevation = 243.0 + 57.0 * ((capacity_10k - 540.0) / (11584.0 - 540.0)) ** 0.5
-    else:
-        # 低於呆水位時的退縮推估
-        elevation = 200.0 + 43.0 * (max(0.0, capacity_10k) / 540.0) ** 0.3
-    return round(elevation, 2)
-
 # ==========================================
 # 2. 第二階段核心邏輯：標準旬流量資料庫與解析
 # ==========================================
@@ -153,7 +130,7 @@ def get_default_demands(month: int) -> dict:
 # ==========================================
 
 st.set_page_config(
-    page_title="鯉魚潭水庫庫容推估系統 (第五階段)",
+    page_title="鯉魚潭水庫庫容推估系統 (第四階段)",
     page_icon="💧",
     layout="wide"
 )
@@ -184,17 +161,16 @@ if "override_list" not in st.session_state:
 # 5. 前端 UI 分頁排版
 # ==========================================
 
-st.title("💧 鯉魚潭水庫庫容推估系統 (第五階段)")
+st.title("💧 鯉魚潭水庫庫容推估系統 (第四階段)")
 st.markdown("""
-本階段已成功整合 **第五階段視覺化與資料導出** 功能，提供專業歷線與「平時旬加總/抗旱日明細」雙模式報表導出。
+本階段已成功建置 **核心守恆物理引擎**，並已調整為「上灌區優先供水，下灌區餘額削減」之實務水調優先權規則。
 """)
 
-tab_config, tab_inflow, tab_outflow, tab_simulation, tab_visualization = st.tabs([
+tab_config, tab_inflow, tab_outflow, tab_simulation = st.tabs([
     "⚙️ 第一階段：基礎參數與曆法", 
     "🌊 第二階段：入流條件設定",
     "🚰 第三階段：出流需求與抗旱調整",
-    "🧮 第四階段：核心庫容守恆演算",
-    "📊 第五階段：視覺化與報表導出"
+    "🧮 第四階段：核心庫容守恆演算"
 ])
 
 # -----------------
@@ -272,7 +248,7 @@ with tab_inflow:
         st.dataframe(df_period_flow, use_container_width=True)
 
 # -----------------
-# TAB 3: 第三階段出流
+# TAB 3: 第三階段出流 (已修正：旬排序、欄寬自動換行往右拉)
 # -----------------
 with tab_outflow:
     st.subheader("🚰 出流標的需求配置與抗旱覆寫機制")
@@ -486,28 +462,28 @@ with tab_outflow:
             
         df_final_demands = pd.DataFrame(final_demand_list)
         
-        # 中文旬別排序（強制定義：上旬->1, 中旬->2, 下旬->3）
+        # 修正 1：中文旬別排序（強制定義：上旬->1, 中旬->2, 下旬->3）
         period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
         df_final_demands["旬別順序碼"] = df_final_demands["旬別"].map(period_order)
         df_final_demands = df_final_demands.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"])
         
         st.markdown("##### 📌 當前模擬區間各旬【常態與抗旱日期權重均值】匯總報表")
         
-        # 備註欄位自動換行並拉寬
+        # 修正 2：備註欄位自動換行並拉寬 (使用 column_config.TextColumn)
         st.dataframe(
             df_final_demands,
             use_container_width=True,
             column_config={
                 "原因備註 (條列)": st.column_config.TextColumn(
                     "原因備註 (條列)",
-                    width="large",
+                    width="large",  # 強制拉寬
                     help="此旬別內所有抗旱覆寫事件的時段與備註"
                 )
             }
         )
 
 # -----------------
-# TAB 4: 第四階段：核心庫容守恆演算
+# TAB 4: 第四階段：核心庫容守恆演算 (已修正：上游上灌區優先，下灌區餘額扣減)
 # -----------------
 with tab_simulation:
     st.subheader("🧮 鯉魚潭水庫質量守恆與防線調度計算")
@@ -557,6 +533,7 @@ with tab_simulation:
                 
                 # -----------------
                 # 物理防線 1：上灌/下灌 優先權分配 (農業控制律)
+                # 原則：天然流量先滿足上灌區，其餘才分配給下灌區。
                 # -----------------
                 actual_U_cms = min(U_cms, I_cms)
                 remaining_flow_cms = max(0.0, I_cms - actual_U_cms)
@@ -571,16 +548,26 @@ with tab_simulation:
                 # -----------------
                 # 物理防線 2：士林堰引水計算 & 生態基流折抵
                 # -----------------
+                # 上灌實際放水 actual_U_cms 可折抵生態基流 shilin_eco (2.2 cms)
+                # 士林堰必需保留於河道的總量 = max(生態基流, 上灌實際放水量)
                 shilin_river_release_cms = min(I_cms, max(shilin_eco, actual_U_cms))
+                
+                # 剩餘可用於引水的流量
                 available_diversion_cms = max(0.0, I_cms - shilin_river_release_cms)
+                
+                # 引水隧道上限為 33 cms
                 actual_diversion_cms = min(33.0, available_diversion_cms)
                 actual_diversion_vol = round(actual_diversion_cms * 8.64, 2)
                 
                 # -----------------
                 # 物理防線 3：鯉魚潭出流計算 & 生態最低放流折抵
                 # -----------------
+                # 下灌實際放水 actual_D_cms 可折抵大壩最低生態放流 liyutan_eco (0.3 cms)
+                # 大壩必需放出至河道的總量 = max(最低生態放流, 下灌實際放水量)
                 liyutan_river_release_cms = max(liyutan_eco, actual_D_cms)
                 liyutan_river_release_vol = round(liyutan_river_release_cms * 8.64, 2)
+                
+                # 每日鯉魚潭實際出流總量 = 公共出水需求 (萬噸) + 大壩放流量 (萬噸)
                 actual_outflow_vol = round(P_vol + liyutan_river_release_vol, 2)
                 
                 # -----------------
@@ -598,16 +585,9 @@ with tab_simulation:
                     curr_capacity = 0.0
                 else:
                     curr_capacity = round(calculated_capacity, 2)
-                
-                # 第五階段物理轉換：推估對應水位與當日淨變化
-                net_change_vol = round(curr_capacity - yesterday_capacity, 2)
-                current_elevation = capacity_to_elevation(curr_capacity)
                     
                 sim_daily_records.append({
                     "日期": current_date,
-                    "年份": row["年份"],
-                    "月份": row["月份"],
-                    "旬別": row["旬別"],
                     "天然流量 (cms)": I_cms,
                     "原上灌需求 (cms)": U_cms,
                     "原下灌需求 (cms)": D_cms,
@@ -623,9 +603,7 @@ with tab_simulation:
                     "今日出水總量 (萬噸)": actual_outflow_vol,
                     "溢流量 (萬噸)": spillway_overflow_vol,
                     "昨日期末庫容 (萬噸)": round(yesterday_capacity, 2),
-                    "本日末庫容 (萬噸)": round(curr_capacity, 2),
-                    "當日庫容淨變化 (萬噸)": net_change_vol,
-                    "對應水位 (公尺)": current_elevation
+                    "本日末庫容 (萬噸)": round(curr_capacity, 2)
                 })
                 
             df_sim_results = pd.DataFrame(sim_daily_records)
@@ -643,68 +621,12 @@ with tab_simulation:
                 st.metric("農業控制律削減總水量", f"{round(total_ag_intercept_volume_10k, 1)} 萬噸")
             with m4:
                 dry_days = sum(1 for item in sim_daily_records if item["本日末庫容 (萬噸)"] <= 0.0)
-                st.metric("庫容枯竭空庫天數", f"{dry_days} 天", delta="🚨 警告：空庫枯竭！" if dry_days > 0 else "🟢 安全")
+                st.metric("枯竭空庫天數", f"{dry_days} 天", delta="🚨 警告：空庫枯竭！" if dry_days > 0 else "🟢 安全")
 
             st.markdown("##### 📅 逐日質量守恆與調度明細表")
             st.dataframe(df_sim_results, use_container_width=True)
-            st.success("✅ 第四階段核心演算完畢！數據已完全存入工作狀態，請切換至第五階段分頁查看專業歷線與報表導出。")
+            st.success("✅ 第四階段核心演算完畢！數據完全通過「上游上灌優先」守恆律。隨時可以進行第五階段！")
             
         elif "sim_results" in st.session_state:
             st.markdown("##### 📅 歷史模擬明細表 (保留前次計算結果)")
             st.dataframe(st.session_state.sim_results, use_container_width=True)
-
-# -----------------
-# TAB 5: 第五階段：視覺化與報表導出
-# -----------------
-with tab_visualization:
-    st.subheader("📊 第五階段：視覺化分析與調度資料導出")
-    
-    if "sim_results" not in st.session_state or st.session_state.sim_results.empty:
-        st.warning("⚠️ 尚未偵測到模擬計算結果，請先至「🧮 第四階段：核心庫容守恆演算」分頁中，點擊「執行庫容守恆模擬」按鈕以產生數據。")
-    else:
-        df_sim = st.session_state.sim_results.copy()
-        
-        # 1. 專業歷線圖呈現
-        st.markdown("#### 📈 庫容與水位雙指標時序變動歷線")
-        
-        if HAS_PLOTLY:
-            # 建立雙 Y 軸 plotly 圖表
-            fig = make_subplots(specs=[[{"secondary_y": True}]])
-            
-            # 左軸：本日末庫容
-            fig.add_trace(
-                go.Scatter(
-                    x=df_sim["日期"], 
-                    y=df_sim["本日末庫容 (萬噸)"], 
-                    name="期末庫容 (萬噸)", 
-                    line=dict(color="royalblue", width=2.5)
-                ),
-                secondary_y=False,
-            )
-            
-            # 右軸：對應水位
-            fig.add_trace(
-                go.Scatter(
-                    x=df_sim["日期"], 
-                    y=df_sim["對應水位 (公尺)"], 
-                    name="對應水位 (公尺)", 
-                    line=dict(color="forestgreen", width=2, dash="dash")
-                ),
-                secondary_y=True,
-            )
-            
-            # 滿庫容上限輔助線
-            fig.add_trace(
-                go.Scatter(
-                    x=df_sim["日期"], 
-                    y=[st.session_state.max_capacity] * len(df_sim), 
-                    name="滿庫容上限安全防線", 
-                    line=dict(color="crimson", width=1.5, dash="dot")
-                ),
-                secondary_y=False,
-            )
-            
-            fig.update_layout(
-                title_text="鯉魚潭水庫模擬推估歷線圖 (庫容與水位變動趨勢)",
-                hovermode="x unified",
-                legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x
