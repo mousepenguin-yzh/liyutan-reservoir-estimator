@@ -183,7 +183,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 基礎參數與雙時間軸日期初始化 (預設為您提及的 6/21 ~ 9/1 區間以利直接測試)
+# 基礎參數與雙時間軸日期初始化
 if "max_capacity" not in st.session_state:
     st.session_state.max_capacity = 11584.0
 if "shilin_eco_flow" not in st.session_state:
@@ -229,7 +229,7 @@ tab_config, tab_inflow, tab_outflow, tab_simulation = st.tabs([
 ])
 
 # -----------------
-# TAB 1: 基礎與曆法 (重構雙時間軸與動態庫容標籤)
+# TAB 1: 基礎與曆法
 # -----------------
 with tab_config:
     st.subheader("⚙️ 基礎參數與雙時間軸對齊")
@@ -457,7 +457,7 @@ with tab_outflow:
         else:
             st.session_state.override_list = []
 
-        # 資料處理核心：先生成日明細套用碰撞 (在總區間 [display_start_date, end_date) 內生成)
+        # 資料處理核心：先生成日明細套用碰撞
         df_daily_outflow = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
         
         base_lookup = {}
@@ -572,7 +572,7 @@ with tab_outflow:
         )
 
 # -----------------
-# TAB 4: 第四階段：核心庫容守恆演算 (左閉右開，排除 end_date)
+# TAB 4: 第四階段：核心庫容守恆演算
 # -----------------
 with tab_simulation:
     st.subheader("🧮 鯉魚潭水庫質量守恆與防線調度計算")
@@ -639,4 +639,182 @@ with tab_simulation:
                         "天然流量 (cms)": 0.0,
                         "原上灌需求 (cms)": 0.0,
                         "原下灌需求 (cms)": 0.0,
-        
+                        "實際上灌放水 (cms)": 0.0,
+                        "實際下灌放水 (cms)": 0.0,
+                        "農業削減狀態": "🟢 觀測",
+                        "農業削減量 (cms)": 0.0,
+                        "士林堰河道保留 (cms)": 0.0,
+                        "實際引水流量 (cms)": 0.0,
+                        "今日引入量 (萬噸)": 0.0,
+                        "大壩河道放流 (cms)": 0.0,
+                        "公共給水量 (萬噸)": 0.0,
+                        "今日出水總量 (萬噸)": 0.0,
+                        "溢流量 (萬噸)": 0.0,
+                        "昨日期末庫容 (萬噸)": round(yesterday_capacity, 2),
+                        "本日末庫容 (萬噸)": round(curr_capacity, 2),
+                        "當日庫容淨變化 (萬噸)": net_change_vol
+                    })
+                else:
+                    # ==========================================
+                    # 未來推估期 (啟用質量守恆物理引擎)
+                    # ==========================================
+                    # 1. 當日士林堰天然流量
+                    I_cms = flow_lookup.get(key, 0.0)
+                    
+                    # 2. 當日出流需求 (加入安全防線確保不因索引缺失而報錯)
+                    out_row_candidates = df_daily_outflow[df_daily_outflow["日期"] == current_date]
+                    if out_row_candidates.empty:
+                        U_cms, D_cms, P_vol = 0.0, 0.0, 0.0
+                    else:
+                        out_row = out_row_candidates.iloc[0]
+                        U_cms = out_row["上灌區當日流量(cms)"]
+                        D_cms = out_row["下灌區當日流量(cms)"]
+                        P_vol = out_row["公共供水當日水量(萬噸)"]
+                    
+                    # 物理防線 1：上灌/下灌 優先權分配 (農業控制律)
+                    actual_U_cms = min(U_cms, I_cms)
+                    remaining_flow_cms = max(0.0, I_cms - actual_U_cms)
+                    actual_D_cms = min(D_cms, remaining_flow_cms)
+                    
+                    ag_control_triggered = (actual_U_cms < U_cms) or (actual_D_cms < D_cms)
+                    reduction_cms = (U_cms + D_cms) - (actual_U_cms + actual_D_cms)
+                    total_ag_intercept_volume_10k += (reduction_cms * 8.64)
+                    
+                    # 物理防線 2：士林堰引水計算 & 生態基流折抵
+                    shilin_river_release_cms = min(I_cms, max(shilin_eco, actual_U_cms))
+                    available_diversion_cms = max(0.0, I_cms - shilin_river_release_cms)
+                    actual_diversion_cms = min(33.0, available_diversion_cms)
+                    actual_diversion_vol = round(actual_diversion_cms * 8.64, 2)
+                    
+                    # 物理防線 3：鯉魚潭出流計算 & 生態最低放流折抵
+                    liyutan_river_release_cms = max(liyutan_eco, actual_D_cms)
+                    liyutan_river_release_vol = round(liyutan_river_release_cms * 8.64, 2)
+                    actual_outflow_vol = round(P_vol + liyutan_river_release_vol, 2)
+                    
+                    # 物理防線 4：庫容質量守恆演算
+                    yesterday_capacity = curr_capacity
+                    calculated_capacity = yesterday_capacity + actual_diversion_vol - actual_outflow_vol
+                    
+                    spillway_overflow_vol = 0.0
+                    if calculated_capacity > max_capacity:
+                        spillway_overflow_vol = round(calculated_capacity - max_capacity, 2)
+                        total_spillway_overflow_10k += spillway_overflow_vol
+                        curr_capacity = max_capacity
+                    elif calculated_capacity < 0:
+                        curr_capacity = 0.0
+                    else:
+                        curr_capacity = round(calculated_capacity, 2)
+                    
+                    net_change_vol = round(curr_capacity - yesterday_capacity, 2)
+                    
+                    sim_daily_records.append({
+                        "日期": current_date,
+                        "年份": row["年份"],
+                        "月份": row["月份"],
+                        "旬別": row["旬別"],
+                        "運行狀態": "🔮 未來推估",
+                        "天然流量 (cms)": I_cms,
+                        "原上灌需求 (cms)": U_cms,
+                        "原下灌需求 (cms)": D_cms,
+                        "實際上灌放水 (cms)": round(actual_U_cms, 2),
+                        "實際下灌放水 (cms)": round(actual_D_cms, 2),
+                        "農業削減狀態": "🚨 觸發削減" if ag_control_triggered else "🟢 正常",
+                        "農業削減量 (cms)": round(reduction_cms, 2),
+                        "士林堰河道保留 (cms)": round(shilin_river_release_cms, 2),
+                        "實際引水流量 (cms)": round(actual_diversion_cms, 2),
+                        "今日引入量 (萬噸)": actual_diversion_vol,
+                        "大壩河道放流 (cms)": round(liyutan_river_release_cms, 2),
+                        "公共給水量 (萬噸)": round(P_vol, 2),
+                        "今日出水總量 (萬噸)": actual_outflow_vol,
+                        "溢流量 (萬噸)": spillway_overflow_vol,
+                        "昨日期末庫容 (萬噸)": round(yesterday_capacity, 2),
+                        "本日末庫容 (萬噸)": round(curr_capacity, 2),
+                        "當日庫容淨變化 (萬噸)": net_change_vol
+                    })
+            
+            df_sim_results = pd.DataFrame(sim_daily_records)
+            st.session_state.sim_results = df_sim_results
+            
+            st.markdown("### 🏆 庫容模擬計算完成！調度成果指標如下：")
+            m1, m2, m3, m4 = st.columns(4)
+            with m1:
+                final_volume = df_sim_results.iloc[-1]["本日末庫容 (萬噸)"]
+                st.metric("模擬期末庫容", f"{final_volume} 萬噸", delta=f"{round(final_volume - st.session_state.init_capacity, 1)} 萬噸 (較期初)")
+            with m2:
+                st.metric("累積溢流量 (Spill)", f"{round(total_spillway_overflow_10k, 1)} 萬噸")
+            with m3:
+                st.metric("農業控制律削減總水量", f"{round(total_ag_intercept_volume_10k, 1)} 萬噸")
+            with m4:
+                dry_days = sum(1 for item in sim_daily_records if item["本日末庫容 (萬噸)"] <= 0.0 and item["運行狀態"] == "🔮 未來推估")
+                st.metric("庫容枯竭空庫天數", f"{dry_days} 天", delta="🚨 警告：空庫枯竭！" if dry_days > 0 else "🟢 安全")
+
+            # -----------------
+            # 產品一：水利署標準「旬度加總」彙整報表 (萬噸單位)
+            # -----------------
+            st.markdown("---")
+            st.markdown("#### 📅 產品一：水利署標準「旬度加總/平均」彙整報表")
+            st.caption("說明：用於直接複製貼上水利署彙整表。公共給水、上灌區、下灌區供水、引入、出水、溢流與淨變化皆以「萬噸」為單位進行旬度累計；期末庫容為該旬最後一天之庫容值。")
+            
+            df_grouped_sim = df_sim_results.groupby(["年份", "月份", "旬別"], sort=False).agg(
+                天然流量_cms=("天然流量 (cms)", "mean"),
+                實際引水流量_cms=("實際引水流量 (cms)", "mean"),
+                累計引入量_萬噸=("今日引入量 (萬噸)", "sum"),
+                上灌區供灌總量_萬噸=("實際上灌放水 (cms)", lambda x: round((x * 8.64).sum(), 2)),
+                下灌區供灌總量_萬噸=("實際下灌放水 (cms)", lambda x: round((x * 8.64).sum(), 2)),
+                公共用水總量_萬噸=("公共給水量 (萬噸)", "sum"),
+                累計出水總量_萬噸=("今日出水總量 (萬噸)", "sum"),
+                累計溢流量_萬噸=("溢流量 (萬噸)", "sum"),
+                累計庫容淨變化_萬噸=("當日庫容淨變化 (萬噸)", "sum"),
+                期末庫容_萬噸=("本日末庫容 (萬噸)", "last")
+            ).reset_index()
+            
+            df_grouped_sim.columns = [
+                "年份", "月份", "旬別",
+                "天然流量 (cms, 旬均值)",
+                "實際引水流量 (cms, 旬均值)",
+                "累計引入量 (萬噸)",
+                "上灌區供灌總量 (萬噸)",
+                "下灌區供灌總量 (萬噸)",
+                "公共用水總量 (萬噸)",
+                "累計出水總量 (萬噸)",
+                "累計溢流量 (萬噸)",
+                "累計庫容淨變化 (萬噸)",
+                "期末庫容 (萬噸)"
+            ]
+            
+            # 強制排序
+            df_grouped_sim["旬別順序碼"] = df_grouped_sim["旬別"].map(period_order)
+            df_grouped_sim = df_grouped_sim.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
+            
+            st.dataframe(df_grouped_sim, use_container_width=True)
+            
+            # 提供帶 BOM 的 CSV 檔案下載
+            csv_data_period = df_grouped_sim.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 下載 產品一：旬度彙整報表 (Excel 貼上專用)",
+                data=csv_data_period,
+                file_name=f"liyutan_summary_by_period_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+
+            # -----------------
+            # 產品三：隨機抗旱逐日守恆明細表
+            # -----------------
+            st.markdown("---")
+            st.markdown("#### 📅 產品三：隨機抗旱逐日質量守恆明細報表")
+            st.caption("說明：呈現逐日物理守恆明細。當日庫容淨變化 = 本日末庫容 - 昨日期末庫容。")
+            
+            df_daily_show = df_sim_results.drop(columns=["年份", "月份", "旬別"])
+            st.dataframe(df_daily_show, use_container_width=True)
+            
+            csv_data_daily = df_daily_show.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 下載 產品三：逐日守恆明細報表 (Excel 貼上專用)",
+                data=csv_data_daily,
+                file_name=f"liyutan_daily_details_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+            
+        elif "sim_results" in st.session_state:
+            st.markdown("##### 📅 歷史模擬明細表 (保留前次計算結果)")
+            st.dataframe(st.session_state.sim_results, use_container_width=True)
