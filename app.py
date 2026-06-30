@@ -730,13 +730,14 @@ with tab_inflow:
                 except Exception as e:
                     st.error(f"❌ 解析檔案時發生系統錯誤：{str(e)}。請確認檔案內容格式正確，若使用 CSV 發生擠壓，請改用 Excel (.xlsx) 檔案。")
                     
-        with m_col2:
+with m_col2:
             st.markdown("##### 💾 範本檔案下載與重設")
             st.caption("下載下方範本，編輯後即可重新上傳。")
             
-            # Excel 範本下載 (最安全推薦)
+            # --- 1. Excel 原生範本下載 (強烈推薦，徹底解決 CSV 欄位擠壓問題) ---
             try:
                 excel_io = io.BytesIO()
+                # 使用 pandas 預設的 openpyxl 引擎寫入記憶體
                 with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
                     st.session_state.hydrology_df.to_excel(writer, index=False, sheet_name="標準水文流量")
                 excel_template_bytes = excel_io.getvalue()
@@ -748,20 +749,21 @@ with tab_inflow:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
-            except Exception:
-                pass
-
-            # CSV 範本下載
+            except Exception as e:
+                # 萬一伺服器環境缺少 openpyxl，直接報錯提示，不要默默隱藏按鈕 (解決無法下載的問題)
+                st.error("⚠️ 本機環境缺少 openpyxl 套件，無法生成 Excel 範本。請在您的終端機/命令提示字元執行：pip install openpyxl 並重啟網頁。")
+            
+            # --- 2. CSV 備用範本下載 (僅供無 Excel 環境同仁備用) ---
             csv_template_bytes = st.session_state.hydrology_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
-                label="📥 下載標準水文 CSV 範本",
+                label="📥 下載標準水文 CSV 範本 (備用)",
                 data=csv_template_bytes,
                 file_name="hydrology_standard_template.csv",
                 mime="text/csv",
                 use_container_width=True
             )
                 
-            # 重設按鈕常駐顯示
+            # --- 3. 重設按鈕常駐顯示 ---
             if st.button("🔄 重設回系統預設標準流量", use_container_width=True, type="secondary"):
                 default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
                 default_df = pd.read_csv(default_io, sep="\t")
