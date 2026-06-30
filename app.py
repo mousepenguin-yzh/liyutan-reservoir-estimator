@@ -766,7 +766,7 @@ with tab_inflow:
         * **步驟三**：將修改完畢的 Excel (.xlsx) 檔案拖曳上傳至本專區的「檔案上傳更新」區域，系統驗證通過後即完成年度流量更新。
         """)
 with tab_outflow:
-    st.subheader("🚰 出流標的需求配置與抗旱調整 (未來推估期專用)")
+    st.subheader("🚰 出流標的設定與抗旱調整")
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
