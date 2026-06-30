@@ -280,7 +280,7 @@ with tab_config:
                 default_v = st.session_state.hist_capacity.get(m_date.strftime('%Y-%m-%d'), st.session_state.init_capacity)
                 st.session_state.hist_capacity[m_date.strftime('%Y-%m-%d')] = m_cols[col_idx].number_input(m_label, min_value=0.0, max_value=st.session_state.max_capacity, value=default_v, step=50.0, key=f"active_hist_{m_date}")
 
-    # 生成總時間剖面 (左閉右開)
+    # 生成總時間剖面 (左閉右開，用於判斷跨越總旬別供第一階段統計參考)
     if st.session_state.display_start_date < st.session_state.end_date and st.session_state.start_date < st.session_state.end_date:
         df_cal = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
         unique_periods = df_cal.groupby(["年份", "月份", "旬別"]).size().reset_index().drop(columns=[0])
@@ -290,16 +290,29 @@ with tab_config:
         unique_periods["旬別順序碼"] = unique_periods["旬別"].map(period_order)
         unique_periods = unique_periods.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
         
-        st.success(f"📅 曆法配置成功：當前展示+推估計算區間（左閉右開）共計 **{len(df_cal)}** 天，跨越 **{len(unique_periods)}** 個計算旬別。")
+        st.success(f"📅 曆法配置成功：當前展示+推估計算區間（左閉右開）共計 **{len(df_cal)}** 天。")
     else:
         unique_periods = pd.DataFrame()
 
+    # ==========================================
+    # 核心設計：計算「未來推估期」所專屬跨越的旬別 (proj_unique_periods)
+    # ==========================================
+    if st.session_state.start_date < st.session_state.end_date:
+        df_proj_cal = generate_date_profile(st.session_state.start_date, st.session_state.end_date)
+        proj_unique_periods = df_proj_cal.groupby(["年份", "月份", "旬別"]).size().reset_index().drop(columns=[0])
+        
+        period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
+        proj_unique_periods["旬別順序碼"] = proj_unique_periods["旬別"].map(period_order)
+        proj_unique_periods = proj_unique_periods.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
+    else:
+        proj_unique_periods = pd.DataFrame()
+
 # -----------------
-# TAB 2: 第二階段入流
+# TAB 2: 第二階段入流 (完全調整為僅需配置未來推估期)
 # -----------------
 with tab_inflow:
-    st.subheader("🌊 入流條件與流量解析")
-    if unique_periods.empty:
+    st.subheader("🌊 入流條件與流量解析 (未來推估期專用)")
+    if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
         inflow_mode = st.radio("請選擇天然流量 (cms) 來源模式：", ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"], horizontal=True)
@@ -309,13 +322,14 @@ with tab_inflow:
         if inflow_mode == "內建標準水文情境 (Q5~Q95)":
             selected_scen = st.selectbox("請選擇水文情境：", ["Q5 (極豐水)", "Q20 (偏豐水)", "Q50 (平水)", "Q75 (偏枯水)", "Q95 (特枯水)"], index=["Q5 (極豐水)", "Q20 (偏豐水)", "Q50 (平水)", "Q75 (偏枯水)", "Q95 (特枯水)"].index(st.session_state.builtin_scenario))
             st.session_state.builtin_scenario = selected_scen
-            for idx, row in unique_periods.iterrows():
+            for idx, row in proj_unique_periods.iterrows():
                 y, m, p = row["年份"], row["月份"], row["旬別"]
                 flow_val = get_builtin_shilin_flow(m, p, selected_scen)
                 period_flow_mapping.append({"年份": y, "月份": m, "旬別": p, "天然流量(cms)": flow_val})
         else:
             st.markdown("##### 📥 Excel 數據批次貼上區")
-            dummy_data_list = [round(get_builtin_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)"), 1) for _, row in unique_periods.iterrows()]
+            # 範例提示字將只生成未來推估期所需的旬數
+            dummy_data_list = [round(get_builtin_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)"), 1) for _, row in proj_unique_periods.iterrows()]
             dummy_paste_str = "\t".join(map(str, dummy_data_list))
             st.caption(f"💡 測試範例串（共 {len(dummy_data_list)} 個數值）： `{dummy_paste_str}` (您可直接複製此串進行貼上測試)")
             
@@ -323,38 +337,38 @@ with tab_inflow:
             parsed_list = parse_pasted_data(pasted_text)
             
             if pasted_text.strip():
-                if len(parsed_list) != len(unique_periods):
-                    st.error(f"❌ 解析失敗：您貼上的數據個數（{len(parsed_list)} 筆）與當前區間所需（{len(unique_periods)} 筆）不符！")
-                    for i, (_, row) in enumerate(unique_periods.iterrows()):
+                if len(parsed_list) != len(proj_unique_periods):
+                    st.error(f"❌ 解析失敗：您貼上的數據個數（{len(parsed_list)} 筆）與當前區間所需（{len(proj_unique_periods)} 筆）不符！")
+                    for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
                         period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_builtin_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
                 else:
                     st.success("✅ 數據成功解析並對齊！")
-                    for i, (_, row) in enumerate(unique_periods.iterrows()):
+                    for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
                         y, m, p = row["年份"], row["月份"], row["旬別"]
                         flow_val = parsed_list[i]
                         st.session_state.manual_flow_dict[f"{y}-{m}-{p}"] = flow_val
                         period_flow_mapping.append({"年份": y, "月份": m, "旬別": p, "天然流量(cms)": flow_val})
             else:
                 st.info("⚠️ 尚未貼上數據，下方目前顯示內建 Q50 預設值作為參考占位。")
-                for idx, row in unique_periods.iterrows():
+                for idx, row in proj_unique_periods.iterrows():
                     period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_builtin_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
 
         df_period_flow = pd.DataFrame(period_flow_mapping)
         st.dataframe(df_period_flow, use_container_width=True)
 
 # -----------------
-# TAB 3: 第三階段出流
+# TAB 3: 第三階段出流 (完全調整為僅需配置未來推估期)
 # -----------------
 with tab_outflow:
-    st.subheader("🚰 出流標的需求配置與抗旱覆寫機制")
-    if unique_periods.empty:
+    st.subheader("🚰 出流標的需求配置與抗旱調整 (未來推估期專用)")
+    if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
         outflow_mode = st.radio("請選擇常態出流配置模式：", ["使用歷史常態預設需求值", "自訂出流需求（支援 Excel 複製貼上）"], horizontal=True, key="outflow_mode_radio")
         
         base_demand_list = []
         if outflow_mode == "使用歷史常態預設需求值":
-            for idx, row in unique_periods.iterrows():
+            for idx, row in proj_unique_periods.iterrows():
                 y, m, p = row["年份"], row["月份"], row["旬別"]
                 def_demands = get_default_demands(m)
                 base_demand_list.append({
@@ -366,9 +380,9 @@ with tab_outflow:
             st.info("💡 系統已自動帶入歷史常態平水期供水需求。")
         else:
             st.markdown("##### 📥 Excel 需求數據批次匯入")
-            def_up_list = [get_default_demands(r["月份"])["up_irr"] for _, r in unique_periods.iterrows()]
-            def_down_list = [get_default_demands(r["月份"])["down_irr"] for _, r in unique_periods.iterrows()]
-            def_pub_list = [get_default_demands(r["月份"])["public"] for _, r in unique_periods.iterrows()]
+            def_up_list = [get_default_demands(r["月份"])["up_irr"] for _, r in proj_unique_periods.iterrows()]
+            def_down_list = [get_default_demands(r["月份"])["down_irr"] for _, r in proj_unique_periods.iterrows()]
+            def_pub_list = [get_default_demands(r["月份"])["public"] for _, r in proj_unique_periods.iterrows()]
             
             col_u, col_d, col_p = st.columns(3)
             with col_u:
@@ -385,12 +399,12 @@ with tab_outflow:
             parsed_down = parse_pasted_data(paste_down)
             parsed_pub = parse_pasted_data(paste_pub)
             
-            for i, (_, row) in enumerate(unique_periods.iterrows()):
+            for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
                 y, m, p = row["年份"], row["月份"], row["旬別"]
                 def_val = get_default_demands(m)
-                u_val = parsed_up[i] if (len(parsed_up) == len(unique_periods)) else def_val["up_irr"]
-                d_val = parsed_down[i] if (len(parsed_down) == len(unique_periods)) else def_val["down_irr"]
-                p_val = parsed_pub[i] if (len(parsed_pub) == len(unique_periods)) else def_val["public"]
+                u_val = parsed_up[i] if (len(parsed_up) == len(proj_unique_periods)) else def_val["up_irr"]
+                d_val = parsed_down[i] if (len(parsed_down) == len(proj_unique_periods)) else def_val["down_irr"]
+                p_val = parsed_pub[i] if (len(parsed_pub) == len(proj_unique_periods)) else def_val["public"]
                 
                 base_demand_list.append({
                     "年份": y, "月份": m, "旬別": p,
@@ -400,8 +414,8 @@ with tab_outflow:
                 })
                 
             if paste_up.strip() or paste_down.strip() or paste_pub.strip():
-                if len(parsed_up) != len(unique_periods) or len(parsed_down) != len(unique_periods) or len(parsed_pub) != len(unique_periods):
-                    st.warning("⚠️ 貼入之數據筆數與區間需求不符，不符之欄位已自動套用預設值。")
+                if len(parsed_up) != len(proj_unique_periods) or len(parsed_down) != len(proj_unique_periods) or len(parsed_pub) != len(proj_unique_periods):
+                    st.warning("⚠️ 貼入之數據筆數與推估區間需求不符，不符之欄位已自動套用預設值。")
                 else:
                     st.success("✅ 三大標的出流需求皆已成功解析並載入！")
 
@@ -457,7 +471,7 @@ with tab_outflow:
         else:
             st.session_state.override_list = []
 
-        # 資料處理核心：先生成日明細套用碰撞
+        # 這裡生成包含展示期與推估期的完整日曆需求，方便在模擬中抓取
         df_daily_outflow = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
         
         base_lookup = {}
@@ -473,20 +487,25 @@ with tab_outflow:
             k = f"{row['年份']}-{row['月份']}-{row['旬別']}"
             base_demand = base_lookup.get(k)
             
+            # 展示期間不受出水影響（設為 0），推估期間才對齊
             active_up_cms = base_demand["上灌區需求(cms)"] if base_demand is not None else 0.0
             active_down_cms = base_demand["下灌區需求(cms)"] if base_demand is not None else 0.0
             active_pub_vol = base_demand["公共出水(萬噸/日)"] if base_demand is not None else 0.0
             day_status = "🟢 常態運作"
             day_note = ""
             
-            if enable_override and st.session_state.override_list:
-                for ov in st.session_state.override_list:
-                    if ov["start"] <= current_date <= ov["end"]:
-                        active_up_cms = ov["up_irr"]
-                        active_down_cms = ov["down_irr"]
-                        active_pub_vol = ov["public"]
-                        day_status = "⚡ 抗旱覆寫"
-                        day_note = f"[{ov['start'].strftime('%m/%d')}~{ov['end'].strftime('%m/%d')} 覆寫] {ov['reason']}"
+            if current_date >= st.session_state.start_date:
+                if enable_override and st.session_state.override_list:
+                    for ov in st.session_state.override_list:
+                        if ov["start"] <= current_date <= ov["end"]:
+                            active_up_cms = ov["up_irr"]
+                            active_down_cms = ov["down_irr"]
+                            active_pub_vol = ov["public"]
+                            day_status = "⚡ 抗旱覆寫"
+                            day_note = f"[{ov['start'].strftime('%m/%d')}~{ov['end'].strftime('%m/%d')} 覆寫] {ov['reason']}"
+            else:
+                day_status = "🟢 展示歷史"
+                day_note = "展示實際值不參與演算"
             
             up_irr_cms.append(active_up_cms)
             down_irr_cms.append(active_down_cms)
@@ -517,8 +536,8 @@ with tab_outflow:
         df_daily_outflow["調度狀態"] = statuses
         df_daily_outflow["今日抗旱備註"] = notes
 
-        # 日轉旬回推彙整
-        df_grouped = df_daily_outflow.groupby(["年份", "月份", "旬別"]).agg(
+        # 日轉旬回推彙整（僅顯示未來推估期的需求統計）
+        df_grouped = df_daily_outflow[df_daily_outflow["日期"] >= st.session_state.start_date].groupby(["年份", "月份", "旬別"]).agg(
             up_mean=("上灌區當日流量(cms)", "mean"),
             down_mean=("下灌區當日流量(cms)", "mean"),
             pub_mean=("公共供水當日水量(萬噸)", "mean"),
@@ -562,7 +581,7 @@ with tab_outflow:
         df_final_demands["旬別順序碼"] = df_final_demands["旬別"].map(period_order)
         df_final_demands = df_final_demands.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"])
         
-        st.markdown("##### 📌 當前模擬區間各旬【常態與抗旱日期權重均值】匯總報表")
+        st.markdown("##### 📌 當前【未來推估期】各旬【常態與抗旱日期權重均值】匯總報表")
         st.dataframe(
             df_final_demands,
             use_container_width=True,
@@ -580,7 +599,7 @@ with tab_simulation:
     本模組為系統最核心的**物理演算引擎**。點擊下方按鈕將啟動日步進 Loop，特別依據**「上灌區第一優先滿足，下灌區天然流量剩餘分配」**原則演算。
     """)
     
-    if unique_periods.empty:
+    if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     elif 'df_period_flow' not in locals() or 'df_daily_outflow' not in locals():
         st.warning("⚠️ 請確保已完成第一至三階段的入流與出流條件設定。")
@@ -626,7 +645,6 @@ with tab_simulation:
                     # 觀測展示期 (無物理演算，庫容直接採用插值實際值)
                     # ==========================================
                     yesterday_capacity = curr_capacity
-                    # 抓取插值結果
                     curr_capacity = daily_hist_caps.get(current_date, yesterday_capacity)
                     net_change_vol = round(curr_capacity - yesterday_capacity, 2)
                     
@@ -658,10 +676,9 @@ with tab_simulation:
                     # ==========================================
                     # 未來推估期 (啟用質量守恆物理引擎)
                     # ==========================================
-                    # 1. 當日士林堰天然流量
                     I_cms = flow_lookup.get(key, 0.0)
                     
-                    # 2. 當日出流需求 (加入安全防線確保不因索引缺失而報錯)
+                    # 抓取推估日需求
                     out_row_candidates = df_daily_outflow[df_daily_outflow["日期"] == current_date]
                     if out_row_candidates.empty:
                         U_cms, D_cms, P_vol = 0.0, 0.0, 0.0
