@@ -496,6 +496,11 @@ if "builtin_scenario" not in st.session_state:
     st.session_state.builtin_scenario = "Q50 (平水)"
 if "manual_flow_dict" not in st.session_state:
     st.session_state.manual_flow_dict = {}
+# ==========================================
+# 新增：混合模式設定狀態持久化
+# ==========================================
+if "mixed_flow_configs" not in st.session_state:
+    st.session_state.mixed_flow_configs = {}
 if "override_list" not in st.session_state:
     st.session_state.override_list = []
 if "hist_capacity" not in st.session_state:
@@ -618,8 +623,18 @@ with tab_inflow:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
         # 第一區塊：日常最常用之設定區域，讓同仁一進來就能立即填寫、選取
-        inflow_index = ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"].index(st.session_state.inflow_source)
-        inflow_mode = st.radio("請選擇天然流量 (cms) 來源模式：", ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"], index=inflow_index, horizontal=True)
+        inflow_options = [
+            "內建標準水文情境 (Q5~Q95)", 
+            "手動批次匯入（支援 Excel 複製貼上）", 
+            "內建與手動混合模式"
+        ]
+        
+        # 安全校驗以防 session_state 舊值與新選項不相容
+        if st.session_state.inflow_source not in inflow_options:
+            st.session_state.inflow_source = "內建標準水文情境 (Q5~Q95)"
+            
+        inflow_index = inflow_options.index(st.session_state.inflow_source)
+        inflow_mode = st.radio("請選擇天然流量 (cms) 來源模式：", inflow_options, index=inflow_index, horizontal=True)
         st.session_state.inflow_source = inflow_mode
         period_flow_mapping = []
         
@@ -645,7 +660,8 @@ with tab_inflow:
                 y, m, p = row["年份"], row["月份"], row["旬別"]
                 flow_val = get_dynamic_shilin_flow(m, p, selected_scen)
                 period_flow_mapping.append({"年份": y, "月份": m, "旬別": p, f"天然流量(cms) - {selected_scen}": flow_val})
-        else:
+                
+        elif inflow_mode == "手動批次匯入（支援 Excel 複製貼上）":
             st.markdown("##### 📥 Excel 數據批次貼上區")
             # 生成動態 Q50 預設列表以供複製參考
             dummy_data_list = [round(get_dynamic_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)"), 1) for _, row in proj_unique_periods.iterrows()]
@@ -660,6 +676,94 @@ with tab_inflow:
                     st.error(f"❌ 解析失敗：您貼上的數據個數（{len(parsed_list)} 筆）與當前區間所需（{len(proj_unique_periods)} 筆）不符！")
                     for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
                         period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_dynamic_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
+                else:
+                    st.success("✅ 數據成功解析並對齊！")
+                    for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
+                        y, m, p = row["年份"], row["月份"], row["旬別"]
+                        flow_val = parsed_list[i]
+                        st.session_state.manual_flow_dict[f"{y}-{m}-{p}"] = flow_val
+                        period_flow_mapping.append({"年份": y, "月份": m, "旬別": p, "天然流量(cms)": flow_val})
+            else:
+                st.info("⚠️ 尚未貼上數據，下方目前顯示內建 Q50 預設值作為參考占位。")
+                for idx, row in proj_unique_periods.iterrows():
+                    period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_dynamic_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
+                    
+        else:
+            # ==========================================
+            # 新增分支：內建與手動混合模式
+            # ==========================================
+            st.markdown("##### 🎛️ 逐旬內建與手動混合設定")
+            st.caption("您可以針對未來推估期間的各個旬別單獨指定水文入流來源（可選擇任意內建標準水文情境，或選擇自訂手動輸入）：")
+            
+            MIXED_SCENARIO_OPTIONS = [
+                "Q5 (極豐水)", "Q10", "Q15", "Q20 (偏豐水)", "Q25", "Q30", "Q35", "Q40", "Q45", 
+                "Q50 (平水)", "Q55", "Q60", "Q65", "Q70", "Q75 (偏枯水)", "Q80", "Q85", "Q90", "Q95 (特枯水)",
+                "✍️ 手動輸入"
+            ]
+            
+            # 使用自訂 CSS 樣式製作簡潔的手動表格標題欄，減少垂直空間占用
+            st.markdown("<div style='font-weight:bold; margin-bottom: 5px; color:#555555; font-size:14px;'>"
+                        "<span style='display:inline-block; width:22%;'>📅 旬別時間點</span>"
+                        "<span style='display:inline-block; width:38%;'>⚙️ 水文來源模式</span>"
+                        "<span style='display:inline-block; width:38%;'>🌊 流量值 (cms)</span>"
+                        "</div>", unsafe_allow_html=True)
+            
+            for idx, row in proj_unique_periods.iterrows():
+                y, m, p = row["年份"], row["月份"], row["旬別"]
+                key = f"{y}-{m}-{p}"
+                
+                # 初始化該旬的設定狀態
+                if key not in st.session_state.mixed_flow_configs:
+                    st.session_state.mixed_flow_configs[key] = {
+                        "type": "Q50 (平水)",
+                        "manual_val": get_dynamic_shilin_flow(m, p, "Q50 (平水)")
+                    }
+                    
+                config = st.session_state.mixed_flow_configs[key]
+                
+                # 安全防呆：避免因為修改規格導致儲存的型態不相容
+                current_type = config["type"]
+                if current_type not in MIXED_SCENARIO_OPTIONS:
+                    current_type = "Q50 (平水)"
+                default_opt_idx = MIXED_SCENARIO_OPTIONS.index(current_type)
+                
+                col_p_name, col_p_sel, col_p_val = st.columns([2, 3, 3])
+                with col_p_name:
+                    st.markdown(f"**{y}年{m}月{p}**")
+                with col_p_sel:
+                    selected_opt = st.selectbox(
+                        "來源模式",
+                        MIXED_SCENARIO_OPTIONS,
+                        index=default_opt_idx,
+                        key=f"mixed_sel_{key}",
+                        label_visibility="collapsed"
+                    )
+                    config["type"] = selected_opt
+                with col_p_val:
+                    if selected_opt == "✍️ 手動輸入":
+                        man_val = st.number_input(
+                            "流量 (cms)",
+                            min_value=0.0,
+                            max_value=500.0,
+                            value=float(config["manual_val"]),
+                            step=0.1,
+                            key=f"mixed_num_{key}",
+                            label_visibility="collapsed"
+                        )
+                        config["manual_val"] = man_val
+                        flow_val = man_val
+                    else:
+                        # 從系統預設/已上傳的水文資料庫自動提取
+                        flow_val = get_dynamic_shilin_flow(m, p, selected_opt)
+                        st.markdown(f"<div style='padding-top:6px; color:#1f77b4; font-weight:bold;'>系統內建：{flow_val:.2f} cms</div>", unsafe_allow_html=True)
+                        
+                # 寫入統一資料結構
+                period_flow_mapping.append({
+                    "年份": y, "月份": m, "旬別": p,
+                    "天然流量(cms)": flow_val
+                })
+            
+            st.markdown("<br>", unsafe_allow_html=True)
                 else:
                     st.success("✅ 數據成功解析並對齊！")
                     for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
