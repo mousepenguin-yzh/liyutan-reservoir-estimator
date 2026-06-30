@@ -1341,21 +1341,26 @@ with tab_products:
                         row_dict[name] = None
                 table_data.append(row_dict)
                 
-            df_milestone_table = pd.DataFrame(table_data)
+df_milestone_table = pd.DataFrame(table_data)
             
-            # 建立格式化呈現表 (保留千分位)
-            df_disp = df_milestone_table.copy()
-            for name in selected_scenarios:
-                df_disp[name] = df_disp[name].apply(lambda x: f"{x:,.1f}" if pd.notnull(x) else "-")
-                
-            st.dataframe(df_disp.set_index("時間點"), use_container_width=True)
+            # 1. 進行轉置 (Transpose)，讓情境方案變為橫列，旬度時間點變為直欄
+            df_transposed = df_milestone_table.set_index("時間點").T.reset_index()
+            df_transposed.rename(columns={"index": "情境方案"}, inplace=True)
             
-            # 提供對比表 CSV 下載
-            csv_milestone = df_milestone_table.to_csv(index=False).encode('utf-8-sig')
+            # 2. 建立格式化呈現表 (套用整數千分位格式，精確對齊水利署 Excel 樣式)
+            df_disp = df_transposed.copy()
+            for col in df_disp.columns:
+                if col != "情境方案":
+                    df_disp[col] = df_disp[col].apply(lambda x: f"{x:,.0f}" if pd.notnull(x) else "-")
+                    
+            st.dataframe(df_disp.set_index("情境方案"), use_container_width=True)
+            
+            # 3. 提供轉置後的橫向 CSV 對比表一鍵下載 (格式與畫面對齊)
+            csv_milestone = df_transposed.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
-                label="📥 下載 旬推估對比表 (CSV 格式)",
+                label="📥 下載 橫向旬推估對比表 (CSV 格式)",
                 data=csv_milestone,
-                file_name=f"liyutan_scenarios_comparison_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                file_name=f"liyutan_horizontal_scenarios_{datetime.date.today().strftime('%Y%m%d')}.csv",
                 mime="text/csv"
             )
             
