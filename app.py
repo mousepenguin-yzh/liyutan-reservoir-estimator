@@ -1341,8 +1341,8 @@ with tab_products:
                         row_dict[name] = None
                 table_data.append(row_dict)
                 
-df_milestone_table = pd.DataFrame(table_data)
-            
+            df_milestone_table = pd.DataFrame(table_data)
+                        
             # 1. 進行轉置 (Transpose)，讓情境方案變為橫列，旬度時間點變為直欄
             df_transposed = df_milestone_table.set_index("時間點").T.reset_index()
             df_transposed.rename(columns={"index": "情境方案"}, inplace=True)
