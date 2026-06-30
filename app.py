@@ -520,10 +520,10 @@ if "hydrology_df" not in st.session_state:
 st.title("💧 鯉魚潭水庫庫容推估系統")
 
 tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
-    "⚙️ 第一階段：基礎參數與曆法", 
+    "⚙️ 第一階段：推估需求基礎資料設定", 
     "🌊 第二階段：入流條件與水文維護",
     "🚰 第三階段：出流需求與抗旱調整",
-    "🧮 第四階段：核心庫容守恆演算",
+    "🧮 第四階段：庫容推估演算",
     "📊 第五階段：推估成果產品"
 ])
 
@@ -531,17 +531,17 @@ tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
 # TAB 1: 基礎與曆法
 # -----------------
 with tab_config:
-    st.subheader("⚙️ 基礎參數與雙時間軸對齊")
+    st.subheader("⚙️ 水庫基本資料與展示區間")
     col1, col2 = st.columns(2)
     with col1:
-        st.markdown("##### 🏛️ 水庫與堰體物理限制")
+        st.markdown("##### 🏛️ 水庫基本資料")
         st.session_state.max_capacity = st.number_input("水庫上限庫容 (萬噸)", min_value=100.0, max_value=20000.0, value=st.session_state.max_capacity, step=100.0)
         st.session_state.shilin_eco_flow = st.number_input("士林堰生態基流量 (cms)", min_value=0.0, max_value=10.0, value=st.session_state.shilin_eco_flow, step=0.1)
         st.session_state.liyutan_eco_flow = st.number_input("鯉魚潭最低生態放流量 (cms)", min_value=0.0, max_value=5.0, value=st.session_state.liyutan_eco_flow, step=0.05)
     with col2:
-        st.markdown("##### 📅 雙時間軸日期設定")
+        st.markdown("##### 📅 展示區間設定")
         st.session_state.display_start_date = st.date_input("展示起始日期", value=st.session_state.display_start_date)
-        st.session_state.start_date = st.date_input("推估起始日期 (物理模擬起點)", value=st.session_state.start_date)
+        st.session_state.start_date = st.date_input("推估起始日期 (庫容推估起點)", value=st.session_state.start_date)
         st.session_state.end_date = st.date_input("預計推估結束日期 (此日不計入日計算)", value=st.session_state.end_date)
         
         # 檢驗日期先後關係
