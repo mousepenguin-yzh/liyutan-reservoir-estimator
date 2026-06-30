@@ -203,26 +203,37 @@ def get_default_demands(month: int) -> dict:
     return {"up_irr": up_irr, "down_irr": down_irr, "public": public_water}
 
 # ==========================================
-# 4. 任務 A 圖表繪製引擎 (Plotly Engine) - 調整精細化
+# 4. 輔助函數：水利旬末邊界與目標日期對齊 (對齊橫向 Excel 表)
 # ==========================================
+
+def get_sim_target_date(milestone_date: datetime.date) -> datetime.date:
+    """
+    將前台 Excel 旬度標題日期（如 7月1日、7月11日、7月21日、8月1日）
+    映射至底層質量守恆模擬日誌對應的「期末結算時間點」：
+    - X月1日   -> 實際對應前一月的最後一日（例如 7月1日 00:00 等於 6月30日 24:00 本日末庫容）
+    - X月11日  -> 實際對應本月 10 日 24:00 庫容
+    - X月21日  -> 實際對應本月 20 日 24:00 庫容
+    """
+    if milestone_date.day == 1:
+        return milestone_date - datetime.timedelta(days=1)
+    elif milestone_date.day == 11:
+        return milestone_date.replace(day=10)
+    elif milestone_date.day == 21:
+        return milestone_date.replace(day=20)
+    return milestone_date
+
 
 def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: datetime.date, start_date: datetime.date, end_date: datetime.date, max_capacity: float) -> go.Figure:
     """
-    繪製鯉魚潭水庫蓄水量歷史與未來推估趨勢圖。
-    - 實際庫容 [展示起始日, 推估前一日 24:00]：黑色實線。
-    - 推估庫容 [推估前一日 24:00, 結束日前一日]：藍色實線（由虛線改實線）。
-    - 兩條曲線在推估前一日 24:00 無縫銜接。
-    - 不繪製設計最高庫容橫線，改在右上方以精美文字標示「有效庫容：11,584萬噸」。
-    - X 軸橫軸座標點嚴格綁定為各月1號。
+    繪製單一情境之鯉魚潭水庫蓄水量變化趨勢圖（無背景色塊，黑色實際庫容 + 藍色推估庫容）。
     """
     fig = go.Figure()
     boundary_day = start_date - datetime.timedelta(days=1)
     
-    # 確保日期格式一致
     df_plot = df_sim_results.copy()
     df_plot["日期"] = pd.to_datetime(df_plot["日期"]).dt.date
     
-    # 1. 實際庫容（黑色實線，包含邊界點）
+    # 實際庫容 (黑色實線)
     df_history = df_plot[df_plot["日期"] <= boundary_day]
     if not df_history.empty:
         fig.add_trace(go.Scatter(
@@ -234,7 +245,7 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
             hovertemplate="日期: %{x}<br>實際庫容: %{y:.2f} 萬噸<extra></extra>"
         ))
         
-    # 2. 推估庫容（藍色實線，由虛線改實線，包含邊界點）
+    # 推估庫容 (藍色實線)
     df_projection = df_plot[df_plot["日期"] >= boundary_day]
     if not df_projection.empty:
         fig.add_trace(go.Scatter(
@@ -246,7 +257,7 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
             hovertemplate="日期: %{x}<br>推估庫容: %{y:.2f} 萬噸<extra></extra>"
         ))
         
-    # 3. 新增右上方文字標示「有效庫容：11,584萬噸」 (與 max_capacity 保持動態綁定並格式化)
+    # 右上方文字標示
     formatted_capacity = f"{max_capacity:,.0f}" if max_capacity == 11584.0 else f"{max_capacity:,.1f}"
     fig.add_annotation(
         text=f"有效庫容：{formatted_capacity}萬噸",
@@ -261,7 +272,7 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
         opacity=0.9
     )
     
-    # 4. 生成 X 軸刻度：展示起始日至結束日之間的所有月份 1 號 (包含結束日 9/1)
+    # 生成橫軸月首 1 號刻度
     tick_dates = []
     curr_y, curr_m = display_start.year, display_start.month
     end_y, end_m = end_date.year, end_date.month
@@ -270,8 +281,6 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
         d = datetime.date(curr_y, curr_m, 1)
         if display_start <= d <= end_date:
             tick_dates.append(d)
-        
-        # 月份遞增
         curr_m += 1
         if curr_m > 12:
             curr_m = 1
@@ -279,7 +288,6 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
             
     tick_text = [f"{d.month}/{d.day}" for d in tick_dates]
     
-    # 圖表版面設定
     fig.update_layout(
         title={
             "text": "📊 鯉魚潭水庫蓄水量變化趨勢圖",
@@ -303,7 +311,6 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
         paper_bgcolor="rgba(0,0,0,0)"
     )
     
-    # 套用自訂刻度與格線
     fig.update_xaxes(
         tickvals=tick_dates,
         ticktext=tick_text,
@@ -323,7 +330,7 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
     return fig
 
 # ==========================================
-# 5. Streamlit 初始化與會話狀態
+# 5. Streamlit 初始化與會話狀態 (狀態持久化以繼承預設值)
 # ==========================================
 
 st.set_page_config(
@@ -332,7 +339,7 @@ st.set_page_config(
     layout="wide"
 )
 
-# 基礎參數與雙時間軸日期初始化
+# 基礎參數初始化
 if "max_capacity" not in st.session_state:
     st.session_state.max_capacity = 11584.0
 if "shilin_eco_flow" not in st.session_state:
@@ -340,6 +347,7 @@ if "shilin_eco_flow" not in st.session_state:
 if "liyutan_eco_flow" not in st.session_state:
     st.session_state.liyutan_eco_flow = 0.3
 
+# 時間區間初始化
 if "display_start_date" not in st.session_state:
     st.session_state.display_start_date = datetime.date(2026, 5, 1)
 if "start_date" not in st.session_state:
@@ -347,6 +355,7 @@ if "start_date" not in st.session_state:
 if "end_date" not in st.session_state:
     st.session_state.end_date = datetime.date(2026, 9, 1)
 
+# 起始蓄水量與輸入狀態初始化 (保留上次推估預設值)
 if "init_capacity" not in st.session_state:
     st.session_state.init_capacity = 8000.0
 if "inflow_source" not in st.session_state:
@@ -360,8 +369,12 @@ if "override_list" not in st.session_state:
 if "hist_capacity" not in st.session_state:
     st.session_state.hist_capacity = {}
 
+# 【重要：多情境數據暫存器】
+if "scenarios" not in st.session_state:
+    st.session_state.scenarios = {}
+
 # ==========================================
-# 6. 前端 UI 分頁排版
+# 6. 前端 UI 分頁排版 (含第五階段新加入的頁籤)
 # ==========================================
 
 st.title("💧 鯉魚潭水庫庫容推估系統 (數據對齊調校版)")
@@ -370,11 +383,12 @@ st.markdown("""
 您可以直接在此對齊與您 Excel 檔案的各項數據。
 """)
 
-tab_config, tab_inflow, tab_outflow, tab_simulation = st.tabs([
+tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
     "⚙️ 第一階段：基礎參數與曆法", 
     "🌊 第二階段：入流條件設定",
     "🚰 第三階段：出流需求與抗旱調整",
-    "🧮 第四階段：核心庫容守恆演算"
+    "🧮 第四階段：核心庫容守恆演算",
+    "📊 第五階段：推估成果產品"
 ])
 
 # -----------------
@@ -400,7 +414,6 @@ with tab_config:
         if st.session_state.start_date >= st.session_state.end_date:
             st.error("⚠️ 錯誤：『推估起始日期』必須早於『預計推估結束日期』。")
             
-        # 【修正 1】最下方的輸入框嚴格綁定為：推估起點前一日 24:00 (例如：6/20 24:00)
         calc_start_day = st.session_state.start_date
         prev_day = calc_start_day - datetime.timedelta(days=1)
         prev_day_label = f"推估起點前一日 ({prev_day.strftime('%m/%d')} 24:00) 庫容 (萬噸)"
@@ -415,7 +428,7 @@ with tab_config:
         
         milestones = get_historical_milestone_dates_v2(st.session_state.display_start_date, st.session_state.start_date)
         
-        # 排除最後一個邊界日（因為它已經被最下方的推估起點庫容鎖定了，防止重複輸入衝突）
+        # 排除最後一個邊界日
         end_boundary = st.session_state.start_date - datetime.timedelta(days=1)
         other_milestones = [m for m in milestones if m != end_boundary]
         
@@ -426,7 +439,6 @@ with tab_config:
             for idx, m_date in enumerate(other_milestones):
                 col_idx = idx % cols_num
                 m_label = f"{m_date.strftime('%m/%d')} 24:00 蓄水量"
-                # 給予合理的預設值
                 default_v = st.session_state.hist_capacity.get(m_date.strftime('%Y-%m-%d'), st.session_state.init_capacity)
                 st.session_state.hist_capacity[m_date.strftime('%Y-%m-%d')] = m_cols[col_idx].number_input(
                     m_label, 
@@ -437,12 +449,11 @@ with tab_config:
                     key=f"active_hist_{m_date}"
                 )
 
-    # 生成總時間剖面 (左閉右開，用於第一階段統計參考)
+    # 生成總時間剖面
     if st.session_state.display_start_date < st.session_state.end_date and st.session_state.start_date < st.session_state.end_date:
         df_cal = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
         unique_periods = df_cal.groupby(["年份", "月份", "旬別"]).size().reset_index().drop(columns=[0])
         
-        # 中文旬別排序
         period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
         unique_periods["旬別順序碼"] = unique_periods["旬別"].map(period_order)
         unique_periods = unique_periods.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
@@ -451,7 +462,7 @@ with tab_config:
     else:
         unique_periods = pd.DataFrame()
 
-    # 計算「未來推估期」所專屬跨越的旬別 (proj_unique_periods)
+    # 計算「未來推估期」所專屬跨越的旬別
     if st.session_state.start_date < st.session_state.end_date:
         df_proj_cal = generate_date_profile(st.session_state.start_date, st.session_state.end_date)
         proj_unique_periods = df_proj_cal.groupby(["年份", "月份", "旬別"]).size().reset_index().drop(columns=[0])
@@ -470,7 +481,9 @@ with tab_inflow:
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
-        inflow_mode = st.radio("請選擇天然流量 (cms) 來源模式：", ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"], horizontal=True)
+        # 使用持久化 index 鎖定上次選擇
+        inflow_index = ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"].index(st.session_state.inflow_source)
+        inflow_mode = st.radio("請選擇天然流量 (cms) 來源模式：", ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"], index=inflow_index, horizontal=True)
         st.session_state.inflow_source = inflow_mode
         period_flow_mapping = []
         
@@ -485,8 +498,9 @@ with tab_inflow:
             st.markdown("##### 📥 Excel 數據批次貼上區")
             dummy_data_list = [round(get_builtin_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)"), 1) for _, row in proj_unique_periods.iterrows()]
             dummy_paste_str = "\t".join(map(str, dummy_data_list))
-            st.caption(f"💡 測試範例串（共 {len(dummy_data_list)} 個數值）： `{dummy_paste_str}` (您可直接複製此串進行貼上測試)")
+            st.caption(f"💡 測試範例串（共 {len(dummy_data_list)} 個數值）： `{dummy_paste_str}`")
             
+            # 使用 key="inflow_paste" 自動持久化保存文字內容，避免重複貼上
             pasted_text = st.text_area("請在此貼上 Excel 數據 (以空格、Tab或換行分隔)：", placeholder="例如: 12.5  14.2  10.1 ...", height=80, key="inflow_paste")
             parsed_list = parse_pasted_data(pasted_text)
             
@@ -541,13 +555,13 @@ with tab_outflow:
             col_u, col_d, col_p = st.columns(3)
             with col_u:
                 st.caption(f"💡 上灌區(cms) 測試串： `{'  '.join(map(str, def_up_list))}`")
-                paste_up = st.text_area("1. 貼上【上灌區(cms)】：", height=70)
+                paste_up = st.text_area("1. 貼上【上灌區(cms)】：", height=70, key="paste_up_pasted")
             with col_d:
                 st.caption(f"💡 下灌區(cms) 測試串： `{'  '.join(map(str, def_down_list))}`")
-                paste_down = st.text_area("2. 貼上【下灌區(cms)】：", height=70)
+                paste_down = st.text_area("2. 貼上【下灌區(cms)】：", height=70, key="paste_down_pasted")
             with col_p:
                 st.caption(f"💡 公共給水(萬噸/日) 測試串： `{'  '.join(map(str, def_pub_list))}`")
-                paste_pub = st.text_area("3. 貼上【公共給水(萬噸/日)】：", height=70)
+                paste_pub = st.text_area("3. 貼上【公共給水(萬噸/日)】：", height=70, key="paste_pub_pasted")
                 
             parsed_up = parse_pasted_data(paste_up)
             parsed_down = parse_pasted_data(paste_down)
@@ -641,7 +655,7 @@ with tab_outflow:
             k = f"{row['年份']}-{row['月份']}-{row['旬別']}"
             base_demand = base_lookup.get(k)
             
-            # 展示期間不受出水影響（設為 0），推估期間才對齊
+            # 展示期間不受出水影響
             active_up_cms = base_demand["上灌區需求(cms)"] if base_demand is not None else 0.0
             active_down_cms = base_demand["下灌區需求(cms)"] if base_demand is not None else 0.0
             active_pub_vol = base_demand["公共出水(萬噸/日)"] if base_demand is not None else 0.0
@@ -730,7 +744,6 @@ with tab_outflow:
             
         df_final_demands = pd.DataFrame(final_demand_list)
         
-        # 中文旬別排序
         period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
         df_final_demands["旬別順序碼"] = df_final_demands["旬別"].map(period_order)
         df_final_demands = df_final_demands.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"])
@@ -764,7 +777,7 @@ with tab_simulation:
             shilin_eco = st.session_state.shilin_eco_flow
             liyutan_eco = st.session_state.liyutan_eco_flow
             
-            # 【修正 2】歷史區間插值重構：末端自動鎖定為 init_capacity (模擬起點)，徹底消除漂移
+            # 歷史區間插值重構
             has_history = st.session_state.display_start_date < st.session_state.start_date
             daily_hist_caps = {}
             if has_history:
@@ -775,7 +788,6 @@ with tab_simulation:
                     st.session_state.init_capacity
                 )
             
-            # 初始庫容：鎖定在展示前一日 24:00 的實際庫容 (若有歷史)，否則直接鎖定 init_capacity
             if has_history:
                 curr_capacity = daily_hist_caps.get(
                     st.session_state.display_start_date - datetime.timedelta(days=1), 
@@ -788,7 +800,7 @@ with tab_simulation:
             total_ag_intercept_volume_10k = 0.0
             total_spillway_overflow_10k = 0.0
             
-            # 依據 [展示起始日, 結束日) 生成每日時間表
+            # 建立每日剖面
             df_daily_profile = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
             
             flow_lookup = {}
@@ -800,13 +812,10 @@ with tab_simulation:
                 current_date = row["日期"]
                 key = f"{row['年份']}-{row['月份']}-{row['旬別']}"
                 
-                # 判定當前日期屬於「觀測展示期」還是「未來推估期」
                 is_projection = current_date >= st.session_state.start_date
                 
                 if not is_projection:
-                    # ==========================================
-                    # 觀測展示期 (無物理演算，庫容直接採用插值實際值)
-                    # ==========================================
+                    # 觀測展示期
                     yesterday_capacity = curr_capacity
                     curr_capacity = daily_hist_caps.get(current_date, yesterday_capacity)
                     net_change_vol = round(curr_capacity - yesterday_capacity, 2)
@@ -836,12 +845,9 @@ with tab_simulation:
                         "當日庫容淨變化 (萬噸)": net_change_vol
                     })
                 else:
-                    # ==========================================
-                    # 未來推估期 (啟用質量守恆物理引擎)
-                    # ==========================================
+                    # 未來推估期 (物理演算)
                     I_cms = flow_lookup.get(key, 0.0)
                     
-                    # 抓取推估日需求
                     out_row_candidates = df_daily_outflow[df_daily_outflow["日期"] == current_date]
                     if out_row_candidates.empty:
                         U_cms, D_cms, P_vol = 0.0, 0.0, 0.0
@@ -851,7 +857,6 @@ with tab_simulation:
                         D_cms = out_row["下灌區當日流量(cms)"]
                         P_vol = out_row["公共供水當日水量(萬噸)"]
                     
-                    # 物理防線 1：上灌/下灌 優先權分配 (農業控制律)
                     actual_U_cms = min(U_cms, I_cms)
                     remaining_flow_cms = max(0.0, I_cms - actual_U_cms)
                     actual_D_cms = min(D_cms, remaining_flow_cms)
@@ -860,18 +865,15 @@ with tab_simulation:
                     reduction_cms = (U_cms + D_cms) - (actual_U_cms + actual_D_cms)
                     total_ag_intercept_volume_10k += (reduction_cms * 8.64)
                     
-                    # 物理防線 2：士林堰引水計算 & 生態基流折抵
                     shilin_river_release_cms = min(I_cms, max(shilin_eco, actual_U_cms))
                     available_diversion_cms = max(0.0, I_cms - shilin_river_release_cms)
                     actual_diversion_cms = min(33.0, available_diversion_cms)
                     actual_diversion_vol = round(actual_diversion_cms * 8.64, 2)
                     
-                    # 物理防線 3：鯉魚潭出流計算 & 生態最低放流折抵
                     liyutan_river_release_cms = max(liyutan_eco, actual_D_cms)
                     liyutan_river_release_vol = round(liyutan_river_release_cms * 8.64, 2)
                     actual_outflow_vol = round(P_vol + liyutan_river_release_vol, 2)
                     
-                    # 物理防線 4：庫容質量守恆演算
                     yesterday_capacity = curr_capacity
                     calculated_capacity = yesterday_capacity + actual_diversion_vol - actual_outflow_vol
                     
@@ -914,8 +916,10 @@ with tab_simulation:
             
             df_sim_results = pd.DataFrame(sim_daily_records)
             st.session_state.sim_results = df_sim_results
+            st.success("🎉 模擬演算順利結束！您可以前往『第五階段：推估成果產品』頁籤儲存此情境、進行方案比對、或是查看 Excel 對齊旬推估表。")
             
-            st.markdown("### 🏆 庫容模擬計算完成！調度成果指標如下：")
+            # --- 儀表板指標 ---
+            st.markdown("### 🏆 當前推估成果指標")
             m1, m2, m3, m4 = st.columns(4)
             with m1:
                 final_volume = df_sim_results.iloc[-1]["本日末庫容 (萬噸)"]
@@ -928,9 +932,7 @@ with tab_simulation:
                 dry_days = sum(1 for item in sim_daily_records if item["本日末庫容 (萬噸)"] <= 0.0 and item["運行狀態"] == "🔮 未來推估")
                 st.metric("庫容枯竭空庫天數", f"{dry_days} 天", delta="🚨 警告：空庫枯竭！" if dry_days > 0 else "🟢 安全")
 
-            # -----------------
-            # 任務 A 視覺化呈現 (僅在模擬完成後繪製)
-            # -----------------
+            # --- 庫容與推估蓄水量歷線圖 ---
             st.markdown("---")
             st.markdown("### 📈 庫容與推估蓄水量歷線圖")
             fig = plot_reservoir_capacity_trend(
@@ -942,12 +944,9 @@ with tab_simulation:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # -----------------
-            # 產品一：旬推估資訊彙整表
-            # -----------------
+            # --- 旬推估資訊彙整表 ---
             st.markdown("---")
             st.markdown("#### 📅 旬推估資訊彙整表")
-            st.caption("說明：用於直接複製貼上水利署彙整表。")
             
             df_grouped_sim = df_sim_results.groupby(["年份", "月份", "旬別"], sort=False).agg(
                 天然流量_cms=("天然流量 (cms)", "mean"),
@@ -976,7 +975,6 @@ with tab_simulation:
                 "期末庫容 (萬噸)"
             ]
             
-            # 強制排序
             period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
             df_grouped_sim["旬別順序碼"] = df_grouped_sim["旬別"].map(period_order)
             df_grouped_sim = df_grouped_sim.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
@@ -991,9 +989,7 @@ with tab_simulation:
                 mime="text/csv"
             )
 
-            # -----------------
-            # 產品三：日推估資訊彙整表
-            # -----------------
+            # --- 日推估資訊彙整表 ---
             st.markdown("---")
             st.markdown("#### 📅 日推估資訊彙整表")
             
@@ -1021,3 +1017,233 @@ with tab_simulation:
 
             st.markdown("##### 📅 歷史模擬明細表 (保留前次計算結果)")
             st.dataframe(st.session_state.sim_results, use_container_width=True)
+
+# -----------------
+# TAB 5: 第五階段：推估成果產品 (新加入核心功能)
+# -----------------
+with tab_products:
+    st.subheader("📊 第五階段：推估成果產品 (多情境管理與成果比對)")
+    
+    # 📌 情境暫存機制控制區
+    if "sim_results" in st.session_state:
+        st.markdown("### 💾 暫存當前推估成果")
+        st.caption("您可以將目前運行的這套設定與推估曲線存檔，以便跟其他流量（例如 Q75, Q95）或不同供水折扣條件的情境疊圖比對。")
+        
+        col_scen_name, col_scen_btn = st.columns([3, 1])
+        with col_scen_name:
+            new_scen_name = st.text_input(
+                "請輸入此情境名稱 (例：氣候上限值 / Q75特枯水 / 八折供水)：", 
+                value="情境A", 
+                key="new_scen_name_input"
+            )
+        with col_scen_btn:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("💾 暫存此情境", use_container_width=True, type="secondary"):
+                clean_name = new_scen_name.strip()
+                if clean_name:
+                    # 深拷貝避免指針衝突
+                    st.session_state.scenarios[clean_name] = st.session_state.sim_results.copy()
+                    st.success(f"✅ 已成功暫存情境：『{clean_name}』！")
+                    st.rerun()
+                else:
+                    st.error("❌ 請輸入有效的情境名稱！")
+                    
+    # 📌 已儲存情境管理控制區
+    if st.session_state.scenarios:
+        st.markdown("---")
+        st.markdown("### 🛠️ 暫存情境管理與比對選擇")
+        
+        all_saved_names = list(st.session_state.scenarios.keys())
+        
+        col_scen_select, col_scen_reset = st.columns([3, 1])
+        with col_scen_select:
+            selected_scenarios = st.multiselect(
+                "請勾選欲呈現在下方『旬推估表』與『情境對比圖』中的情境方案：",
+                options=all_saved_names,
+                default=all_saved_names
+            )
+        with col_scen_reset:
+            st.markdown("<br>", unsafe_allow_html=True)
+            if st.button("🗑️ 清空所有暫存情境", use_container_width=True):
+                st.session_state.scenarios = {}
+                st.success("已清空所有情境！")
+                st.rerun()
+                
+        # 🟢 如果有勾選要呈現的情境，則輸出成果
+        if selected_scenarios:
+            st.markdown("---")
+            
+            # ==========================================
+            # 產品一：旬推估表 (Excel 直接貼上橫向格式)
+            # ==========================================
+            st.markdown("### 📅 產品一：旬推估表")
+            st.markdown("""
+            **💡 使用說明**：此表格式完全與 Excel 對齊，各行為不同的情境方案，各列為關鍵的旬度時間點。
+            您可以**用滑鼠直接全選此網頁表格複製**，並**直接貼上至您的 Excel 試算表**中，格式與千分位標記皆會完美對齊。
+            """)
+            
+            # 自動生成與圖表時間完全對齊的 1、11、21 日曆里程點
+            period_milestones = []
+            curr_step = st.session_state.display_start_date
+            while curr_step <= st.session_state.end_date:
+                if curr_step.day in [1, 11, 21]:
+                    period_milestones.append(curr_step)
+                curr_step += datetime.timedelta(days=1)
+                
+            # 橫向資料表組裝
+            horizontal_rows = []
+            for name in selected_scenarios:
+                df_scen = st.session_state.scenarios[name].copy()
+                df_scen["日期"] = pd.to_datetime(df_scen["日期"]).dt.date
+                
+                # 第一欄對齊 Excel 圖片的「日期」列標題（實際存放情境方案名稱）
+                row_dict = {"日期": name}
+                
+                for m_date in period_milestones:
+                    col_header = f"{m_date.month}月{m_date.day}日"
+                    target_sim_d = get_sim_target_date(m_date)
+                    
+                    # 特殊臨界處理：
+                    # 如果 target_sim_d 早於模擬日誌的首日，則去第一筆資料拿「昨日期末庫容」
+                    first_sim_d = df_scen["日期"].min()
+                    if target_sim_d == first_sim_d - datetime.timedelta(days=1):
+                        val = df_scen[df_scen["日期"] == first_sim_d].iloc[0]["昨日期末庫容 (萬噸)"]
+                        row_dict[col_header] = f"{int(val):,}" # 轉整數並千分位化，例如 10,570
+                    else:
+                        match_row = df_scen[df_scen["日期"] == target_sim_d]
+                        if not match_row.empty:
+                            val = match_row.iloc[0]["本日末庫容 (萬噸)"]
+                            row_dict[col_header] = f"{int(val):,}"
+                        else:
+                            row_dict[col_header] = "-"
+                            
+                horizontal_rows.append(row_dict)
+                
+            df_horiz_output = pd.DataFrame(horizontal_rows)
+            st.dataframe(df_horiz_output, use_container_width=True, hide_index=True)
+            
+            # 產品一 CSV 導出下載
+            csv_horiz_bytes = df_horiz_output.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 下載 旬推估表 (Excel CSV格式)",
+                data=csv_horiz_bytes,
+                file_name=f"liyutan_horizontal_period_summary_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv"
+            )
+            
+            # ==========================================
+            # 產品二：庫容推估情境對比 (Plotly 多情境曲線)
+            # ==========================================
+            st.markdown("---")
+            st.markdown("### 📈 產品二：庫容推估情境對比")
+            
+            fig_multi = go.Figure()
+            boundary_day = st.session_state.start_date - datetime.timedelta(days=1)
+            
+            # 1. 歷史實際觀測庫容 (所有方案共用此歷史)
+            ref_df = st.session_state.scenarios[selected_scenarios[0]].copy()
+            ref_df["日期"] = pd.to_datetime(ref_df["日期"]).dt.date
+            df_history = ref_df[ref_df["日期"] <= boundary_day]
+            
+            if not df_history.empty:
+                fig_multi.add_trace(go.Scatter(
+                    x=df_history["日期"],
+                    y=df_history["本日末庫容 (萬噸)"],
+                    mode="lines",
+                    name="實際庫容",
+                    line=dict(color="black", width=2.5),
+                    hovertemplate="日期: %{x}<br>實際庫容: %{y:.2f} 萬噸<extra></extra>"
+                ))
+                
+            # 2. 迴圈繪製各個被勾選情境的推估實線
+            for name in selected_scenarios:
+                df_scen = st.session_state.scenarios[name].copy()
+                df_scen["日期"] = pd.to_datetime(df_scen["日期"]).dt.date
+                df_proj = df_scen[df_scen["日期"] >= boundary_day]
+                
+                if not df_proj.empty:
+                    fig_multi.add_trace(go.Scatter(
+                        x=df_proj["日期"],
+                        y=df_proj["本日末庫容 (萬噸)"],
+                        mode="lines",
+                        name=f"推估庫容 ({name})",
+                        line=dict(width=2.5), # 採用 Plotly 自動色彩盤區分不同方案
+                        hovertemplate="日期: %{x}<br>推估庫容: %{y:.2f} 萬噸<extra></extra>"
+                    ))
+                    
+            # 3. 標註設計有效庫容文字框
+            max_cap = st.session_state.max_capacity
+            formatted_cap = f"{max_cap:,.0f}" if max_cap == 11584.0 else f"{max_cap:,.1f}"
+            fig_multi.add_annotation(
+                text=f"有效庫容：{formatted_cap}萬噸",
+                xref="paper", yref="paper",
+                x=0.98, y=0.95,
+                showarrow=False,
+                font=dict(color="red", size=13, family="sans-serif", weight="bold"),
+                bordercolor="red",
+                borderwidth=1,
+                borderpad=5,
+                bgcolor="white",
+                opacity=0.9
+            )
+            
+            # 4. 套用 X 軸月首座標
+            tick_dates = []
+            curr_y, curr_m = st.session_state.display_start_date.year, st.session_state.display_start_date.month
+            end_y, end_m = st.session_state.end_date.year, st.session_state.end_date.month
+            
+            while (curr_y < end_y) or (curr_y == end_y and curr_m <= end_m):
+                d = datetime.date(curr_y, curr_m, 1)
+                if st.session_state.display_start_date <= d <= st.session_state.end_date:
+                    tick_dates.append(d)
+                curr_m += 1
+                if curr_m > 12:
+                    curr_m = 1
+                    curr_y += 1
+            tick_text = [f"{d.month}/{d.day}" for d in tick_dates]
+            
+            fig_multi.update_layout(
+                title={
+                    "text": "📊 鯉魚潭水庫多情境蓄水量推估對比圖",
+                    "y": 0.95,
+                    "x": 0.5,
+                    "xanchor": "center",
+                    "yanchor": "top"
+                },
+                xaxis_title="日期",
+                yaxis_title="水庫蓄水量 (萬噸)",
+                hovermode="x unified",
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                margin=dict(l=50, r=50, t=100, b=50),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)"
+            )
+            fig_multi.update_xaxes(
+                tickvals=tick_dates,
+                ticktext=tick_text,
+                showgrid=True,
+                gridwidth=0.5,
+                gridcolor="lightgray",
+                zeroline=False
+            )
+            fig_multi.update_yaxes(
+                showgrid=True,
+                gridwidth=0.5,
+                gridcolor="lightgray",
+                zeroline=False,
+                range=[0, max_cap * 1.05]
+            )
+            
+            st.plotly_chart(fig_multi, use_container_width=True)
+            
+        else:
+            st.warning("⚠️ 請至少在上方勾選一個情境方案，系統才能輸出比對產品。")
+            
+    else:
+        st.info("💡 儲存庫目前為空。請先在『第4階段：核心庫容守恆演算』中點擊執行模擬，執行後，上方將會自動出現暫存存檔區域，協助您累積多組推估方案！")
