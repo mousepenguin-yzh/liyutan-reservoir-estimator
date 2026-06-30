@@ -612,7 +612,7 @@ with tab_config:
 # TAB 2: 第二階段入流與水文維護 (含醒目的 Excel .xlsx 格式避坑防呆說明)
 # -----------------
 with tab_inflow:
-    st.subheader("🌊 【未來推估期】入流流量條件與對齊")
+    st.subheader("🌊 入流條件設定")
     
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
@@ -999,7 +999,7 @@ with tab_outflow:
 # TAB 4: 第四階段：核心庫容守恆演算
 # -----------------
 with tab_simulation:
-    st.subheader("🧮 鯉魚潭水庫質量守恆與防線調度計算")
+    st.subheader("🧮 鯉魚潭水庫庫容推估結果")
     st.markdown("""
     本模組為系統最核心的**物理演算引擎**。點擊下方按鈕將啟動日步進 Loop，特別依據**「上灌區第一優先滿足，下灌區天然流量剩餘分配」**原則演算。
     """)
