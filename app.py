@@ -1001,7 +1001,7 @@ with tab_outflow:
 with tab_simulation:
     st.subheader("🧮 鯉魚潭水庫庫容推估結果")
     st.markdown("""
-    本模組依據**「士林堰引水隧道上限33cms，上游灌區優先滿足，下游灌區剩餘分配」**之調度原則，進行日步進水庫庫容守恆演算。
+    本模組依據 **「士林堰引水隧道上限33cms，上游灌區優先滿足，下游灌區剩餘分配」** 之調度原則，進行逐日水庫庫容演算。
     """)
     
     if proj_unique_periods.empty:
