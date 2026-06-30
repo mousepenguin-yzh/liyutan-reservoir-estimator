@@ -496,15 +496,12 @@ if "builtin_scenario" not in st.session_state:
     st.session_state.builtin_scenario = "Q50 (平水)"
 if "manual_flow_dict" not in st.session_state:
     st.session_state.manual_flow_dict = {}
-# ==========================================
-# 新增：混合模式設定狀態持久化
-# ==========================================
-if "mixed_flow_configs" not in st.session_state:
-    st.session_state.mixed_flow_configs = {}
 if "override_list" not in st.session_state:
     st.session_state.override_list = []
 if "hist_capacity" not in st.session_state:
     st.session_state.hist_capacity = {}
+if "mixed_flow_configs" not in st.session_state:
+    st.session_state.mixed_flow_configs = {}
 
 # 多情境數據暫存器
 if "scenarios" not in st.session_state:
@@ -614,7 +611,7 @@ with tab_config:
         proj_unique_periods = pd.DataFrame()
 
 # -----------------
-# TAB 2: 第二階段入流與水文維護 (含醒目的 Excel .xlsx 格式避坑防呆說明)
+# TAB 2: 第二階段入流與水文維護
 # -----------------
 with tab_inflow:
     st.subheader("🌊 入流條件設定")
@@ -622,14 +619,13 @@ with tab_inflow:
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
-        # 第一區塊：日常最常用之設定區域，讓同仁一進來就能立即填寫、選取
+        # 第一區塊：主要入流模式選擇
         inflow_options = [
             "內建標準水文情境 (Q5~Q95)", 
             "手動批次匯入（支援 Excel 複製貼上）", 
             "內建與手動混合模式"
         ]
         
-        # 安全校驗以防 session_state 舊值與新選項不相容
         if st.session_state.inflow_source not in inflow_options:
             st.session_state.inflow_source = "內建標準水文情境 (Q5~Q95)"
             
@@ -689,9 +685,7 @@ with tab_inflow:
                     period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_dynamic_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
                     
         else:
-            # ==========================================
-            # 新增分支：內建與手動混合模式
-            # ==========================================
+            # 內建與手動混合模式
             st.markdown("##### 🎛️ 逐旬內建與手動混合設定")
             st.caption("您可以針對未來推估期間的各個旬別單獨指定水文入流來源（可選擇任意內建標準水文情境，或選擇自訂手動輸入）：")
             
@@ -764,17 +758,6 @@ with tab_inflow:
                 })
             
             st.markdown("<br>", unsafe_allow_html=True)
-                else:
-                    st.success("✅ 數據成功解析並對齊！")
-                    for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
-                        y, m, p = row["年份"], row["月份"], row["旬別"]
-                        flow_val = parsed_list[i]
-                        st.session_state.manual_flow_dict[f"{y}-{m}-{p}"] = flow_val
-                        period_flow_mapping.append({"年份": y, "月份": m, "旬別": p, "天然流量(cms)": flow_val})
-            else:
-                st.info("⚠️ 尚未貼上數據，下方目前顯示內建 Q50 預設值作為參考占位。")
-                for idx, row in proj_unique_periods.iterrows():
-                    period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_dynamic_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
 
         df_period_flow = pd.DataFrame(period_flow_mapping)
         st.dataframe(df_period_flow, use_container_width=True)
@@ -823,7 +806,7 @@ with tab_inflow:
             st.markdown("##### 💾 範本檔案下載與重設")
             st.caption("下載下方範本，編輯後即可重新上傳。")
             
-            # Excel 範本下載 (強烈推薦)
+            # Excel 範本下載
             try:
                 excel_io = io.BytesIO()
                 with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
@@ -869,6 +852,10 @@ with tab_inflow:
         * **步驟二**：使用 Excel 直接開啟該檔案。請保持首欄的旬別名稱（如「1月上旬」）完全不動，將取得之各旬最新天然流量 (cms) 填入對應欄位，直接點擊儲存，**不要變更檔案格式，維持 .xlsx 檔案**。
         * **步驟三**：將修改完畢的 Excel (.xlsx) 檔案拖曳上傳至本專區的「檔案上傳更新」區域，系統驗證通過後即完成年度流量更新。
         """)
+
+# -----------------
+# TAB 3: 第三階段出流需求
+# -----------------
 with tab_outflow:
     st.subheader("🚰 出流標的設定與抗旱調整")
     if proj_unique_periods.empty:
@@ -1146,7 +1133,6 @@ with tab_simulation:
             
             flow_lookup = {}
             for _, item in df_period_flow.iterrows():
-                # 確保支援動態情境欄位名稱的匹配
                 scen_col = [c for c in item.index if "天然流量" in c][0]
                 key = f"{int(item['年份'])}-{int(item['月份'])}-{item['旬別']}"
                 flow_lookup[key] = item[scen_col]
@@ -1436,7 +1422,6 @@ with tab_products:
                 row_dict = {"時間點": m_date.strftime("%m月%d日")}
                 for name in selected_scenarios:
                     df_scen = st.session_state.scenarios[name]
-                    # 統一時間格式進行精確提取
                     match_rows = df_scen[pd.to_datetime(df_scen["日期"]).dt.date == target_date]
                     if not match_rows.empty:
                         val = match_rows.iloc[0]["本日末庫容 (萬噸)"]
@@ -1477,7 +1462,7 @@ with tab_products:
             fig_multi = go.Figure()
             boundary_day = st.session_state.start_date - datetime.timedelta(days=1)
             
-            # 1. 繪製歷史觀測段 (所有情境共用，呈現為黑色實線)
+            # 1. 繪製歷史觀測段
             ref_name = selected_scenarios[0]
             df_ref = st.session_state.scenarios[ref_name]
             df_hist = df_ref[pd.to_datetime(df_ref["日期"]).dt.date <= boundary_day]
@@ -1492,21 +1477,25 @@ with tab_products:
                     hovertemplate="日期: %{x}<br>實際庫容: %{y:.2f} 萬噸<extra></extra>"
                 ))
                 
-            # 2. 繪製各個被選取情境的推估未來歷線 (自 boundary_day 開始分叉，呈現彩色實線)
+            # 2. 繪製各個被選取情境的推估未來歷線
             for name in selected_scenarios:
                 df_scen = st.session_state.scenarios[name]
-                df_proj = df_scen[pd.to_datetime(df_scen["日期"]).dt.date >= boundary_day]
-                if not df_proj.empty:
-                    fig_multi.add_trace(go.Scatter(
-                        x=pd.to_datetime(df_proj["日期"]).dt.date,
-                        y=df_proj["本日末庫容 (萬噸)"],
-                        mode="lines",
-                        name=f"{name} (推估)",
-                        line=dict(width=2.5),
-                        hovertemplate=f"情境: {name}<br>日期: %{{x}}<br>推估庫容: %{{y:.2f}} 萬噸<extra></extra>"
-                    ))
+                df_proj = df_scen[pd.to_datetime(df_scen["開期"] if "開期" in df_scen else df_scen["日期"]).dt.date >= boundary_day]
+                # 相容處理日期欄位
+                if "日期" in df_proj:
+                    proj_x = pd.to_datetime(df_proj["日期"]).dt.date
+                else:
+                    proj_x = pd.to_datetime(df_proj.index).dt.date
+                fig_multi.add_trace(go.Scatter(
+                    x=proj_x,
+                    y=df_proj["本日末庫容 (萬噸)"],
+                    mode="lines",
+                    name=f"{name} (推估)",
+                    line=dict(width=2.5),
+                    hovertemplate=f"情境: {name}<br>日期: %{{x}}<br>推估庫容: %{{y:.2f}} 萬噸<extra></extra>"
+                ))
                     
-            # 3. 有效庫容字卡配置：嚴格置於繪圖區外部左上角 (x=0.0, y=1.02)
+            # 3. 有效庫容字卡配置
             max_capacity = st.session_state.max_capacity
             formatted_capacity = f"{max_capacity:,.0f}" if max_capacity == 11584.0 else f"{max_capacity:,.1f}"
             fig_multi.add_annotation(
@@ -1529,57 +1518,4 @@ with tab_products:
             curr_y, curr_m = st.session_state.display_start_date.year, st.session_state.display_start_date.month
             end_y, end_m = st.session_state.end_date.year, st.session_state.end_date.month
             
-            while (curr_y < end_y) or (curr_y == end_y and curr_m <= end_m):
-                d = datetime.date(curr_y, curr_m, 1)
-                if st.session_state.display_start_date <= d <= st.session_state.end_date:
-                    tick_dates.append(d)
-                curr_m += 1
-                if curr_m > 12:
-                    curr_m = 1
-                    curr_y += 1
-                    
-            tick_text = [f"{d.month}/{d.day}" for d in tick_dates]
-            
-            # 5. 配置無背景色塊之清爽圖表版型
-            fig_multi.update_layout(
-                title={
-                    "text": "📊 鯉魚潭水庫多情境蓄水量推估對比圖",
-                    "y": 0.95,
-                    "x": 0.5,
-                    "xanchor": "center",
-                    "yanchor": "top"
-                },
-                xaxis_title="日期",
-                yaxis_title="水庫蓄水量 (萬噸)",
-                hovermode="x unified",
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                ),
-                margin=dict(l=50, r=50, t=100, b=50),
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)"
-            )
-            
-            fig_multi.update_xaxes(
-                tickvals=tick_dates,
-                ticktext=tick_text,
-                showgrid=True,
-                gridwidth=0.5,
-                gridcolor="lightgray",
-                zeroline=False
-            )
-            fig_multi.update_yaxes(
-                showgrid=True,
-                gridwidth=0.5,
-                gridcolor="lightgray",
-                zeroline=False,
-                range=[0, max_capacity * 1.05]
-            )
-            
-            st.plotly_chart(fig_multi, use_container_width=True)
-    else:
-        st.info("💡 目前暫存庫中尚無儲存情境。請先至『第四階段：庫容推估演算』點擊「▶️ 開始進行庫容推估」，並於本頁籤最上方輸入情境名稱（如：常態Q50）點擊「💾 暫存此情境」即可生成本頁比對產品。")
+            whil
