@@ -475,7 +475,7 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
 if "max_capacity" not in st.session_state:
     st.session_state.max_capacity = 11584.0
 if "shilin_eco_flow" not in st.session_state:
-    st.session_state.shilin_eco_flow = 2.2
+    st.session_state.shilin_eco_flow = 2.7
 if "liyutan_eco_flow" not in st.session_state:
     st.session_state.liyutan_eco_flow = 0.3
 
