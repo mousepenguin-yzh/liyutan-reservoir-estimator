@@ -57,6 +57,45 @@ RAW_DEFAULT_HYDROLOGY = """工作表\tQ95\tQ90\tQ85\tQ80\tQ75\tQ70\tQ65\tQ60\tQ5
 12月中旬\t4.45\t4.69\t4.89\t5.12\t5.23\t5.66\t5.71\t6.23\t6.78\t6.92\t7.23\t7.54\t8.33\t9.11\t9.29\t13.29\t15.18\t18.28\t29.87
 12月下旬\t4.08\t4.68\t5.29\t5.48\t5.84\t6.05\t6.2\t6.32\t6.69\t6.97\t7.42\t7.57\t8.06\t8.42\t8.47\t8.82\t11.05\t14.39\t18.75"""
 
+# 定義 36 旬標準出流需求資料庫 (Previous Year's Outflow Demands)
+RAW_DEFAULT_DEMANDS = """工作表\t上灌區需求_cms\t下灌區需求_cms\t公共出水_萬噸
+1月上旬\t2.7\t0.3\t60.0
+1月中旬\t2.7\t0.3\t60.0
+1月下旬\t2.7\t0.3\t60.0
+2月上旬\t2.7\t0.3\t60.0
+2月中旬\t3.6\t1.25\t60.0
+2月下旬\t4.5\t5.0\t60.0
+3月上旬\t4.5\t4.0\t60.0
+3月中旬\t3.15\t2.38\t60.0
+3月下旬\t3.0\t2.2\t60.0
+4月上旬\t3.0\t2.2\t60.0
+4月中旬\t3.0\t2.2\t60.0
+4月下旬\t3.0\t2.2\t60.0
+5月上旬\t3.0\t2.2\t60.0
+5月中旬\t3.0\t2.2\t60.0
+5月下旬\t4.5\t3.5\t60.0
+6月上旬\t4.5\t3.5\t60.0
+6月中旬\t3.0\t2.2\t60.0
+6月下旬\t3.0\t2.2\t60.0
+7月上旬\t2.7\t2.2\t60.0
+7月中旬\t4.35\t3.1\t60.0
+7月下旬\t6.0\t4.0\t60.0
+8月上旬\t6.0\t4.0\t60.0
+8月中旬\t5.25\t3.5\t60.0
+8月下旬\t4.5\t3.0\t60.0
+9月上旬\t4.0\t2.2\t60.0
+9月中旬\t4.0\t2.2\t60.0
+9月下旬\t4.0\t2.2\t60.0
+10月上旬\t4.0\t2.2\t60.0
+10月中旬\t4.5\t2.6\t60.0
+10月下旬\t5.0\t3.0\t60.0
+11月上旬\t4.0\t2.2\t60.0
+11月中旬\t2.85\t1.25\t60.0
+11月下旬\t2.7\t0.3\t60.0
+12月上旬\t2.7\t0.3\t60.0
+12月中旬\t2.7\t0.3\t60.0
+12月下旬\t2.7\t0.3\t60.0"""
+
 # 定義 36 旬標準順序，用於資料校驗
 CANONICAL_PERIODS = [
     "1月上旬", "1月中旬", "1月下旬", "2月上旬", "2月中旬", "2月下旬",
@@ -321,21 +360,73 @@ def validate_uploaded_hydrology(df_input: pd.DataFrame) -> tuple:
     return True, final_df
 
 # ==========================================
-# 3. 第三階段核心邏輯：標準出流配置與預設值
+# 3. 第三階段核心邏輯：標準出流配置與動態需求檢索、檢驗
 # ==========================================
 
-def get_default_demands(month: int) -> dict:
+def get_dynamic_demands(month: int, period: str) -> dict:
     """
-    依據歷史常態，提供各月份出流三大標訂的平水期預設需求。
+    動態出流需求檢索引擎：自 st.session_state.demand_df 讀取對應旬別之常態前一年度出流。
     """
-    irrigation_schedule = {
-        1: (0.5, 0.8),   2: (3.0, 4.5),   3: (4.0, 5.5),   4: (3.5, 5.0),
-        5: (2.5, 3.5),   6: (3.5, 4.8),   7: (4.0, 5.5),   8: (4.5, 6.0),
-        9: (3.5, 5.0),   10: (2.0, 3.0),  11: (1.0, 1.5),  12: (0.5, 0.8)
-    }
-    up_irr, down_irr = irrigation_schedule.get(month, (1.0, 1.5))
-    public_water = 60.0  # 預設台中常態公共給水 60 萬噸/日
-    return {"up_irr": up_irr, "down_irr": down_irr, "public": public_water}
+    row_key = f"{month}月{period}"
+    df = st.session_state.demand_df
+    
+    # 比對主索引欄位
+    match_row = df[df["工作表"].str.strip() == row_key]
+    
+    if not match_row.empty:
+        try:
+            return {
+                "up_irr": float(match_row.iloc[0]["上灌區需求_cms"]),
+                "down_irr": float(match_row.iloc[0]["下灌區需求_cms"]),
+                "public": float(match_row.iloc[0]["公共出水_萬噸"])
+            }
+        except (KeyError, ValueError, TypeError):
+            pass
+            
+    # 預防性 fallback，防爆機制
+    return {"up_irr": 2.7, "down_irr": 2.2, "public": 60.0}
+
+
+def validate_uploaded_demands(df_input: pd.DataFrame) -> tuple:
+    """
+    強韌出流檢驗器：校驗上傳的 Excel 或 CSV 出流資料庫。
+    """
+    df = df_input.copy()
+    # 欄位去空白
+    df.columns = [str(c).strip() for c in df.columns]
+    
+    first_col = df.columns[0]
+    if first_col not in ["工作表", "旬別"]:
+        df.rename(columns={first_col: "工作表"}, inplace=True)
+        first_col = "工作表"
+        
+    required_cols = ["上灌區需求_cms", "下灌區需求_cms", "公共出水_萬噸"]
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        return False, f"上傳檔案缺少必要的出流欄位：{', '.join(missing_cols)}"
+        
+    if len(df) != 36:
+        return False, f"出流需求資料筆數錯誤。預期為 36 旬，實際為 {len(df)} 筆。"
+        
+    df[first_col] = df[first_col].str.strip()
+    for idx, expected_name in enumerate(CANONICAL_PERIODS):
+        actual_name = df.iloc[idx][first_col]
+        if actual_name != expected_name:
+            return False, f"第 {idx+1} 列名稱錯誤。預期為 '{expected_name}'，但實際為 '{actual_name}'。"
+            
+    try:
+        for col in required_cols:
+            df[col] = pd.to_numeric(df[col]).astype(float)
+            if (df[col] < 0).any():
+                return False, f"欄位 '{col}' 偵測到負值，請確認所有需求值皆大於等於 0。"
+    except Exception:
+        return False, "流量或公共用水欄位中含有非數值字元，請重新檢查。"
+        
+    final_df = df[[first_col] + required_cols].copy()
+    if first_col != "工作表":
+        final_df.rename(columns={first_col: "工作表"}, inplace=True)
+        
+    return True, final_df
 
 # ==========================================
 # 4. 輔助函數：水利旬末邊界與目標日期對齊 (對齊橫向 Excel 表)
@@ -367,7 +458,7 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
     boundary_day = start_date - datetime.timedelta(days=1)
     
     df_plot = df_sim_results.copy()
-    df_plot["日期"] = pd.to_datetime(df_plot["日期"]).dt.date
+    df_plot["日期"] = pd.to_datetime(df_plot["開期"] if "開期" in df_plot else df_plot["日期"]).dt.date
     
     # 實際庫容 (黑色實線)
     df_history = df_plot[df_plot["日期"] <= boundary_day]
@@ -382,7 +473,7 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
         ))
         
     # 推估庫容 (藍色實線)
-    df_projection = df_plot[df_plot["日期"] >= boundary_day]
+    df_projection = df_plot[df_plot["開期" if "開期" in df_plot else "日期"] >= boundary_day]
     if not df_projection.empty:
         fig.add_trace(go.Scatter(
             x=df_projection["日期"],
@@ -503,17 +594,31 @@ if "hist_capacity" not in st.session_state:
 if "mixed_flow_configs" not in st.session_state:
     st.session_state.mixed_flow_configs = {}
 
+# 第三階段出流自訂與混合設定初始化
+if "outflow_source" not in st.session_state:
+    st.session_state.outflow_source = "使用前一年度資料"
+if "mixed_demand_configs" not in st.session_state:
+    st.session_state.mixed_demand_configs = {}
+
 # 多情境數據暫存器
 if "scenarios" not in st.session_state:
     st.session_state.scenarios = {}
 
-# 初始化標準流量資料庫
+# 初始化標準水文流量資料庫
 if "hydrology_df" not in st.session_state:
     default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
     default_df = pd.read_csv(default_io, sep="\t")
     default_df.columns = [c.strip() for c in default_df.columns]
     st.session_state.hydrology_df = default_df
     st.session_state.hydrology_source_status = "系統預設標準流量"
+
+# 初始化前一年度出流常態資料庫
+if "demand_df" not in st.session_state:
+    default_demand_io = io.StringIO(RAW_DEFAULT_DEMANDS)
+    default_demand_df = pd.read_csv(default_demand_io, sep="\t")
+    default_demand_df.columns = [c.strip() for c in default_demand_df.columns]
+    st.session_state.demand_df = default_demand_df
+    st.session_state.demand_source_status = "系統預設前一年度常態資料"
 
 # ==========================================
 # 6. 前端 UI 分頁排版 (含第六階段全面整合)
@@ -861,25 +966,39 @@ with tab_outflow:
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
-        outflow_mode = st.radio("請選擇常態出流配置模式：", ["使用歷史常態預設需求值", "自訂出流需求（支援 Excel 複製貼上）"], horizontal=True, key="outflow_mode_radio")
+        # 模式選單設定（改名並新增混合模式）
+        outflow_options = [
+            "使用前一年度資料", 
+            "自訂出流需求（支援 Excel 複製貼上）", 
+            "前一年度與自訂混合模式"
+        ]
+        
+        # 相容防呆
+        if st.session_state.outflow_source not in outflow_options:
+            st.session_state.outflow_source = "使用前一年度資料"
+            
+        outflow_index = outflow_options.index(st.session_state.outflow_source)
+        outflow_mode = st.radio("請選擇常態出流配置模式：", outflow_options, index=outflow_index, horizontal=True)
+        st.session_state.outflow_source = outflow_mode
         
         base_demand_list = []
-        if outflow_mode == "使用歷史常態預設需求值":
+        if outflow_mode == "使用前一年度資料":
             for idx, row in proj_unique_periods.iterrows():
                 y, m, p = row["年份"], row["月份"], row["旬別"]
-                def_demands = get_default_demands(m)
+                dyn_demands = get_dynamic_demands(m, p)
                 base_demand_list.append({
                     "年份": y, "月份": m, "旬別": p,
-                    "上灌區需求(cms)": def_demands["up_irr"],
-                    "下灌區需求(cms)": def_demands["down_irr"],
-                    "公共出水(萬噸/日)": def_demands["public"]
+                    "上灌區需求(cms)": dyn_demands["up_irr"],
+                    "下灌區需求(cms)": dyn_demands["down_irr"],
+                    "公共出水(萬噸/日)": dyn_demands["public"]
                 })
-            st.info("💡 系統已自動帶入歷史常態平水期供水需求。")
-        else:
+            st.info("💡 系統已自動帶入歷史前一年度常態供水需求。")
+            
+        elif outflow_mode == "自訂出流需求（支援 Excel 複製貼上）":
             st.markdown("##### 📥 Excel 需求數據批次匯入(手動輸入時需以空格、Tab或換行分隔)")
-            def_up_list = [get_default_demands(r["月份"])["up_irr"] for _, r in proj_unique_periods.iterrows()]
-            def_down_list = [get_default_demands(r["月份"])["down_irr"] for _, r in proj_unique_periods.iterrows()]
-            def_pub_list = [get_default_demands(r["月份"])["public"] for _, r in proj_unique_periods.iterrows()]
+            def_up_list = [get_dynamic_demands(r["月份"], r["旬別"])["up_irr"] for _, r in proj_unique_periods.iterrows()]
+            def_down_list = [get_dynamic_demands(r["月份"], r["旬別"])["down_irr"] for _, r in proj_unique_periods.iterrows()]
+            def_pub_list = [get_dynamic_demands(r["月份"], r["旬別"])["public"] for _, r in proj_unique_periods.iterrows()]
             
             col_u, col_d, col_p = st.columns(3)
             with col_u:
@@ -898,7 +1017,7 @@ with tab_outflow:
             
             for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
                 y, m, p = row["年份"], row["月份"], row["旬別"]
-                def_val = get_default_demands(m)
+                def_val = get_dynamic_demands(m, p)
                 u_val = parsed_up[i] if (len(parsed_up) == len(proj_unique_periods)) else def_val["up_irr"]
                 d_val = parsed_down[i] if (len(parsed_down) == len(proj_unique_periods)) else def_val["down_irr"]
                 p_val = parsed_pub[i] if (len(parsed_pub) == len(proj_unique_periods)) else def_val["public"]
@@ -915,6 +1034,91 @@ with tab_outflow:
                     st.warning("⚠️ 貼入之數據筆數與推估區間需求不符，不符之欄位已自動套用預設值。")
                 else:
                     st.success("✅ 三大標的出流需求皆已成功解析並載入！")
+                    
+        else:
+            # 前一年度與自訂混合模式
+            st.markdown("##### 🎛️ 逐旬前一年度與自訂需求混合設定")
+            st.caption("您可以針對未來推估期間的各個旬別單獨指定供水出流來源（可選擇前一年度常態需求，或選擇自訂手動輸入）：")
+            
+            MIXED_DEMAND_OPTIONS = ["前一年度資料", "✍️ 手動輸入"]
+            
+            st.markdown("<div style='font-weight:bold; margin-bottom: 5px; color:#555555; font-size:14px;'>"
+                        "<span style='display:inline-block; width:18%;'>📅 旬別時間點</span>"
+                        "<span style='display:inline-block; width:28%;'>⚙️ 出流來源模式</span>"
+                        "<span style='display:inline-block; width:18%;'>🌾 上灌區 (cms)</span>"
+                        "<span style='display:inline-block; width:18%;'>🌾 下灌區 (cms)</span>"
+                        "<span style='display:inline-block; width:18%;'>💧 公共給水 (萬噸/日)</span>"
+                        "</div>", unsafe_allow_html=True)
+            
+            for idx, row in proj_unique_periods.iterrows():
+                y, m, p = row["年份"], row["月份"], row["旬別"]
+                key = f"{y}-{m}-{p}"
+                
+                prev_year_vals = get_dynamic_demands(m, p)
+                
+                if key not in st.session_state.mixed_demand_configs:
+                    st.session_state.mixed_demand_configs[key] = {
+                        "type": "前一年度資料",
+                        "up_irr": prev_year_vals["up_irr"],
+                        "down_irr": prev_year_vals["down_irr"],
+                        "public": prev_year_vals["public"]
+                    }
+                    
+                config = st.session_state.mixed_demand_configs[key]
+                
+                if config["type"] not in MIXED_DEMAND_OPTIONS:
+                    config["type"] = "前一年度資料"
+                default_opt_idx = MIXED_DEMAND_OPTIONS.index(config["type"])
+                
+                col_p_name, col_p_sel, col_p_up, col_p_down, col_p_pub = st.columns([2, 3, 2, 2, 2])
+                with col_p_name:
+                    st.markdown(f"**{y}年{m}月{p}**")
+                with col_p_sel:
+                    selected_opt = st.selectbox(
+                        "出流來源模式",
+                        MIXED_DEMAND_OPTIONS,
+                        index=default_opt_idx,
+                        key=f"mixed_dem_sel_{key}",
+                        label_visibility="collapsed"
+                    )
+                    config["type"] = selected_opt
+                    
+                if selected_opt == "✍️ 手動輸入":
+                    with col_p_up:
+                        config["up_irr"] = st.number_input(
+                            "上灌 (cms)", min_value=0.0, max_value=100.0,
+                            value=float(config["up_irr"]), step=0.1,
+                            key=f"mixed_dem_up_{key}", label_visibility="collapsed"
+                        )
+                    with col_p_down:
+                        config["down_irr"] = st.number_input(
+                            "下灌 (cms)", min_value=0.0, max_value=100.0,
+                            value=float(config["down_irr"]), step=0.1,
+                            key=f"mixed_dem_down_{key}", label_visibility="collapsed"
+                        )
+                    with col_p_pub:
+                        config["public"] = st.number_input(
+                            "公共 (萬噸/日)", min_value=0.0, max_value=500.0,
+                            value=float(config["public"]), step=1.0,
+                            key=f"mixed_dem_pub_{key}", label_visibility="collapsed"
+                        )
+                else:
+                    config["up_irr"] = prev_year_vals["up_irr"]
+                    config["down_irr"] = prev_year_vals["down_irr"]
+                    config["public"] = prev_year_vals["public"]
+                    with col_p_up:
+                        st.markdown(f"<div style='padding-top:6px; color:#1f77b4; font-weight:bold;'>{prev_year_vals['up_irr']:.2f} cms</div>", unsafe_allow_html=True)
+                    with col_p_down:
+                        st.markdown(f"<div style='padding-top:6px; color:#1f77b4; font-weight:bold;'>{prev_year_vals['down_irr']:.2f} cms</div>", unsafe_allow_html=True)
+                    with col_p_pub:
+                        st.markdown(f"<div style='padding-top:6px; color:#1f77b4; font-weight:bold;'>{prev_year_vals['public']:.1f} 萬噸</div>", unsafe_allow_html=True)
+                        
+                base_demand_list.append({
+                    "年份": y, "月份": m, "旬別": p,
+                    "上灌區需求(cms)": config["up_irr"],
+                    "下灌區需求(cms)": config["down_irr"],
+                    "公共出水(萬噸/日)": config["public"]
+                })
 
         df_base_demands = pd.DataFrame(base_demand_list)
         
@@ -1034,7 +1238,7 @@ with tab_outflow:
         df_daily_outflow["今日抗旱備註"] = notes
 
         # 日轉旬回推彙整
-        df_grouped = df_daily_outflow[df_daily_outflow["開期"] if "開期" in df_daily_outflow else df_daily_outflow["日期"] >= st.session_state.start_date].groupby(["年份", "月份", "旬別"]).agg(
+        df_grouped = df_daily_outflow[df_daily_outflow["開期" if "開期" in df_daily_outflow else "日期"] >= st.session_state.start_date].groupby(["年份", "月份", "旬別"]).agg(
             up_mean=("上灌區當日流量(cms)", "mean"),
             down_mean=("下灌區當日流量(cms)", "mean"),
             pub_mean=("公共供水當日水量(萬噸)", "mean"),
@@ -1085,6 +1289,85 @@ with tab_outflow:
                 "原因備註 (條列)": st.column_config.TextColumn("原因備註 (條列)", width="large")
             }
         )
+
+    # 第二區塊：資料庫維護
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    with st.expander("🛠️ 前一年度常態出流需求資料庫 維護與覆寫專區 (年更新)", expanded=False):
+        st.markdown("#### ⚙️ 前一年度出流主資料庫覆寫與還原")
+        
+        if st.session_state.demand_source_status == "系統預設前一年度常態資料":
+            st.info("📊 當前主資料庫狀態：🟢 **系統內建前一年度需求 (36旬)**")
+        else:
+            st.success(f"📊 當前主資料庫狀態：🔵 **已成功載入自訂出流需求檔案** (來源: {st.session_state.demand_source_status})")
+            
+        m_col1, m_col2 = st.columns([2, 1])
+        with m_col1:
+            st.markdown("##### 📥 檔案上傳更新（支援 Excel .xlsx 與 CSV）")
+            uploaded_demand_file = st.file_uploader(
+                "請選擇欲上傳之出流需求檔案 (需符合36旬格式規格，推薦使用修訂後的 .xlsx 檔)：",
+                type=["xlsx", "csv"],
+                key="demand_uploader"
+            )
+            
+            if uploaded_demand_file is not None:
+                file_name = uploaded_demand_file.name
+                try:
+                    if file_name.endswith(".xlsx"):
+                        temp_df = pd.read_excel(uploaded_demand_file, engine="openpyxl")
+                    else:
+                        temp_df = read_csv_with_fallback(uploaded_demand_file)
+                    
+                    is_valid, validated_data = validate_uploaded_demands(temp_df)
+                    if is_valid:
+                        st.session_state.demand_df = validated_data
+                        st.session_state.demand_source_status = file_name
+                        st.toast("🎉 出流需求資料庫已成功覆寫更新！", icon="✅")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ 上傳失敗！檔案結構校驗未通過：{validated_data}")
+                except Exception as e:
+                    st.error(f"❌ 解析檔案時發生系統錯誤：{str(e)}。請確認檔案內容格式正確。")
+                    
+        with m_col2:
+            st.markdown("##### 💾 範本檔案下載與重設")
+            st.caption("下載下方範本，編輯後即可重新上傳。")
+            
+            # Excel 範本下載
+            try:
+                excel_io = io.BytesIO()
+                with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
+                    st.session_state.demand_df.to_excel(writer, index=False, sheet_name="前一年度需求")
+                excel_template_bytes = excel_io.getvalue()
+                
+                st.download_button(
+                    label="📥 下載需求標準 Excel 範本 (推薦！)",
+                    data=excel_template_bytes,
+                    file_name="demand_standard_template.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            except Exception:
+                pass
+
+            # CSV 備用範本下載
+            csv_template_bytes = st.session_state.demand_df.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 下載需求標準 CSV 範本 (備用)",
+                data=csv_template_bytes,
+                file_name="demand_standard_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+                
+            # 重設按鈕常駐顯示
+            if st.button("🔄 重設回系統預設前一年度資料", use_container_width=True, type="secondary"):
+                default_demand_io = io.StringIO(RAW_DEFAULT_DEMANDS)
+                default_demand_df = pd.read_csv(default_demand_io, sep="\t")
+                default_demand_df.columns = [c.strip() for c in default_demand_df.columns]
+                st.session_state.demand_df = default_demand_df
+                st.session_state.demand_source_status = "系統預設前一年度常態資料"
+                st.toast("🔄 已還原為系統預設前一年度資料。", icon="🔄")
+                st.rerun()
 
 # -----------------
 # TAB 4: 第四階段：核心庫容守恆演算
@@ -1138,7 +1421,7 @@ with tab_simulation:
                 flow_lookup[key] = item[scen_col]
                 
             for _, row in df_daily_profile.iterrows():
-                current_date = row["日期"]
+                current_date = row["開期" if "開期" in row else "日期"]
                 key = f"{row['年份']}-{row['月份']}-{row['旬別']}"
                 
                 is_projection = current_date >= st.session_state.start_date
@@ -1219,7 +1502,7 @@ with tab_simulation:
                     net_change_vol = round(curr_capacity - yesterday_capacity, 2)
                     
                     sim_daily_records.append({
-                        "日期": current_date,
+                        "開期" if "開期" in row else "日期": current_date,
                         "年份": row["年份"],
                         "月份": row["月份"],
                         "旬別": row["旬別"],
@@ -1422,7 +1705,9 @@ with tab_products:
                 row_dict = {"時間點": m_date.strftime("%m月%d日")}
                 for name in selected_scenarios:
                     df_scen = st.session_state.scenarios[name]
-                    match_rows = df_scen[pd.to_datetime(df_scen["日期"]).dt.date == target_date]
+                    # 相容性提取
+                    col_key = "開期" if "開期" in df_scen else "日期"
+                    match_rows = df_scen[pd.to_datetime(df_scen[col_key]).dt.date == target_date]
                     if not match_rows.empty:
                         val = match_rows.iloc[0]["本日末庫容 (萬噸)"]
                         row_dict[name] = val
@@ -1465,11 +1750,12 @@ with tab_products:
             # 1. 繪製歷史觀測段
             ref_name = selected_scenarios[0]
             df_ref = st.session_state.scenarios[ref_name]
-            df_hist = df_ref[pd.to_datetime(df_ref["日期"]).dt.date <= boundary_day]
+            col_ref = "開期" if "開期" in df_ref else "日期"
+            df_hist = df_ref[pd.to_datetime(df_ref[col_ref]).dt.date <= boundary_day]
             
             if not df_hist.empty:
                 fig_multi.add_trace(go.Scatter(
-                    x=pd.to_datetime(df_hist["日期"]).dt.date,
+                    x=pd.to_datetime(df_hist[col_ref]).dt.date,
                     y=df_hist["本日末庫容 (萬噸)"],
                     mode="lines",
                     name="實際觀測庫容",
@@ -1480,10 +1766,11 @@ with tab_products:
             # 2. 繪製各個被選取情境的推估未來歷線
             for name in selected_scenarios:
                 df_scen = st.session_state.scenarios[name]
-                df_proj = df_scen[pd.to_datetime(df_scen["日期"]).dt.date >= boundary_day]
+                col_scen = "開期" if "開期" in df_scen else "日期"
+                df_proj = df_scen[pd.to_datetime(df_scen[col_scen]).dt.date >= boundary_day]
                 if not df_proj.empty:
                     fig_multi.add_trace(go.Scatter(
-                        x=pd.to_datetime(df_proj["日期"]).dt.date,
+                        x=pd.to_datetime(df_proj[col_scen]).dt.date,
                         y=df_proj["本日末庫容 (萬噸)"],
                         mode="lines",
                         name=f"{name} (推估)",
