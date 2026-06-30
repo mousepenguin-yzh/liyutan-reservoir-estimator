@@ -679,20 +679,10 @@ with tab_inflow:
         df_period_flow = pd.DataFrame(period_flow_mapping)
         st.dataframe(df_period_flow, use_container_width=True)
 
-    # 第二區塊：將「資料庫維護資訊」收納至最底部
+    # 第二區塊：資料庫維護 (隱藏至底部)
     st.markdown("<br><br>", unsafe_allow_html=True)
     with st.expander("🛠️ 歷史標準水文資料庫 維護與年度更新專區 (年更新)", expanded=False):
         st.markdown("#### ⚙️ 歷史標準水文主資料庫覆寫與還原")
-        
-        # 💡 強烈建議與避坑黃色提示卡 (解決 Excel CSV 擠壓問題)
-        st.warning("""
-        💡 **重要提示：強烈推薦使用 Excel (.xlsx) 格式維護資料庫！**
-        
-        * **為什麼不推薦使用 CSV？** 
-          因為微軟 Excel 在儲存 CSV 格式時，常因您電腦的「 地區與語言 」中「 清單分隔符號 」衝突，導致檔案儲存後數值嚴重黏合擠壓（例如 `1月上旬4.034.21...` 擠在第一格），上傳後會被防呆機制退件。
-        * **100% 完美的維護方式**：
-          直接下載下方的 **「標準水文 Excel 範本 (.xlsx)」**，在 Excel 中編輯完成後**直接儲存（維持 .xlsx 檔案格式）並上傳**。系統已全面支援 Excel 原生格式，可 100% 避免亂碼與欄位毀損問題！
-        """)
         
         # 顯示狀態字卡
         if st.session_state.hydrology_source_status == "系統預設標準流量":
@@ -716,7 +706,6 @@ with tab_inflow:
                     if file_name.endswith(".xlsx"):
                         temp_df = pd.read_excel(uploaded_hydrology_file, engine="openpyxl")
                     else:
-                        # 呼叫相容 cp950 的解碼引擎
                         temp_df = read_csv_with_fallback(uploaded_hydrology_file)
                     
                     is_valid, validated_data = validate_uploaded_hydrology(temp_df)
@@ -728,16 +717,15 @@ with tab_inflow:
                     else:
                         st.error(f"❌ 上傳失敗！檔案結構校驗未通過：{validated_data}")
                 except Exception as e:
-                    st.error(f"❌ 解析檔案時發生系統錯誤：{str(e)}。請確認檔案內容格式正確，若使用 CSV 發生擠壓，請改用 Excel (.xlsx) 檔案。")
+                    st.error(f"❌ 解析檔案時發生系統錯誤：{str(e)}。請確認檔案內容格式正確。")
                     
-with m_col2:
+        with m_col2:
             st.markdown("##### 💾 範本檔案下載與重設")
             st.caption("下載下方範本，編輯後即可重新上傳。")
             
-            # --- 1. Excel 原生範本下載 (強烈推薦，徹底解決 CSV 欄位擠壓問題) ---
+            # Excel 範本下載 (強烈推薦)
             try:
                 excel_io = io.BytesIO()
-                # 使用 pandas 預設的 openpyxl 引擎寫入記憶體
                 with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
                     st.session_state.hydrology_df.to_excel(writer, index=False, sheet_name="標準水文流量")
                 excel_template_bytes = excel_io.getvalue()
@@ -749,11 +737,10 @@ with m_col2:
                     mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                     use_container_width=True
                 )
-            except Exception as e:
-                # 萬一伺服器環境缺少 openpyxl，直接報錯提示，不要默默隱藏按鈕 (解決無法下載的問題)
-                st.error("⚠️ 本機環境缺少 openpyxl 套件，無法生成 Excel 範本。請在您的終端機/命令提示字元執行：pip install openpyxl 並重啟網頁。")
-            
-            # --- 2. CSV 備用範本下載 (僅供無 Excel 環境同仁備用) ---
+            except Exception:
+                pass
+
+            # CSV 備用範本下載
             csv_template_bytes = st.session_state.hydrology_df.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📥 下載標準水文 CSV 範本 (備用)",
@@ -763,7 +750,7 @@ with m_col2:
                 use_container_width=True
             )
                 
-            # --- 3. 重設按鈕常駐顯示 ---
+            # 重設按鈕常駐顯示
             if st.button("🔄 重設回系統預設標準流量", use_container_width=True, type="secondary"):
                 default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
                 default_df = pd.read_csv(default_io, sep="\t")
@@ -773,7 +760,6 @@ with m_col2:
                 st.toast("🔄 已還原為系統預設標準流量。", icon="🔄")
                 st.rerun()
 
-        # 年度更新操作指南
         st.markdown("---")
         st.markdown("##### 📖 歷史標準水文資料庫 年度更新操作指南")
         st.markdown("""
@@ -783,10 +769,6 @@ with m_col2:
         * **步驟二**：使用 Excel 直接開啟該檔案。請保持首欄的旬別名稱（如「1月上旬」）完全不動，將取得之各旬最新天然流量 (cms) 填入對應欄位，直接點擊儲存，**不要變更檔案格式，維持 .xlsx 檔案**。
         * **步驟三**：將修改完畢的 Excel (.xlsx) 檔案拖曳上傳至本專區的「檔案上傳更新」區域，系統驗證通過後即完成年度流量更新。
         """)
-
-# -----------------
-# TAB 3: 第三階段出流
-# -----------------
 with tab_outflow:
     st.subheader("🚰 出流標的需求配置與抗旱調整 (未來推估期專用)")
     if proj_unique_periods.empty:
