@@ -1001,7 +1001,7 @@ with tab_outflow:
 with tab_simulation:
     st.subheader("🧮 鯉魚潭水庫庫容推估結果")
     st.markdown("""
-    本模組為系統最核心的**物理演算引擎**。點擊下方按鈕將啟動日步進 Loop，特別依據**「上灌區第一優先滿足，下灌區天然流量剩餘分配」**原則演算。
+    本模組依據**「士林堰引水隧道上限33cms，上游灌區優先滿足，下游灌區剩餘分配」**之調度原則，進行日步進水庫庫容守恆演算。
     """)
     
     if proj_unique_periods.empty:
@@ -1009,7 +1009,7 @@ with tab_simulation:
     elif 'df_period_flow' not in locals() or 'df_daily_outflow' not in locals():
         st.warning("⚠️ 請確保已完成第一至三階段的入流與出流條件設定。")
     else:
-        if st.button("▶️ 執行庫容守恆模擬", type="primary"):
+        if st.button("▶️ 開始進行庫容推估", type="primary"):
             
             max_capacity = st.session_state.max_capacity
             shilin_eco = st.session_state.shilin_eco_flow
