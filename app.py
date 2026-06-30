@@ -2,7 +2,60 @@ import streamlit as st
 import pandas as pd
 import datetime
 import calendar
+import io
 import plotly.graph_objects as go
+
+# ==========================================
+# 0. 內建第一層標準水文流量資料庫 (Embedded Database)
+# ==========================================
+
+RAW_DEFAULT_HYDROLOGY = """工作表\tQ95\tQ90\tQ85\tQ80\tQ75\tQ70\tQ65\tQ60\tQ55\tQ50\tQ45\tQ40\tQ35\tQ30\tQ25\tQ20\tQ15\tQ10\tQ5
+1月上旬\t4.03\t4.21\t4.6\t5.1\t5.2\t5.5\t5.87\t5.97\t6.55\t7.3\t7.61\t7.66\t8.2\t10.04\t10.37\t10.7\t11.93\t14.29\t25.02
+1月中旬\t3.9\t4.11\t4.36\t4.74\t4.95\t4.96\t5.52\t5.96\t6.34\t6.45\t6.66\t7.13\t7.91\t8.07\t9.41\t13.4\t14.82\t20.29\t24.2
+1月下旬\t4.23\t4.43\t4.49\t4.56\t4.91\t5.04\t5.18\t5.86\t6.33\t6.5\t6.57\t6.87\t7\t8.18\t9.86\t11.9\t12.56\t15.74\t46.32
+2月上旬\t3.71\t3.86\t4.23\t4.54\t4.71\t4.85\t5.58\t5.98\t6.32\t6.39\t7.42\t8.26\t8.75\t9.13\t10.73\t13.11\t15.82\t17.43\t40.85
+2月中旬\t3.54\t4.51\t4.59\t4.65\t4.9\t5.04\t5.81\t6.05\t6.87\t7.81\t8.74\t9.61\t11.26\t12.91\t14.18\t14.62\t19.26\t22.99\t29.53
+2月下旬\t3.71\t3.77\t3.9\t4.26\t4.67\t5.24\t6.4\t6.68\t6.87\t7.33\t8.07\t8.59\t9.2\t9.98\t16.76\t21.04\t30.99\t46.2\t61.85
+3月上旬\t3.61\t3.99\t4.36\t4.86\t5.61\t6.25\t7.09\t7.95\t9.15\t10.64\t13.2\t14.24\t14.52\t16.5\t20.4\t24.02\t25.53\t27.3\t70.17
+3月中旬\t3.28\t4.3\t5.43\t6.09\t6.37\t6.62\t8.44\t8.91\t10.91\t11.79\t12.39\t13.66\t14.13\t15.23\t19.93\t25\t26.61\t45.38\t69.68
+3月下旬\t3.55\t4.17\t5.54\t6.88\t8.75\t9.22\t9.29\t9.67\t11.27\t11.52\t12.59\t13.44\t15.37\t15.89\t18.15\t28.5\t36.09\t43.07\t67.21
+4月上旬\t4.41\t6.12\t7.44\t8.23\t9.16\t9.9\t10.21\t10.87\t11.96\t12.71\t14.21\t18.14\t22.63\t28.08\t32.16\t37.04\t38.26\t41.82\t47.57
+4月中旬\t4.3\t7.11\t8.09\t8.3\t9.47\t9.85\t10.28\t12.86\t14.14\t15.2\t16.94\t18.63\t19.02\t23.79\t24.38\t30.85\t39.99\t47.24\t61.78
+4月下旬\t4.99\t7.26\t7.75\t8.35\t8.63\t9.26\t11.95\t13.46\t14.45\t16.73\t17.71\t17.92\t30.62\t32.43\t34.66\t36.81\t42.75\t54.55\t74.69
+5月上旬\t4.59\t5.66\t7.77\t10.18\t10.76\t10.94\t12.83\t17.1\t18.48\t19.69\t24.03\t26.62\t29.62\t32.01\t33.65\t38.2\t45.06\t65.16\t75.88
+5月中旬\t4.82\t9.53\t9.96\t10.25\t10.98\t12.1\t12.36\t13.79\t17.75\t19.7\t27.22\t34.56\t38.88\t39.56\t57.62\t61.59\t71.5\t91.7\t186.07
+5月下旬\t7.82\t10.39\t13.16\t15.91\t21.1\t22.75\t28.76\t29.38\t29.99\t30.15\t31.58\t36.05\t43.49\t56.15\t71.42\t78.51\t87.53\t96.11\t97.85
+6月上旬\t8.52\t12.24\t14.3\t15.81\t21.99\t25.02\t33\t34.98\t36.61\t36.79\t40.5\t41.84\t41.91\t42.6\t43.86\t61.29\t78.6\t145.54\t250.92
+6月中旬\t10.92\t12.63\t15.83\t21.71\t28.06\t29.21\t34.4\t36.36\t39.23\t40.25\t42.24\t48.94\t53.72\t64.35\t82.14\t105.45\t159.57\t188.66\t233.97
+6月下旬\t10.48\t13.02\t13.96\t16.9\t19.55\t23.32\t23.94\t24.73\t25.39\t27.5\t31.44\t34.72\t35.87\t47.1\t49.35\t50.87\t55.75\t70.76\t92.07
+7月上旬\t10.71\t11.83\t13.69\t15.37\t17.19\t20.62\t20.93\t21.27\t21.77\t22.21\t27.09\t28.58\t29.26\t30.36\t34.39\t36.53\t37.35\t48.47\t229.44
+7月中旬\t10.07\t13.92\t14.43\t15.01\t15.74\t16\t17.79\t21.11\t23.14\t23.75\t25.21\t31.87\t37.26\t39.08\t47.3\t50.93\t63.04\t110.12\t260.34
+7月下旬\t9.39\t11.43\t12.78\t14.68\t16.33\t16.77\t19.67\t21.85\t23.54\t27.81\t34.05\t39.18\t43.54\t46.6\t52.28\t54.35\t66.5\t86.47\t104.59
+8月上旬\t9.5\t11.39\t12.92\t15.79\t20.31\t20.76\t22.69\t25.3\t28.17\t35.32\t39.14\t44.89\t50.11\t54.22\t64.7\t92.62\t148.46\t188.63\t337.47
+8月中旬\t10.39\t11.24\t12.86\t16.59\t18.35\t20.2\t22.33\t23.53\t24.48\t24.74\t27.21\t36.35\t41.55\t46.59\t48.61\t63.23\t78.97\t105.32\t132.93
+8月下旬\t9.02\t10.45\t11.3\t12.95\t16.25\t16.93\t17.31\t17.48\t18.65\t27.36\t28.4\t32.47\t37.77\t40.35\t53.68\t63.91\t69.04\t125.21\t377.4
+9月上旬\t7.54\t11.49\t13.83\t14.67\t14.96\t15.46\t15.85\t17.72\t19.25\t20.05\t24.41\t28.43\t33.5\t34.61\t39.08\t42.2\t54.76\t83.15\t137.61
+9月中旬\t7.54\t10.51\t11.36\t13.57\t15.79\t16.56\t17.58\t19.12\t20.83\t21.54\t24.9\t29.49\t31.96\t38.75\t45.86\t59.82\t67.64\t106.32\t331.22
+9月下旬\t8.4\t9.32\t10.74\t11.51\t13.08\t13.68\t15.29\t15.89\t16.35\t17.21\t17.8\t22.04\t24\t26.49\t30.68\t44.92\t61.74\t76.62\t132.3
+10月上旬\t8.06\t8.41\t9.58\t10.61\t11\t12.05\t12.56\t13.16\t13.68\t14.49\t14.67\t16.04\t19.08\t23.48\t36.06\t42.2\t47.39\t72.02\t195.92
+10月中旬\t5.91\t7.64\t8.83\t9.49\t9.82\t10.04\t10.92\t11.67\t12.17\t12.25\t12.92\t15.72\t17.99\t19.42\t20.85\t22.4\t23.84\t32.84\t63.75
+10月下旬\t5.69\t6.35\t7.34\t7.9\t7.99\t9.41\t9.89\t10.42\t10.86\t11\t11.31\t12.09\t12.84\t14.12\t15.11\t15.57\t18.32\t23.98\t31.66
+11月上旬\t4.7\t5.7\t6.47\t7.07\t7.67\t7.97\t8.05\t8.6\t9.17\t9.66\t10.1\t11.29\t11.98\t12.85\t13.84\t14.61\t16.53\t19.94\t35.59
+11月中旬\t4.5\t5.35\t5.91\t6.65\t6.81\t6.92\t7.35\t7.66\t7.95\t9.11\t9.17\t9.75\t10.63\t11.27\t13.48\t13.87\t14.78\t15.22\t26.19
+11月下旬\t3.97\t4.91\t5.56\t6.04\t6.16\t6.26\t6.73\t7.49\t7.77\t8.85\t9.86\t10.49\t10.77\t11.08\t12.17\t13.62\t15.14\t21.16\t57.72
+12月上旬\t4.51\t4.87\t5.33\t5.37\t5.72\t6.03\t6.54\t6.97\t7.01\t7.29\t8.01\t8.13\t8.43\t9.09\t10\t10.39\t11.89\t20.25\t43.89
+12月中旬\t4.45\t4.69\t4.89\t5.12\t5.23\t5.66\t5.71\t6.23\t6.78\t6.92\t7.23\t7.54\t8.33\t9.11\t9.29\t13.29\t15.18\t18.28\t29.87
+12月下旬\t4.08\t4.68\t5.29\t5.48\t5.84\t6.05\t6.2\t6.32\t6.69\t6.97\t7.42\t7.57\t8.06\t8.42\t8.47\t8.82\t11.05\t14.39\t18.75"""
+
+# 定義 36 旬標準順序，用於資料校驗
+CANONICAL_PERIODS = [
+    "1月上旬", "1月中旬", "1月下旬", "2月上旬", "2月中旬", "2月下旬",
+    "3月上旬", "3月中旬", "3月下旬", "4月上旬", "4月中旬", "4月下旬",
+    "5月上旬", "5月中旬", "5月下旬", "6月上旬", "6月中旬", "6月下旬",
+    "7月上旬", "7月中旬", "7月下旬", "8月上旬", "8月中旬", "8月下旬",
+    "9月上旬", "9月中旬", "9月下旬", "10月上旬", "10月中旬", "10月下旬",
+    "11月上旬", "11月中旬", "11月下旬", "12月上旬", "12月中旬", "12月下旬"
+]
 
 # ==========================================
 # 1. 核心物理與曆法引擎 (Calendar Engine)
@@ -19,7 +72,6 @@ def generate_date_profile(start_date: datetime.date, end_date: datetime.date) ->
         
     dates = []
     curr = start_date
-    # 左閉右開，排除 end_date 當天
     while curr < end_date:
         dates.append(curr)
         curr += datetime.timedelta(days=1)
@@ -87,7 +139,6 @@ def get_historical_milestone_dates_v2(disp_start: datetime.date, proj_start: dat
     milestones.add(start_bound)
     milestones.add(end_bound)
     
-    # 遍歷展示期內的每一天，尋找標準旬末日
     curr = disp_start
     while curr < proj_start:
         is_end_of_period = False
@@ -114,7 +165,6 @@ def interpolate_historical_capacities_v2(disp_start: datetime.date, proj_start: 
     start_bound = disp_start - datetime.timedelta(days=1)
     end_bound = proj_start - datetime.timedelta(days=1)
     
-    # 建立完整的 milestone-value 對應表
     full_caps = {}
     for k, v in cap_dict.items():
         try:
@@ -127,7 +177,6 @@ def interpolate_historical_capacities_v2(disp_start: datetime.date, proj_start: 
     full_caps[end_bound] = init_capacity
     
     milestones = sorted(list(full_caps.keys()))
-    # 確保範圍在 [start_bound, end_bound] 之內
     milestones = [m for m in milestones if start_bound <= m <= end_bound]
     
     daily_caps = {}
@@ -148,26 +197,31 @@ def interpolate_historical_capacities_v2(disp_start: datetime.date, proj_start: 
     return daily_caps
 
 # ==========================================
-# 2. 第二階段核心邏輯：標準旬流量資料庫與解析
+# 2. 第二階段核心邏輯：動態旬流量檢索與解析
 # ==========================================
 
-def get_builtin_shilin_flow(month: int, period: str, scenario: str) -> float:
+def get_dynamic_shilin_flow(month: int, period: str, scenario: str) -> float:
     """
-    後台內建大安溪士林堰歷史標準旬流量資料庫 (單位: cms)。
+    動態流量檢索引擎：自 st.session_state.hydrology_df 讀取對應旬別與情境之流量 (單位: cms)。
+    相容 `Q50 (平水)` 與簡寫 `Q50` 的情境欄位名稱。
     """
-    base_flows = {
-        1: 3.5,   2: 3.2,   3: 4.0,   4: 6.5,   5: 12.0,  6: 22.0,
-        7: 35.0,  8: 38.0,  9: 25.0,  10: 10.0, 11: 5.0,  12: 4.0
-    }
-    period_multipliers = {"上旬": 0.95, "中旬": 1.00, "下旬": 1.05}
-    scenario_multipliers = {
-        "Q5 (極豐水)": 2.50, "Q20 (偏豐水)": 1.50, "Q50 (平水)": 1.00,
-        "Q75 (偏枯水)": 0.60, "Q95 (特枯水)": 0.35
-    }
-    base = base_flows.get(month, 5.0)
-    p_mult = period_multipliers.get(period, 1.0)
-    s_mult = scenario_multipliers.get(scenario, 1.0)
-    return round(base * p_mult * s_mult, 2)
+    # 提取情境代碼 (例如 "Q50 (平水)" -> "Q50")
+    scenario_code = scenario.split(" ")[0].strip()
+    row_key = f"{month}月{period}"
+    
+    df = st.session_state.hydrology_df
+    # 比對主索引欄位（去除前後空白）
+    match_row = df[df["工作表"].str.strip() == row_key]
+    
+    if not match_row.empty:
+        try:
+            # 取得對應情境流量
+            return float(match_row.iloc[0][scenario_code])
+        except (KeyError, ValueError, TypeError):
+            pass
+            
+    # 若找不到，回退至安全預設流量 1.0 cms
+    return 1.0
 
 
 def parse_pasted_data(paste_str: str) -> list:
@@ -184,6 +238,58 @@ def parse_pasted_data(paste_str: str) -> list:
         except ValueError:
             continue
     return parsed_values
+
+
+def validate_uploaded_hydrology(df_input: pd.DataFrame) -> tuple:
+    """
+    強韌防呆校驗器：校驗上傳的 Excel 或 CSV 水文資料庫結構。
+    回傳 (是否成功, 錯誤訊息/成功解析之DataFrame)
+    """
+    df = df_input.copy()
+    # 欄位去空白
+    df.columns = [str(c).strip() for c in df.columns]
+    
+    # 1. 檢查首欄名稱是否正確（相容「工作表」或「旬別」）
+    first_col = df.columns[0]
+    if first_col not in ["工作表", "旬別"]:
+        df.rename(columns={first_col: "工作表"}, inplace=True)
+        first_col = "工作表"
+        
+    # 2. 檢查必要的情境欄位 (Q95 至 Q5 共 19 個欄位)
+    required_scenarios = [
+        "Q95", "Q90", "Q85", "Q80", "Q75", "Q70", "Q65", "Q60", "Q55", 
+        "Q50", "Q45", "Q40", "Q35", "Q30", "Q25", "Q20", "Q15", "Q10", "Q5"
+    ]
+    missing_cols = [c for c in required_scenarios if c not in df.columns]
+    if missing_cols:
+        return False, f"上傳檔案缺少必要的情境欄位：{', '.join(missing_cols)}"
+        
+    # 3. 檢查總筆數是否精確為 36 旬
+    if len(df) != 36:
+        return False, f"水文年度資料筆數錯誤。預期為 36 旬（列），但實際讀得 {len(df)} 筆。"
+        
+    # 4. 校驗 36 旬名稱順序，並將其標準化
+    df[first_col] = df[first_col].str.strip()
+    for idx, expected_name in enumerate(CANONICAL_PERIODS):
+        actual_name = df.iloc[idx][first_col]
+        if actual_name != expected_name:
+            return False, f"第 {idx+1} 列的旬別名稱不符。預期為 '{expected_name}'，但實際為 '{actual_name}'，請確認格式順序。"
+            
+    # 5. 強制將流量數據轉換成非負浮點數，檢查是否有非法字元
+    try:
+        for col in required_scenarios:
+            df[col] = pd.to_numeric(df[col]).astype(float)
+            if (df[col] < 0).any():
+                return False, f"欄位 '{col}' 偵測到負值流量，請確認所有流量皆大於等於 0。"
+    except Exception:
+        return False, "流量資料中含有非數值的文字或非法空白，請重新檢查檔案。"
+        
+    # 只保留必要欄位
+    final_df = df[[first_col] + required_scenarios].copy()
+    if first_col != "工作表":
+        final_df.rename(columns={first_col: "工作表"}, inplace=True)
+        
+    return True, final_df
 
 # ==========================================
 # 3. 第三階段核心邏輯：標準出流配置與預設值
@@ -226,7 +332,7 @@ def get_sim_target_date(milestone_date: datetime.date) -> datetime.date:
 def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: datetime.date, start_date: datetime.date, end_date: datetime.date, max_capacity: float) -> go.Figure:
     """
     繪製單一情境之鯉魚潭水庫蓄水量變化趨勢圖（無背景色塊，黑色實際庫容 + 藍色推估庫容）。
-    【優化】：有效庫容字卡移至上方外部左側，不遮擋任何曲線。
+    有效庫容字卡標註於繪圖區外部左上角 (x=0.0, y=1.02)，確保滿庫時不遮擋高水位推估曲線。
     """
     fig = go.Figure()
     boundary_day = start_date - datetime.timedelta(days=1)
@@ -258,7 +364,7 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
             hovertemplate="日期: %{x}<br>推估庫容: %{y:.2f} 萬噸<extra></extra>"
         ))
         
-    # 【優化】有效庫容字卡：移至左上角外部 (x=0.0, y=1.02)，完全不遮擋曲線
+    # 有效庫容字卡：以 Annotation 置於繪圖區外部左上角 (x=0.0, y=1.02)
     formatted_capacity = f"{max_capacity:,.0f}" if max_capacity == 11584.0 else f"{max_capacity:,.1f}"
     fig.add_annotation(
         text=f"有效庫容：{formatted_capacity}萬噸",
@@ -336,12 +442,6 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
 # 5. Streamlit 初始化與會話狀態 (狀態持久化以繼承預設值)
 # ==========================================
 
-st.set_page_config(
-    page_title="鯉魚潭水庫庫容推估系統 (數據對齊調校版)",
-    page_icon="💧",
-    layout="wide"
-)
-
 # 基礎參數初始化
 if "max_capacity" not in st.session_state:
     st.session_state.max_capacity = 11584.0
@@ -372,23 +472,32 @@ if "override_list" not in st.session_state:
 if "hist_capacity" not in st.session_state:
     st.session_state.hist_capacity = {}
 
-# 【重要：多情境數據暫存器】
+# 多情境數據暫存器
 if "scenarios" not in st.session_state:
     st.session_state.scenarios = {}
 
+# 【第六階段】初始化標準流量資料庫
+if "hydrology_df" not in st.session_state:
+    # 自 Embedded String 載入預設 DataFrame，做為第一層防護
+    default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
+    default_df = pd.read_csv(default_io, sep="\t")
+    default_df.columns = [c.strip() for c in default_df.columns]
+    st.session_state.hydrology_df = default_df
+    st.session_state.hydrology_source_status = "系統預設標準流量"
+
 # ==========================================
-# 6. 前端 UI 分頁排版 (含第五階段頁籤)
+# 6. 前端 UI 分頁排版 (含第六階段全面整合)
 # ==========================================
 
 st.title("💧 鯉魚潭水庫庫容推估系統 (數據對齊調校版)")
 st.markdown("""
-本版本已將曆法計算重構為**「左閉右開區間 [D_start, D_end)」**，結束日當天不計入演算。
-您可以直接在此對齊與您 Excel 檔案的各項數據。
+本系統底層核心物理演算完全採用**「日（Daily）」**質量守恆為步進單位，並嚴格遵循**農業控制律**、**上游引水限制**、與**生態基流量折抵**原則。
+時間曆法採用標準的**「左閉右開區間 [D_start, D_end)」**，與實務 Excel 作業無縫對接。
 """)
 
 tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
     "⚙️ 第一階段：基礎參數與曆法", 
-    "🌊 第二階段：入流條件設定",
+    "🌊 第二階段：入流條件與水文維護",
     "🚰 第三階段：出流需求與抗旱調整",
     "🧮 第四階段：核心庫容守恆演算",
     "📊 第五階段：推估成果產品"
@@ -460,7 +569,6 @@ with tab_config:
         period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
         unique_periods["旬別順序碼"] = unique_periods["旬別"].map(period_order)
         unique_periods = unique_periods.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
-        
         st.success(f"📅 曆法配置成功：當前展示+推估計算區間（左閉右開）共計 **{len(df_cal)}** 天。")
     else:
         unique_periods = pd.DataFrame()
@@ -477,10 +585,116 @@ with tab_config:
         proj_unique_periods = pd.DataFrame()
 
 # -----------------
-# TAB 2: 第二階段入流
+# TAB 2: 第二階段入流與水文維護 (全面重構與整合)
 # -----------------
 with tab_inflow:
-    st.subheader("🌊 入流條件與流量解析 (未來推估期專用)")
+    st.subheader("🌊 歷史標準水文資料庫與入流條件設定")
+    
+    # 【第六階段核心功能：在地化水文資料庫維護專區】
+    st.markdown("### 🛠️ 歷史標準水文資料庫維護管理")
+    
+    # 狀態顯示字卡
+    if st.session_state.hydrology_source_status == "系統預設標準流量":
+        st.info(f"📊 當前主資料庫狀態：🟢 **系統內建標準水文流量 (36旬)**")
+    else:
+        st.success(f"📊 當前主資料庫狀態：🔵 **已成功載入自訂上傳流量檔案** (來源: {st.session_state.hydrology_source_status})")
+    
+    m_col1, m_col2 = st.columns([2, 1])
+    with m_col1:
+        st.markdown("##### 📥 檔案上傳更新（支援 Excel .xlsx 與 CSV）")
+        uploaded_hydrology_file = st.file_uploader(
+            "請選擇欲上傳之水文流量檔案 (需符合36旬格式規格)：",
+            type=["xlsx", "csv"],
+            key="hydrology_uploader"
+        )
+        
+        # 處理檔案上傳與覆寫邏輯
+        if uploaded_hydrology_file is not None:
+            file_name = uploaded_hydrology_file.name
+            try:
+                if file_name.endswith(".xlsx"):
+                    temp_df = pd.read_excel(uploaded_hydrology_file, engine="openpyxl")
+                else:
+                    # CSV 讀取防編碼衝突
+                    temp_df = pd.read_csv(uploaded_hydrology_file, encoding="utf-8-sig")
+                
+                # 執行防呆校驗
+                is_valid, validated_data = validate_uploaded_hydrology(temp_df)
+                if is_valid:
+                    st.session_state.hydrology_df = validated_data
+                    st.session_state.hydrology_source_status = file_name
+                    st.toast("🎉 水文資料庫已成功覆寫更新！", icon="✅")
+                    st.rerun()
+                else:
+                    st.error(f"❌ 上傳失敗！檔案結構校驗未通過：{validated_data}")
+            except Exception as e:
+                st.error(f"❌ 解析檔案時發生系統錯誤：{str(e)}。請確認檔案未損毀且內容格式正確。")
+    
+    with m_col2:
+        st.markdown("##### 💾 範本檔案下載")
+        st.caption("請下載下方範本，編輯流量值後即可上傳更新。")
+        
+        # 1. 產生 CSV 範本
+        csv_template_bytes = st.session_state.hydrology_df.to_csv(index=False).encode('utf-8-sig')
+        st.download_button(
+            label="📥 下載標準水文 CSV 範本",
+            data=csv_template_bytes,
+            file_name="hydrology_standard_template.csv",
+            mime="text/csv",
+            use_container_width=True
+        )
+        
+        # 2. 產生 Excel 範本 (安全機制：防 openpyxl 缺失)
+        try:
+            excel_io = io.BytesIO()
+            with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
+                st.session_state.hydrology_df.to_excel(writer, index=False, sheet_name="標準水文流量")
+            excel_template_bytes = excel_io.getvalue()
+            
+            st.download_button(
+                label="📥 下載標準水文 Excel 範本",
+                data=excel_template_bytes,
+                file_name="hydrology_standard_template.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
+        except Exception:
+            st.caption("⚠️ 本機環境不支援 Excel 匯出，請使用 CSV 範本。")
+            
+        # 3. 重設回預設資料按鈕
+        if st.session_state.hydrology_source_status != "系統預設標準流量":
+            if st.button("🔄 重設回系統預設標準流量", use_container_width=True, type="secondary"):
+                default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
+                default_df = pd.read_csv(default_io, sep="\t")
+                default_df.columns = [c.strip() for c in default_df.columns]
+                st.session_state.hydrology_df = default_df
+                st.session_state.hydrology_source_status = "系統預設標準流量"
+                st.toast("🔄 已成功回復系統預設流量。", icon="🔄")
+                st.rerun()
+
+    # 展開式的操作指南 (防呆步驟)
+    with st.expander("📖 歷史標準水文資料庫 年度更新操作指南 (無 LaTeX 語法)"):
+        st.markdown("""
+        為了協助非技術人員能輕鬆維護本系統水文流量資料，請參考以下三步標準流程：
+        
+        **步驟一：下載最新範本**
+        * 點擊右側的「下載標準水文 Excel 範本」(或 CSV 範本)，取得包含 36 旬 (1月上旬至12月下旬) 與 19 個情境 (Q95 至 Q5) 結構的對齊檔案。
+        
+        **步驟二：更新流量資料**
+        * 使用 Excel 開啟下載的範本。
+        * 保持首欄的旬別名稱（如「1月上旬」）完全不動。
+        * 將您在每年年初取得之各旬、各情境最新天然日流量數值 (cms) 填入對應儲存格。
+        * 儲存並關閉檔案。
+        
+        **步驟三：上傳覆寫**
+        * 將修改完畢的 Excel (.xlsx) 或 CSV 檔案，拖曳上傳至本頁面的「檔案上傳更新」區域。
+        * 系統防呆引擎將自動檢查格式（確保剛好為 36 列，且各情境資料格式正確）。
+        * 驗證通過後，系統將發出成功通知。隨後，所有推估計算與產品輸出都將全自動改由新資料庫進行計算！
+        """)
+
+    st.markdown("---")
+    st.markdown("### 🌊 【未來推估期】入流流量對齊設定")
+    
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
@@ -494,11 +708,13 @@ with tab_inflow:
             st.session_state.builtin_scenario = selected_scen
             for idx, row in proj_unique_periods.iterrows():
                 y, m, p = row["年份"], row["月份"], row["旬別"]
-                flow_val = get_builtin_shilin_flow(m, p, selected_scen)
+                # 呼叫動態流量引擎，改由 st.session_state.hydrology_df 直接存取
+                flow_val = get_dynamic_shilin_flow(m, p, selected_scen)
                 period_flow_mapping.append({"年份": y, "月份": m, "旬別": p, "天然流量(cms)": flow_val})
         else:
             st.markdown("##### 📥 Excel 數據批次貼上區")
-            dummy_data_list = [round(get_builtin_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)"), 1) for _, row in proj_unique_periods.iterrows()]
+            # 生成動態 Q50 預設列表以供複製參考
+            dummy_data_list = [round(get_dynamic_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)"), 1) for _, row in proj_unique_periods.iterrows()]
             dummy_paste_str = "\t".join(map(str, dummy_data_list))
             st.caption(f"💡 測試範例串（共 {len(dummy_data_list)} 個數值）： `{dummy_paste_str}`")
             
@@ -509,7 +725,7 @@ with tab_inflow:
                 if len(parsed_list) != len(proj_unique_periods):
                     st.error(f"❌ 解析失敗：您貼上的數據個數（{len(parsed_list)} 筆）與當前區間所需（{len(proj_unique_periods)} 筆）不符！")
                     for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
-                        period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_builtin_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
+                        period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_dynamic_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
                 else:
                     st.success("✅ 數據成功解析並對齊！")
                     for i, (_, row) in enumerate(proj_unique_periods.iterrows()):
@@ -520,7 +736,7 @@ with tab_inflow:
             else:
                 st.info("⚠️ 尚未貼上數據，下方目前顯示內建 Q50 預設值作為參考占位。")
                 for idx, row in proj_unique_periods.iterrows():
-                    period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_builtin_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
+                    period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_dynamic_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
 
         df_period_flow = pd.DataFrame(period_flow_mapping)
         st.dataframe(df_period_flow, use_container_width=True)
@@ -1024,7 +1240,7 @@ with tab_simulation:
 with tab_products:
     st.subheader("📊 第五階段：推估成果產品 (多情境管理與成果比對)")
     
-    # 📌 情境暫存機制控制區
+    # 情境暫存機制控制區
     if "sim_results" in st.session_state:
         st.markdown("### 💾 暫存當前推估成果")
         st.caption("您可以將目前運行的這套設定與推估曲線存檔，以便跟其他流量或不同供水折扣條件的情境疊圖比對。")
@@ -1047,7 +1263,7 @@ with tab_products:
                 else:
                     st.error("❌ 請輸入有效的情境名稱！")
                     
-    # 📌 已儲存情境管理控制區
+    # 已儲存情境管理控制區
     if st.session_state.scenarios:
         st.markdown("---")
         st.markdown("### 🛠️ 暫存情境管理與比對選擇")
@@ -1124,7 +1340,7 @@ with tab_products:
             )
             
             # ==========================================
-            # 產品二：庫容推估情境對比 (Plotly 多情境曲線 - 含優化字卡位置)
+            # 產品二：庫容推估情境對比 (Plotly 多情境曲線)
             # ==========================================
             st.markdown("---")
             st.markdown("### 📈 產品二：庫容推估情境對比")
@@ -1163,7 +1379,7 @@ with tab_products:
                         hovertemplate="日期: %{x}<br>推估庫容: %{y:.2f} 萬噸<extra></extra>"
                     ))
                     
-            # 3. 【優化】有效庫容字卡：移至左上角外部 (x=0.0, y=1.02)，徹底避免遮擋
+            # 3. 有效庫容字卡：移至左上角外部 (x=0.0, y=1.02)，避免遮擋
             max_cap = st.session_state.max_capacity
             formatted_cap = f"{max_cap:,.0f}" if max_cap == 11584.0 else f"{max_cap:,.1f}"
             fig_multi.add_annotation(
