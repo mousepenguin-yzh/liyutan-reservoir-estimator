@@ -9,15 +9,17 @@ import calendar
 
 def generate_date_profile(start_date: datetime.date, end_date: datetime.date) -> pd.DataFrame:
     """
-    根據起始日與目標日，生成逐日的時間剖面資料表。
-    動態切分上、中、下旬，並精確計算該旬的「實際日曆天數」。
+    根據起始日與結束日，生成逐日的時間剖面資料表。
+    採用【左閉右開區間 [start_date, end_date)】：
+    僅生成到 end_date - 1 天，結束日當天不進行日計算。
     """
-    if start_date > end_date:
-        raise ValueError("起始日期不可大於結束日期，請重新檢查您的時間區間。")
+    if start_date >= end_date:
+        raise ValueError("起始日期不可大於或等於結束日期，請重新檢查您的時間區間。")
         
     dates = []
     curr = start_date
-    while curr <= end_date:
+    # 左閉右開，排除 end_date 當天
+    while curr < end_date:
         dates.append(curr)
         curr += datetime.timedelta(days=1)
         
@@ -69,6 +71,52 @@ def is_overlapping(start1: datetime.date, end1: datetime.date, start2: datetime.
     判斷兩個日期區間是否有重疊。
     """
     return max(start1, start2) <= min(end1, end2)
+
+
+def get_historical_milestone_dates(disp_start: datetime.date, proj_start: datetime.date) -> list:
+    """
+    找出展示起始日到推估起始日之間，所有「旬首日（1日, 11日, 21日）」與邊界日期。
+    """
+    milestones = set()
+    milestones.add(proj_start)
+    milestones.add(disp_start)
+    
+    curr = disp_start
+    while curr < proj_start:
+        if curr.day in [1, 11, 21]:
+            milestones.add(curr)
+        curr += datetime.timedelta(days=1)
+        
+    return sorted(list(milestones))
+
+
+def interpolate_historical_capacities(disp_start: datetime.date, proj_start: datetime.date, cap_dict: dict) -> dict:
+    """
+    在展示區間內進行線性插值，求出每日的實際蓄水量。
+    """
+    milestones = sorted([datetime.datetime.strptime(k, "%Y-%m-%d").date() for k in cap_dict.keys()])
+    milestones = [m for m in milestones if disp_start <= m <= proj_start]
+    
+    if proj_start not in milestones:
+        milestones.append(proj_start)
+    milestones = sorted(list(set(milestones)))
+    
+    daily_caps = {}
+    for i in range(len(milestones) - 1):
+        d1 = milestones[i]
+        d2 = milestones[i+1]
+        val1 = cap_dict.get(d1.strftime('%Y-%m-%d'), 8000.0)
+        val2 = cap_dict.get(d2.strftime('%Y-%m-%d'), 8000.0)
+        
+        days_diff = (d2 - d1).days
+        for step in range(days_diff + 1):
+            curr_d = d1 + datetime.timedelta(days=step)
+            if days_diff == 0:
+                daily_caps[curr_d] = val1
+            else:
+                ratio = step / days_diff
+                daily_caps[curr_d] = round(val1 + (val2 - val1) * ratio, 2)
+    return daily_caps
 
 # ==========================================
 # 2. 第二階段核心邏輯：標準旬流量資料庫與解析
@@ -130,22 +178,26 @@ def get_default_demands(month: int) -> dict:
 # ==========================================
 
 st.set_page_config(
-    page_title="鯉魚潭水庫庫容推估系統 (第四階段)",
+    page_title="鯉魚潭水庫庫容推估系統 (數據對齊調校版)",
     page_icon="💧",
     layout="wide"
 )
 
-# 基礎參數初始化
+# 基礎參數與雙時間軸日期初始化 (預設為您提及的 6/21 ~ 9/1 區間以利直接測試)
 if "max_capacity" not in st.session_state:
     st.session_state.max_capacity = 11584.0
 if "shilin_eco_flow" not in st.session_state:
     st.session_state.shilin_eco_flow = 2.2
 if "liyutan_eco_flow" not in st.session_state:
     st.session_state.liyutan_eco_flow = 0.3
+
+if "display_start_date" not in st.session_state:
+    st.session_state.display_start_date = datetime.date(2026, 6, 21)
 if "start_date" not in st.session_state:
-    st.session_state.start_date = datetime.date(2026, 2, 1)
+    st.session_state.start_date = datetime.date(2026, 6, 21)
 if "end_date" not in st.session_state:
-    st.session_state.end_date = datetime.date(2026, 3, 15)
+    st.session_state.end_date = datetime.date(2026, 9, 1)
+
 if "init_capacity" not in st.session_state:
     st.session_state.init_capacity = 8000.0
 if "inflow_source" not in st.session_state:
@@ -156,14 +208,17 @@ if "manual_flow_dict" not in st.session_state:
     st.session_state.manual_flow_dict = {}
 if "override_list" not in st.session_state:
     st.session_state.override_list = []
+if "hist_capacity" not in st.session_state:
+    st.session_state.hist_capacity = {}
 
 # ==========================================
 # 5. 前端 UI 分頁排版
 # ==========================================
 
-st.title("💧 鯉魚潭水庫庫容推估系統 (第四階段)")
+st.title("💧 鯉魚潭水庫庫容推估系統 (數據對齊調校版)")
 st.markdown("""
-本階段已成功建置 **核心守恆物理引擎**，並已調整為「上灌區優先供水，下灌區餘額削減」之實務水調優先權規則。
+本版本已將曆法計算重構為**「左閉右開區間 $[D_{\\text{start}}, D_{\\text{end}})$」**，結束日當天不計入演算。
+您可以直接在此對齊與您 Excel 檔案的各項數據。
 """)
 
 tab_config, tab_inflow, tab_outflow, tab_simulation = st.tabs([
@@ -174,10 +229,10 @@ tab_config, tab_inflow, tab_outflow, tab_simulation = st.tabs([
 ])
 
 # -----------------
-# TAB 1: 基礎與曆法
+# TAB 1: 基礎與曆法 (重構雙時間軸與動態庫容標籤)
 # -----------------
 with tab_config:
-    st.subheader("⚙️ 基礎參數與邊界條件設定")
+    st.subheader("⚙️ 基礎參數與雙時間軸對齊")
     col1, col2 = st.columns(2)
     with col1:
         st.markdown("##### 🏛️ 水庫與堰體物理限制")
@@ -185,17 +240,57 @@ with tab_config:
         st.session_state.shilin_eco_flow = st.number_input("士林堰生態基流量 (cms)", min_value=0.0, max_value=10.0, value=st.session_state.shilin_eco_flow, step=0.1)
         st.session_state.liyutan_eco_flow = st.number_input("鯉魚潭最低生態放流量 (cms)", min_value=0.0, max_value=5.0, value=st.session_state.liyutan_eco_flow, step=0.05)
     with col2:
-        st.markdown("##### 📅 模擬區間與起始狀態")
-        st.session_state.start_date = st.date_input("模擬起始日期", value=st.session_state.start_date)
-        st.session_state.end_date = st.date_input("預計推估目標日 (結束日期)", value=st.session_state.end_date)
-        if st.session_state.start_date > st.session_state.end_date:
-            st.error("⚠️ 錯誤：『模擬起始日期』不可晚於『預計推估目標日』。")
-        st.session_state.init_capacity = st.number_input("起始日當天庫容 (萬噸)", min_value=0.0, max_value=st.session_state.max_capacity, value=st.session_state.init_capacity, step=10.0)
+        st.markdown("##### 📅 雙時間軸日期設定")
+        st.session_state.display_start_date = st.date_input("展示起始日期", value=st.session_state.display_start_date)
+        st.session_state.start_date = st.date_input("推估起始日期 (物理模擬起點)", value=st.session_state.start_date)
+        st.session_state.end_date = st.date_input("預計推估結束日期 (此日不計入日計算)", value=st.session_state.end_date)
+        
+        # 檢驗日期先後關係
+        if st.session_state.display_start_date > st.session_state.start_date:
+            st.error("⚠️ 錯誤：『展示起始日期』不可晚於『推估起始日期』。")
+        if st.session_state.start_date >= st.session_state.end_date:
+            st.error("⚠️ 錯誤：『推估起始日期』必須早於『預計推估結束日期』。")
+            
+        # 依據展示起始日，動態命名起始庫容欄位標籤 (例如：6/20 24:00)
+        calc_start_day = st.session_state.display_start_date
+        prev_day = calc_start_day - datetime.timedelta(days=1)
+        prev_day_label = f"起始前一日 ({prev_day.strftime('%m/%d')} 24:00) 庫容 (萬噸)"
+        
+        st.session_state.init_capacity = st.number_input(prev_day_label, min_value=0.0, max_value=st.session_state.max_capacity, value=st.session_state.init_capacity, step=10.0)
 
-    if st.session_state.start_date <= st.session_state.end_date:
-        df_cal = generate_date_profile(st.session_state.start_date, st.session_state.end_date)
+    # 處理展示期（歷史觀測期）的逐旬蓄水量輸入
+    if st.session_state.display_start_date < st.session_state.start_date:
+        st.markdown("---")
+        st.markdown("##### 📈 展示區間歷史蓄水量輸入")
+        st.caption("請輸入展示期間內，各旬首日（或邊界日）前一日 24:00 的實際蓄水量 (萬噸)：")
+        
+        milestones = get_historical_milestone_dates(st.session_state.display_start_date, st.session_state.start_date)
+        cols_num = min(4, len(milestones))
+        m_cols = st.columns(cols_num)
+        
+        for idx, m_date in enumerate(milestones):
+            col_idx = idx % cols_num
+            m_prev_day = m_date - datetime.timedelta(days=1)
+            # 若為推估起始日，則鎖定與起始庫容一致
+            if m_date == st.session_state.start_date:
+                m_label = f"推估起點前一日 ({m_prev_day.strftime('%m/%d')} 24:00) 庫容"
+                st.session_state.hist_capacity[m_date.strftime('%Y-%m-%d')] = m_cols[col_idx].number_input(m_label, value=st.session_state.init_capacity, disabled=True, key=f"disabled_hist_{m_date}")
+            else:
+                m_label = f"{(m_prev_day).strftime('%m/%d')} 24:00 蓄水量"
+                default_v = st.session_state.hist_capacity.get(m_date.strftime('%Y-%m-%d'), st.session_state.init_capacity)
+                st.session_state.hist_capacity[m_date.strftime('%Y-%m-%d')] = m_cols[col_idx].number_input(m_label, min_value=0.0, max_value=st.session_state.max_capacity, value=default_v, step=50.0, key=f"active_hist_{m_date}")
+
+    # 生成總時間剖面 (左閉右開)
+    if st.session_state.display_start_date < st.session_state.end_date and st.session_state.start_date < st.session_state.end_date:
+        df_cal = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
         unique_periods = df_cal.groupby(["年份", "月份", "旬別"]).size().reset_index().drop(columns=[0])
-        st.success(f"📅 曆法配置成功：當前模擬區間跨越了 **{len(unique_periods)}** 個完整的旬別。")
+        
+        # 中文旬別排序
+        period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
+        unique_periods["旬別順序碼"] = unique_periods["旬別"].map(period_order)
+        unique_periods = unique_periods.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
+        
+        st.success(f"📅 曆法配置成功：當前展示+推估計算區間（左閉右開）共計 **{len(df_cal)}** 天，跨越 **{len(unique_periods)}** 個計算旬別。")
     else:
         unique_periods = pd.DataFrame()
 
@@ -248,7 +343,7 @@ with tab_inflow:
         st.dataframe(df_period_flow, use_container_width=True)
 
 # -----------------
-# TAB 3: 第三階段出流 (已修正：旬排序、欄寬自動換行往右拉)
+# TAB 3: 第三階段出流
 # -----------------
 with tab_outflow:
     st.subheader("🚰 出流標的需求配置與抗旱覆寫機制")
@@ -312,7 +407,7 @@ with tab_outflow:
 
         df_base_demands = pd.DataFrame(base_demand_list)
         
-        # ⚡ 自由選定日期區間的抗旱臨時調整機制 ⚡
+        # ⚡ 歷史枯旱期/臨時調度自訂日期覆寫清單 ⚡
         st.markdown("---")
         st.markdown("#### ⚡ 歷史枯旱期/臨時調度自訂日期覆寫清單")
         
@@ -362,8 +457,8 @@ with tab_outflow:
         else:
             st.session_state.override_list = []
 
-        # 資料處理核心：先生成日明細套用碰撞
-        df_daily_outflow = generate_date_profile(st.session_state.start_date, st.session_state.end_date)
+        # 資料處理核心：先生成日明細套用碰撞 (在總區間 [display_start_date, end_date) 內生成)
+        df_daily_outflow = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
         
         base_lookup = {}
         for _, item in df_base_demands.iterrows():
@@ -462,28 +557,22 @@ with tab_outflow:
             
         df_final_demands = pd.DataFrame(final_demand_list)
         
-        # 修正 1：中文旬別排序（強制定義：上旬->1, 中旬->2, 下旬->3）
+        # 中文旬別排序
         period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
         df_final_demands["旬別順序碼"] = df_final_demands["旬別"].map(period_order)
         df_final_demands = df_final_demands.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"])
         
         st.markdown("##### 📌 當前模擬區間各旬【常態與抗旱日期權重均值】匯總報表")
-        
-        # 修正 2：備註欄位自動換行並拉寬 (使用 column_config.TextColumn)
         st.dataframe(
             df_final_demands,
             use_container_width=True,
             column_config={
-                "原因備註 (條列)": st.column_config.TextColumn(
-                    "原因備註 (條列)",
-                    width="large",  # 強制拉寬
-                    help="此旬別內所有抗旱覆寫事件的時段與備註"
-                )
+                "原因備註 (條列)": st.column_config.TextColumn("原因備註 (條列)", width="large")
             }
         )
 
 # -----------------
-# TAB 4: 第四階段：核心庫容守恆演算 (已修正：上游上灌區優先，下灌區餘額扣減)
+# TAB 4: 第四階段：核心庫容守恆演算 (左閉右開，排除 end_date)
 # -----------------
 with tab_simulation:
     st.subheader("🧮 鯉魚潭水庫質量守恆與防線調度計算")
@@ -496,22 +585,29 @@ with tab_simulation:
     elif 'df_period_flow' not in locals() or 'df_daily_outflow' not in locals():
         st.warning("⚠️ 請確保已完成第一至三階段的入流與出流條件設定。")
     else:
-        # 提供執行模擬的按鈕
         if st.button("▶️ 執行庫容守恆模擬", type="primary"):
             
-            # 建立逐日計算 Loop
             curr_capacity = st.session_state.init_capacity
             max_capacity = st.session_state.max_capacity
             shilin_eco = st.session_state.shilin_eco_flow
             liyutan_eco = st.session_state.liyutan_eco_flow
             
+            # 若有歷史展示期，先進行實際蓄水量的插值
+            has_history = st.session_state.display_start_date < st.session_state.start_date
+            daily_hist_caps = {}
+            if has_history:
+                daily_hist_caps = interpolate_historical_capacities(
+                    st.session_state.display_start_date, 
+                    st.session_state.start_date, 
+                    st.session_state.hist_capacity
+                )
+            
             sim_daily_records = []
+            total_ag_intercept_volume_10k = 0.0
+            total_spillway_overflow_10k = 0.0
             
-            # 用於加總的指標
-            total_ag_intercept_volume_10k = 0.0  # 農業削減總水量 (萬噸)
-            total_spillway_overflow_10k = 0.0    # 總溢流量 (萬噸)
-            
-            df_daily_profile = generate_date_profile(st.session_state.start_date, st.session_state.end_date)
+            # 依據 [展示起始日, 結束日) 生成每日時間表
+            df_daily_profile = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
             
             flow_lookup = {}
             for _, item in df_period_flow.iterrows():
@@ -522,111 +618,25 @@ with tab_simulation:
                 current_date = row["日期"]
                 key = f"{row['年份']}-{row['月份']}-{row['旬別']}"
                 
-                # 1. 當日士林堰天然流量 (I_cms)
-                I_cms = flow_lookup.get(key, 0.0)
+                # 判定當前日期屬於「觀測展示期」還是「未來推估期」
+                is_projection = current_date >= st.session_state.start_date
                 
-                # 2. 取得當日出流需求 (U_cms: 上灌, D_cms: 下灌, P_vol: 公共)
-                out_row = df_daily_outflow[df_daily_outflow["日期"] == current_date].iloc[0]
-                U_cms = out_row["上灌區當日流量(cms)"]
-                D_cms = out_row["下灌區當日流量(cms)"]
-                P_vol = out_row["公共供水當日水量(萬噸)"]
-                
-                # -----------------
-                # 物理防線 1：上灌/下灌 優先權分配 (農業控制律)
-                # 原則：天然流量先滿足上灌區，其餘才分配給下灌區。
-                # -----------------
-                actual_U_cms = min(U_cms, I_cms)
-                remaining_flow_cms = max(0.0, I_cms - actual_U_cms)
-                
-                actual_D_cms = min(D_cms, remaining_flow_cms)
-                
-                # 判斷是否觸發農業削減
-                ag_control_triggered = (actual_U_cms < U_cms) or (actual_D_cms < D_cms)
-                reduction_cms = (U_cms + D_cms) - (actual_U_cms + actual_D_cms)
-                total_ag_intercept_volume_10k += (reduction_cms * 8.64)
-                
-                # -----------------
-                # 物理防線 2：士林堰引水計算 & 生態基流折抵
-                # -----------------
-                # 上灌實際放水 actual_U_cms 可折抵生態基流 shilin_eco (2.2 cms)
-                # 士林堰必需保留於河道的總量 = max(生態基流, 上灌實際放水量)
-                shilin_river_release_cms = min(I_cms, max(shilin_eco, actual_U_cms))
-                
-                # 剩餘可用於引水的流量
-                available_diversion_cms = max(0.0, I_cms - shilin_river_release_cms)
-                
-                # 引水隧道上限為 33 cms
-                actual_diversion_cms = min(33.0, available_diversion_cms)
-                actual_diversion_vol = round(actual_diversion_cms * 8.64, 2)
-                
-                # -----------------
-                # 物理防線 3：鯉魚潭出流計算 & 生態最低放流折抵
-                # -----------------
-                # 下灌實際放水 actual_D_cms 可折抵大壩最低生態放流 liyutan_eco (0.3 cms)
-                # 大壩必需放出至河道的總量 = max(最低生態放流, 下灌實際放水量)
-                liyutan_river_release_cms = max(liyutan_eco, actual_D_cms)
-                liyutan_river_release_vol = round(liyutan_river_release_cms * 8.64, 2)
-                
-                # 每日鯉魚潭實際出流總量 = 公共出水需求 (萬噸) + 大壩放流量 (萬噸)
-                actual_outflow_vol = round(P_vol + liyutan_river_release_vol, 2)
-                
-                # -----------------
-                # 物理防線 4：庫容質量守恆演算
-                # -----------------
-                yesterday_capacity = curr_capacity
-                calculated_capacity = yesterday_capacity + actual_diversion_vol - actual_outflow_vol
-                
-                spillway_overflow_vol = 0.0
-                if calculated_capacity > max_capacity:
-                    spillway_overflow_vol = round(calculated_capacity - max_capacity, 2)
-                    total_spillway_overflow_10k += spillway_overflow_vol
-                    curr_capacity = max_capacity
-                elif calculated_capacity < 0:
-                    curr_capacity = 0.0
-                else:
-                    curr_capacity = round(calculated_capacity, 2)
+                if not is_projection:
+                    # ==========================================
+                    # 觀測展示期 (無物理演算，庫容直接採用插值實際值)
+                    # ==========================================
+                    yesterday_capacity = curr_capacity
+                    # 抓取插值結果
+                    curr_capacity = daily_hist_caps.get(current_date, yesterday_capacity)
+                    net_change_vol = round(curr_capacity - yesterday_capacity, 2)
                     
-                sim_daily_records.append({
-                    "日期": current_date,
-                    "天然流量 (cms)": I_cms,
-                    "原上灌需求 (cms)": U_cms,
-                    "原下灌需求 (cms)": D_cms,
-                    "實際上灌放水 (cms)": round(actual_U_cms, 2),
-                    "實際下灌放水 (cms)": round(actual_D_cms, 2),
-                    "農業削減狀態": "🚨 觸發削減" if ag_control_triggered else "🟢 正常",
-                    "農業削減量 (cms)": round(reduction_cms, 2),
-                    "士林堰河道保留 (cms)": round(shilin_river_release_cms, 2),
-                    "實際引水流量 (cms)": round(actual_diversion_cms, 2),
-                    "今日引入量 (萬噸)": actual_diversion_vol,
-                    "大壩河道放流 (cms)": round(liyutan_river_release_cms, 2),
-                    "公共給水量 (萬噸)": round(P_vol, 2),
-                    "今日出水總量 (萬噸)": actual_outflow_vol,
-                    "溢流量 (萬噸)": spillway_overflow_vol,
-                    "昨日期末庫容 (萬噸)": round(yesterday_capacity, 2),
-                    "本日末庫容 (萬噸)": round(curr_capacity, 2)
-                })
-                
-            df_sim_results = pd.DataFrame(sim_daily_records)
-            st.session_state.sim_results = df_sim_results
-            
-            st.markdown("### 🏆 庫容模擬計算完成！調度成果指標如下：")
-            
-            m1, m2, m3, m4 = st.columns(4)
-            with m1:
-                final_volume = df_sim_results.iloc[-1]["本日末庫容 (萬噸)"]
-                st.metric("模擬期末庫容", f"{final_volume} 萬噸", delta=f"{round(final_volume - st.session_state.init_capacity, 1)} 萬噸 (較期初)")
-            with m2:
-                st.metric("累積溢流量 (Spill)", f"{round(total_spillway_overflow_10k, 1)} 萬噸")
-            with m3:
-                st.metric("農業控制律削減總水量", f"{round(total_ag_intercept_volume_10k, 1)} 萬噸")
-            with m4:
-                dry_days = sum(1 for item in sim_daily_records if item["本日末庫容 (萬噸)"] <= 0.0)
-                st.metric("枯竭空庫天數", f"{dry_days} 天", delta="🚨 警告：空庫枯竭！" if dry_days > 0 else "🟢 安全")
-
-            st.markdown("##### 📅 逐日質量守恆與調度明細表")
-            st.dataframe(df_sim_results, use_container_width=True)
-            st.success("✅ 第四階段核心演算完畢！數據完全通過「上游上灌優先」守恆律。隨時可以進行第五階段！")
-            
-        elif "sim_results" in st.session_state:
-            st.markdown("##### 📅 歷史模擬明細表 (保留前次計算結果)")
-            st.dataframe(st.session_state.sim_results, use_container_width=True)
+                    sim_daily_records.append({
+                        "日期": current_date,
+                        "年份": row["年份"],
+                        "月份": row["月份"],
+                        "旬別": row["旬別"],
+                        "運行狀態": "📊 觀測/歷史",
+                        "天然流量 (cms)": 0.0,
+                        "原上灌需求 (cms)": 0.0,
+                        "原下灌需求 (cms)": 0.0,
+        
