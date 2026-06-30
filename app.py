@@ -1,4 +1,14 @@
 import streamlit as st
+
+# ==========================================
+# 0. 必須為 Streamlit 第一行指令：強制全螢幕寬版配置 (解決問題 1)
+# ==========================================
+st.set_page_config(
+    page_title="鯉魚潭水庫庫容推估系統 (數據對齊調校版)",
+    page_icon="💧",
+    layout="wide"
+)
+
 import pandas as pd
 import datetime
 import calendar
@@ -197,7 +207,7 @@ def interpolate_historical_capacities_v2(disp_start: datetime.date, proj_start: 
     return daily_caps
 
 # ==========================================
-# 2. 第二階段核心邏輯：動態旬流量檢索與解析
+# 2. 第二階段核心邏輯：動態旬流量檢索、多重解碼與解析
 # ==========================================
 
 def get_dynamic_shilin_flow(month: int, period: str, scenario: str) -> float:
@@ -215,7 +225,6 @@ def get_dynamic_shilin_flow(month: int, period: str, scenario: str) -> float:
     
     if not match_row.empty:
         try:
-            # 取得對應情境流量
             return float(match_row.iloc[0][scenario_code])
         except (KeyError, ValueError, TypeError):
             pass
@@ -238,6 +247,26 @@ def parse_pasted_data(paste_str: str) -> list:
         except ValueError:
             continue
     return parsed_values
+
+
+def read_csv_with_fallback(file_obj) -> pd.DataFrame:
+    """
+    強韌多重解碼回退解碼引擎 (解決問題 4)：
+    台灣同仁在 Excel 另存為 CSV 時預設使用 cp950 (ANSI) 編碼，此引擎依序嘗試：
+    1. utf-8-sig (有BOM的UTF-8)
+    2. cp950 (微軟繁體中文Big5)
+    3. utf-8 (標準無BOM的UTF-8)
+    4. gb18030 (簡中相容編碼)
+    """
+    bytes_data = file_obj.getvalue()
+    for enc in ["utf-8-sig", "cp950", "utf-8", "gb18030"]:
+        try:
+            decoded_text = bytes_data.decode(enc)
+            return pd.read_csv(io.StringIO(decoded_text))
+        except Exception:
+            continue
+    # 萬一全部失敗，回退至 pandas 預設讀取器
+    return pd.read_csv(file_obj)
 
 
 def validate_uploaded_hydrology(df_input: pd.DataFrame) -> tuple:
@@ -476,9 +505,8 @@ if "hist_capacity" not in st.session_state:
 if "scenarios" not in st.session_state:
     st.session_state.scenarios = {}
 
-# 【第六階段】初始化標準流量資料庫
+# 初始化標準流量資料庫
 if "hydrology_df" not in st.session_state:
-    # 自 Embedded String 載入預設 DataFrame，做為第一層防護
     default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
     default_df = pd.read_csv(default_io, sep="\t")
     default_df.columns = [c.strip() for c in default_df.columns]
@@ -585,132 +613,43 @@ with tab_config:
         proj_unique_periods = pd.DataFrame()
 
 # -----------------
-# TAB 2: 第二階段入流與水文維護 (全面重構與整合)
+# TAB 2: 第二階段入流與水文維護 (優化隱藏並解決 CP950 解碼錯誤 - 解決問題 2, 3, 4, 5)
 # -----------------
 with tab_inflow:
-    st.subheader("🌊 歷史標準水文資料庫與入流條件設定")
-    
-    # 【第六階段核心功能：在地化水文資料庫維護專區】
-    st.markdown("### 🛠️ 歷史標準水文資料庫維護管理")
-    
-    # 狀態顯示字卡
-    if st.session_state.hydrology_source_status == "系統預設標準流量":
-        st.info(f"📊 當前主資料庫狀態：🟢 **系統內建標準水文流量 (36旬)**")
-    else:
-        st.success(f"📊 當前主資料庫狀態：🔵 **已成功載入自訂上傳流量檔案** (來源: {st.session_state.hydrology_source_status})")
-    
-    m_col1, m_col2 = st.columns([2, 1])
-    with m_col1:
-        st.markdown("##### 📥 檔案上傳更新（支援 Excel .xlsx 與 CSV）")
-        uploaded_hydrology_file = st.file_uploader(
-            "請選擇欲上傳之水文流量檔案 (需符合36旬格式規格)：",
-            type=["xlsx", "csv"],
-            key="hydrology_uploader"
-        )
-        
-        # 處理檔案上傳與覆寫邏輯
-        if uploaded_hydrology_file is not None:
-            file_name = uploaded_hydrology_file.name
-            try:
-                if file_name.endswith(".xlsx"):
-                    temp_df = pd.read_excel(uploaded_hydrology_file, engine="openpyxl")
-                else:
-                    # CSV 讀取防編碼衝突
-                    temp_df = pd.read_csv(uploaded_hydrology_file, encoding="utf-8-sig")
-                
-                # 執行防呆校驗
-                is_valid, validated_data = validate_uploaded_hydrology(temp_df)
-                if is_valid:
-                    st.session_state.hydrology_df = validated_data
-                    st.session_state.hydrology_source_status = file_name
-                    st.toast("🎉 水文資料庫已成功覆寫更新！", icon="✅")
-                    st.rerun()
-                else:
-                    st.error(f"❌ 上傳失敗！檔案結構校驗未通過：{validated_data}")
-            except Exception as e:
-                st.error(f"❌ 解析檔案時發生系統錯誤：{str(e)}。請確認檔案未損毀且內容格式正確。")
-    
-    with m_col2:
-        st.markdown("##### 💾 範本檔案下載")
-        st.caption("請下載下方範本，編輯流量值後即可上傳更新。")
-        
-        # 1. 產生 CSV 範本
-        csv_template_bytes = st.session_state.hydrology_df.to_csv(index=False).encode('utf-8-sig')
-        st.download_button(
-            label="📥 下載標準水文 CSV 範本",
-            data=csv_template_bytes,
-            file_name="hydrology_standard_template.csv",
-            mime="text/csv",
-            use_container_width=True
-        )
-        
-        # 2. 產生 Excel 範本 (安全機制：防 openpyxl 缺失)
-        try:
-            excel_io = io.BytesIO()
-            with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
-                st.session_state.hydrology_df.to_excel(writer, index=False, sheet_name="標準水文流量")
-            excel_template_bytes = excel_io.getvalue()
-            
-            st.download_button(
-                label="📥 下載標準水文 Excel 範本",
-                data=excel_template_bytes,
-                file_name="hydrology_standard_template.xlsx",
-                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
-        except Exception:
-            st.caption("⚠️ 本機環境不支援 Excel 匯出，請使用 CSV 範本。")
-            
-        # 3. 重設回預設資料按鈕
-        if st.session_state.hydrology_source_status != "系統預設標準流量":
-            if st.button("🔄 重設回系統預設標準流量", use_container_width=True, type="secondary"):
-                default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
-                default_df = pd.read_csv(default_io, sep="\t")
-                default_df.columns = [c.strip() for c in default_df.columns]
-                st.session_state.hydrology_df = default_df
-                st.session_state.hydrology_source_status = "系統預設標準流量"
-                st.toast("🔄 已成功回復系統預設流量。", icon="🔄")
-                st.rerun()
-
-    # 展開式的操作指南 (防呆步驟)
-    with st.expander("📖 歷史標準水文資料庫 年度更新操作指南 (無 LaTeX 語法)"):
-        st.markdown("""
-        為了協助非技術人員能輕鬆維護本系統水文流量資料，請參考以下三步標準流程：
-        
-        **步驟一：下載最新範本**
-        * 點擊右側的「下載標準水文 Excel 範本」(或 CSV 範本)，取得包含 36 旬 (1月上旬至12月下旬) 與 19 個情境 (Q95 至 Q5) 結構的對齊檔案。
-        
-        **步驟二：更新流量資料**
-        * 使用 Excel 開啟下載的範本。
-        * 保持首欄的旬別名稱（如「1月上旬」）完全不動。
-        * 將您在每年年初取得之各旬、各情境最新天然日流量數值 (cms) 填入對應儲存格。
-        * 儲存並關閉檔案。
-        
-        **步驟三：上傳覆寫**
-        * 將修改完畢的 Excel (.xlsx) 或 CSV 檔案，拖曳上傳至本頁面的「檔案上傳更新」區域。
-        * 系統防呆引擎將自動檢查格式（確保剛好為 36 列，且各情境資料格式正確）。
-        * 驗證通過後，系統將發出成功通知。隨後，所有推估計算與產品輸出都將全自動改由新資料庫進行計算！
-        """)
-
-    st.markdown("---")
-    st.markdown("### 🌊 【未來推估期】入流流量對齊設定")
+    st.subheader("🌊 【未來推估期】入流流量條件與對齊")
     
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
+        # 第一區塊：日常最常用之設定區域，讓同仁一進來就能立即填寫、選取 (解決問題 2)
         inflow_index = ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"].index(st.session_state.inflow_source)
         inflow_mode = st.radio("請選擇天然流量 (cms) 來源模式：", ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"], index=inflow_index, horizontal=True)
         st.session_state.inflow_source = inflow_mode
         period_flow_mapping = []
         
         if inflow_mode == "內建標準水文情境 (Q5~Q95)":
-            selected_scen = st.selectbox("請選擇水文情境：", ["Q5 (極豐水)", "Q20 (偏豐水)", "Q50 (平水)", "Q75 (偏枯水)", "Q95 (特枯水)"], index=["Q5 (極豐水)", "Q20 (偏豐水)", "Q50 (平水)", "Q75 (偏枯水)", "Q95 (特枯水)"].index(st.session_state.builtin_scenario))
+            # 擴充為完整的 19 旬情境選單 (解決問題 3)
+            SCENARIO_OPTIONS = [
+                "Q5 (極豐水)", "Q10", "Q15", "Q20 (偏豐水)", "Q25", "Q30", "Q35", "Q40", "Q45", 
+                "Q50 (平水)", "Q55", "Q60", "Q65", "Q70", "Q75 (偏枯水)", "Q80", "Q85", "Q90", "Q95 (特枯水)"
+            ]
+            
+            # 確保 session_state 初始值在完整清單內
+            if st.session_state.builtin_scenario not in SCENARIO_OPTIONS:
+                st.session_state.builtin_scenario = "Q50 (平水)"
+                
+            selected_scen = st.selectbox(
+                "請選擇水文情境：", 
+                SCENARIO_OPTIONS, 
+                index=SCENARIO_OPTIONS.index(st.session_state.builtin_scenario)
+            )
             st.session_state.builtin_scenario = selected_scen
+            
             for idx, row in proj_unique_periods.iterrows():
                 y, m, p = row["年份"], row["月份"], row["旬別"]
-                # 呼叫動態流量引擎，改由 st.session_state.hydrology_df 直接存取
+                # 呼叫動態流量引擎，讀取對齊之 19 旬數據
                 flow_val = get_dynamic_shilin_flow(m, p, selected_scen)
-                period_flow_mapping.append({"年份": y, "月份": m, "旬別": p, "天然流量(cms)": flow_val})
+                period_flow_mapping.append({"年份": y, "月份": m, "旬別": p, f"天然流量(cms) - {selected_scen}": flow_val})
         else:
             st.markdown("##### 📥 Excel 數據批次貼上區")
             # 生成動態 Q50 預設列表以供複製參考
@@ -740,6 +679,100 @@ with tab_inflow:
 
         df_period_flow = pd.DataFrame(period_flow_mapping)
         st.dataframe(df_period_flow, use_container_width=True)
+
+    # 第二區塊：將「資料庫維護資訊」隱藏至最底部，年更新一次即可點開 (解決問題 2, 4, 5)
+    st.markdown("<br><br>", unsafe_allow_html=True)
+    with st.expander("🛠️ 歷史標準水文資料庫 維護與年度更新專區 (年更新)", expanded=False):
+        st.markdown("#### ⚙️ 歷史標準水文主資料庫覆寫與還原")
+        
+        # 顯示狀態字卡
+        if st.session_state.hydrology_source_status == "系統預設標準流量":
+            st.info(f"📊 當前主資料庫狀態：🟢 **系統內建標準水文流量 (36旬)**")
+        else:
+            st.success(f"📊 當前主資料庫狀態：🔵 **已成功載入自訂流量檔案** (來源: {st.session_state.hydrology_source_status})")
+            
+        m_col1, m_col2 = st.columns([2, 1])
+        with m_col1:
+            st.markdown("##### 📥 檔案上傳更新（支援 Excel .xlsx 與 CSV）")
+            uploaded_hydrology_file = st.file_uploader(
+                "請選擇欲上傳之水文流量檔案 (需符合36旬格式規格)：",
+                type=["xlsx", "csv"],
+                key="hydrology_uploader"
+            )
+            
+            # 處理上傳與多重解碼覆寫邏輯 (解決問題 4)
+            if uploaded_hydrology_file is not None:
+                file_name = uploaded_hydrology_file.name
+                try:
+                    if file_name.endswith(".xlsx"):
+                        temp_df = pd.read_excel(uploaded_hydrology_file, engine="openpyxl")
+                    else:
+                        # 呼叫 CP950/UTF-8 彈性解碼器
+                        temp_df = read_csv_with_fallback(uploaded_hydrology_file)
+                    
+                    is_valid, validated_data = validate_uploaded_hydrology(temp_df)
+                    if is_valid:
+                        st.session_state.hydrology_df = validated_data
+                        st.session_state.hydrology_source_status = file_name
+                        st.toast("🎉 水文資料庫已成功覆寫更新！", icon="✅")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ 上傳失敗！檔案結構校驗未通過：{validated_data}")
+                except Exception as e:
+                    st.error(f"❌ 解析檔案時發生系統錯誤：{str(e)}。請確認檔案內容格式正確。")
+                    
+        with m_col2:
+            st.markdown("##### 💾 範本檔案下載與重設")
+            st.caption("下載下方範本，編輯後即可重新上傳。")
+            
+            # CSV 範本下載
+            csv_template_bytes = st.session_state.hydrology_df.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 下載標準水文 CSV 範本",
+                data=csv_template_bytes,
+                file_name="hydrology_standard_template.csv",
+                mime="text/csv",
+                use_container_width=True
+            )
+            
+            # Excel 範本下載
+            try:
+                excel_io = io.BytesIO()
+                with pd.ExcelWriter(excel_io, engine="openpyxl") as writer:
+                    st.session_state.hydrology_df.to_excel(writer, index=False, sheet_name="標準水文流量")
+                excel_template_bytes = excel_io.getvalue()
+                
+                st.download_button(
+                    label="📥 下載標準水文 Excel 範本",
+                    data=excel_template_bytes,
+                    file_name="hydrology_standard_template.xlsx",
+                    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                    use_container_width=True
+                )
+            except Exception:
+                pass
+                
+            # 重設按鈕「常駐顯示」(解決問題 5)
+            # 無論是否處於預設狀態皆提供點擊，確保使用者隨時看得到功能
+            if st.button("🔄 重設回系統預設標準流量", use_container_width=True, type="secondary"):
+                default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
+                default_df = pd.read_csv(default_io, sep="\t")
+                default_df.columns = [c.strip() for c in default_df.columns]
+                st.session_state.hydrology_df = default_df
+                st.session_state.hydrology_source_status = "系統預設標準流量"
+                st.toast("🔄 已還原為系統預設標準流量。", icon="🔄")
+                st.rerun()
+
+        # 年度更新操作指南
+        st.markdown("---")
+        st.markdown("##### 📖 歷史標準水文資料庫 年度更新操作指南")
+        st.markdown("""
+        為了協助非技術人員能輕鬆維護本系統水文流量資料，請參考以下三步標準流程：
+        
+        * **步驟一**：點擊右側的 **「下載標準水文 Excel 範本」**，取得包含 36 旬與 19 個情境的對齊檔案。
+        * **步驟二**：使用 Excel 開啟。請保持首欄的旬別名稱（如「1月上旬」）完全不動，將取得之各旬最新天然流量 (cms) 填入對應欄位，儲存檔案。
+        * **步驟三**：將修改完畢的 Excel (.xlsx) 或 CSV 檔案，拖曳上傳至本專區的「檔案上傳更新」區域，系統驗證通過後即完成年度流量更新。
+        """)
 
 # -----------------
 # TAB 3: 第三階段出流
@@ -1021,8 +1054,10 @@ with tab_simulation:
             
             flow_lookup = {}
             for _, item in df_period_flow.iterrows():
+                # 確保支援動態情境欄位名稱的匹配
+                scen_col = [c for c in item.index if "天然流量" in c][0]
                 key = f"{int(item['年份'])}-{int(item['月份'])}-{item['旬別']}"
-                flow_lookup[key] = item["天然流量(cms)"]
+                flow_lookup[key] = item[scen_col]
                 
             for _, row in df_daily_profile.iterrows():
                 current_date = row["日期"]
@@ -1310,150 +1345,4 @@ with tab_products:
                 
                 row_dict = {"日期": name}
                 
-                for m_date in period_milestones:
-                    col_header = f"{m_date.month}月{m_date.day}日"
-                    target_sim_d = get_sim_target_date(m_date)
-                    
-                    first_sim_d = df_scen["日期"].min()
-                    if target_sim_d == first_sim_d - datetime.timedelta(days=1):
-                        val = df_scen[df_scen["日期"] == first_sim_d].iloc[0]["昨日期末庫容 (萬噸)"]
-                        row_dict[col_header] = f"{int(val):,}"
-                    else:
-                        match_row = df_scen[df_scen["日期"] == target_sim_d]
-                        if not match_row.empty:
-                            val = match_row.iloc[0]["本日末庫容 (萬噸)"]
-                            row_dict[col_header] = f"{int(val):,}"
-                        else:
-                            row_dict[col_header] = "-"
-                            
-                horizontal_rows.append(row_dict)
-                
-            df_horiz_output = pd.DataFrame(horizontal_rows)
-            st.dataframe(df_horiz_output, use_container_width=True, hide_index=True)
-            
-            csv_horiz_bytes = df_horiz_output.to_csv(index=False).encode('utf-8-sig')
-            st.download_button(
-                label="📥 下載 旬推估表 (Excel CSV格式)",
-                data=csv_horiz_bytes,
-                file_name=f"liyutan_horizontal_period_summary_{datetime.date.today().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
-            )
-            
-            # ==========================================
-            # 產品二：庫容推估情境對比 (Plotly 多情境曲線)
-            # ==========================================
-            st.markdown("---")
-            st.markdown("### 📈 產品二：庫容推估情境對比")
-            
-            fig_multi = go.Figure()
-            boundary_day = st.session_state.start_date - datetime.timedelta(days=1)
-            
-            # 1. 歷史實際觀測庫容 (所有方案共用歷史)
-            ref_df = st.session_state.scenarios[selected_scenarios[0]].copy()
-            ref_df["日期"] = pd.to_datetime(ref_df["日期"]).dt.date
-            df_history = ref_df[ref_df["日期"] <= boundary_day]
-            
-            if not df_history.empty:
-                fig_multi.add_trace(go.Scatter(
-                    x=df_history["日期"],
-                    y=df_history["本日末庫容 (萬噸)"],
-                    mode="lines",
-                    name="實際庫容",
-                    line=dict(color="black", width=2.5),
-                    hovertemplate="日期: %{x}<br>實際庫容: %{y:.2f} 萬噸<extra></extra>"
-                ))
-                
-            # 2. 迴圈繪製各個被勾選情境的推估曲線
-            for name in selected_scenarios:
-                df_scen = st.session_state.scenarios[name].copy()
-                df_scen["日期"] = pd.to_datetime(df_scen["日期"]).dt.date
-                df_proj = df_scen[df_scen["日期"] >= boundary_day]
-                
-                if not df_proj.empty:
-                    fig_multi.add_trace(go.Scatter(
-                        x=df_proj["日期"],
-                        y=df_proj["本日末庫容 (萬噸)"],
-                        mode="lines",
-                        name=f"推估庫容 ({name})",
-                        line=dict(width=2.5), 
-                        hovertemplate="日期: %{x}<br>推估庫容: %{y:.2f} 萬噸<extra></extra>"
-                    ))
-                    
-            # 3. 有效庫容字卡：移至左上角外部 (x=0.0, y=1.02)，避免遮擋
-            max_cap = st.session_state.max_capacity
-            formatted_cap = f"{max_cap:,.0f}" if max_cap == 11584.0 else f"{max_cap:,.1f}"
-            fig_multi.add_annotation(
-                text=f"有效庫容：{formatted_cap}萬噸",
-                xref="paper", yref="paper",
-                x=0.0, y=1.02,
-                showarrow=False,
-                xanchor="left",
-                yanchor="bottom",
-                font=dict(color="red", size=13, family="sans-serif", weight="bold"),
-                bordercolor="red",
-                borderwidth=1,
-                borderpad=5,
-                bgcolor="white",
-                opacity=0.9
-            )
-            
-            # 4. 套用 X 軸月首座標
-            tick_dates = []
-            curr_y, curr_m = st.session_state.display_start_date.year, st.session_state.display_start_date.month
-            end_y, end_m = st.session_state.end_date.year, st.session_state.end_date.month
-            
-            while (curr_y < end_y) or (curr_y == end_y and curr_m <= end_m):
-                d = datetime.date(curr_y, curr_m, 1)
-                if st.session_state.display_start_date <= d <= st.session_state.end_date:
-                    tick_dates.append(d)
-                curr_m += 1
-                if curr_m > 12:
-                    curr_m = 1
-                    curr_y += 1
-            tick_text = [f"{d.month}/{d.day}" for d in tick_dates]
-            
-            fig_multi.update_layout(
-                title={
-                    "text": "📊 鯉魚潭水庫多情境蓄水量推估對比圖",
-                    "y": 0.95,
-                    "x": 0.5,
-                    "xanchor": "center",
-                    "yanchor": "top"
-                },
-                xaxis_title="日期",
-                yaxis_title="水庫蓄水量 (萬噸)",
-                hovermode="x unified",
-                legend=dict(
-                    orientation="h",
-                    yanchor="bottom",
-                    y=1.02,
-                    xanchor="right",
-                    x=1
-                ),
-                margin=dict(l=50, r=50, t=100, b=50),
-                plot_bgcolor="rgba(0,0,0,0)",
-                paper_bgcolor="rgba(0,0,0,0)"
-            )
-            fig_multi.update_xaxes(
-                tickvals=tick_dates,
-                ticktext=tick_text,
-                showgrid=True,
-                gridwidth=0.5,
-                gridcolor="lightgray",
-                zeroline=False
-            )
-            fig_multi.update_yaxes(
-                showgrid=True,
-                gridwidth=0.5,
-                gridcolor="lightgray",
-                zeroline=False,
-                range=[0, max_cap * 1.05]
-            )
-            
-            st.plotly_chart(fig_multi, use_container_width=True)
-            
-        else:
-            st.warning("⚠️ 請至少在上方勾選一個情境方案，系統才能輸出比對產品。")
-            
-    else:
-        st.info("💡 儲存庫目前為空。請先在『第4階段：核心庫容守恆演算』中點擊執行模擬，執行後，上方將會自動出現暫存存檔區域，協助您累積多組推估方案！")
+                for m_date in period_mi
