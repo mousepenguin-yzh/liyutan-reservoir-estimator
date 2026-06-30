@@ -210,7 +210,7 @@ def get_sim_target_date(milestone_date: datetime.date) -> datetime.date:
     """
     將前台 Excel 旬度標題日期（如 7月1日、7月11日、7月21日、8月1日）
     映射至底層質量守恆模擬日誌對應的「期末結算時間點」：
-    - X月1日   -> 實際對應前一月的最後一日（例如 7月1日 00:00 等於 6月30日 24:00 本日末庫容）
+    - X月1日   -> 實際對應前一月的最後一日
     - X月11日  -> 實際對應本月 10 日 24:00 庫容
     - X月21日  -> 實際對應本月 20 日 24:00 庫容
     """
@@ -226,6 +226,7 @@ def get_sim_target_date(milestone_date: datetime.date) -> datetime.date:
 def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: datetime.date, start_date: datetime.date, end_date: datetime.date, max_capacity: float) -> go.Figure:
     """
     繪製單一情境之鯉魚潭水庫蓄水量變化趨勢圖（無背景色塊，黑色實際庫容 + 藍色推估庫容）。
+    【優化】：有效庫容字卡移至上方外部左側，不遮擋任何曲線。
     """
     fig = go.Figure()
     boundary_day = start_date - datetime.timedelta(days=1)
@@ -257,13 +258,15 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
             hovertemplate="日期: %{x}<br>推估庫容: %{y:.2f} 萬噸<extra></extra>"
         ))
         
-    # 右上方文字標示
+    # 【優化】有效庫容字卡：移至左上角外部 (x=0.0, y=1.02)，完全不遮擋曲線
     formatted_capacity = f"{max_capacity:,.0f}" if max_capacity == 11584.0 else f"{max_capacity:,.1f}"
     fig.add_annotation(
         text=f"有效庫容：{formatted_capacity}萬噸",
         xref="paper", yref="paper",
-        x=0.98, y=0.95,
+        x=0.0, y=1.02,
         showarrow=False,
+        xanchor="left",
+        yanchor="bottom",
         font=dict(color="red", size=13, family="sans-serif", weight="bold"),
         bordercolor="red",
         borderwidth=1,
@@ -374,7 +377,7 @@ if "scenarios" not in st.session_state:
     st.session_state.scenarios = {}
 
 # ==========================================
-# 6. 前端 UI 分頁排版 (含第五階段新加入的頁籤)
+# 6. 前端 UI 分頁排版 (含第五階段頁籤)
 # ==========================================
 
 st.title("💧 鯉魚潭水庫庫容推估系統 (數據對齊調校版)")
@@ -481,7 +484,6 @@ with tab_inflow:
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
-        # 使用持久化 index 鎖定上次選擇
         inflow_index = ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"].index(st.session_state.inflow_source)
         inflow_mode = st.radio("請選擇天然流量 (cms) 來源模式：", ["內建標準水文情境 (Q5~Q95)", "手動批次匯入（支援 Excel 複製貼上）"], index=inflow_index, horizontal=True)
         st.session_state.inflow_source = inflow_mode
@@ -500,7 +502,6 @@ with tab_inflow:
             dummy_paste_str = "\t".join(map(str, dummy_data_list))
             st.caption(f"💡 測試範例串（共 {len(dummy_data_list)} 個數值）： `{dummy_paste_str}`")
             
-            # 使用 key="inflow_paste" 自動持久化保存文字內容，避免重複貼上
             pasted_text = st.text_area("請在此貼上 Excel 數據 (以空格、Tab或換行分隔)：", placeholder="例如: 12.5  14.2  10.1 ...", height=80, key="inflow_paste")
             parsed_list = parse_pasted_data(pasted_text)
             
@@ -639,7 +640,7 @@ with tab_outflow:
         else:
             st.session_state.override_list = []
 
-        # 這裡生成包含展示期與推估期的完整日曆需求，方便在模擬中抓取
+        # 這裡生成包含展示期與推估期的完整日曆需求
         df_daily_outflow = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
         
         base_lookup = {}
@@ -777,7 +778,7 @@ with tab_simulation:
             shilin_eco = st.session_state.shilin_eco_flow
             liyutan_eco = st.session_state.liyutan_eco_flow
             
-            # 歷史區間插值重構
+            # 歷史區間插值
             has_history = st.session_state.display_start_date < st.session_state.start_date
             daily_hist_caps = {}
             if has_history:
@@ -800,7 +801,6 @@ with tab_simulation:
             total_ag_intercept_volume_10k = 0.0
             total_spillway_overflow_10k = 0.0
             
-            # 建立每日剖面
             df_daily_profile = generate_date_profile(st.session_state.display_start_date, st.session_state.end_date)
             
             flow_lookup = {}
@@ -916,7 +916,7 @@ with tab_simulation:
             
             df_sim_results = pd.DataFrame(sim_daily_records)
             st.session_state.sim_results = df_sim_results
-            st.success("🎉 模擬演算順利結束！您可以前往『第五階段：推估成果產品』頁籤儲存此情境、進行方案比對、或是查看 Excel 對齊旬推估表。")
+            st.success("🎉 模擬演算順利結束！您可以前往『推估成果產品』頁籤儲存此情境、進行方案比對。")
             
             # --- 儀表板指標 ---
             st.markdown("### 🏆 當前推估成果指標")
@@ -1019,7 +1019,7 @@ with tab_simulation:
             st.dataframe(st.session_state.sim_results, use_container_width=True)
 
 # -----------------
-# TAB 5: 第五階段：推估成果產品 (新加入核心功能)
+# TAB 5: 第五階段：推估成果產品 (多情境對比與字卡位置優化)
 # -----------------
 with tab_products:
     st.subheader("📊 第五階段：推估成果產品 (多情境管理與成果比對)")
@@ -1027,12 +1027,12 @@ with tab_products:
     # 📌 情境暫存機制控制區
     if "sim_results" in st.session_state:
         st.markdown("### 💾 暫存當前推估成果")
-        st.caption("您可以將目前運行的這套設定與推估曲線存檔，以便跟其他流量（例如 Q75, Q95）或不同供水折扣條件的情境疊圖比對。")
+        st.caption("您可以將目前運行的這套設定與推估曲線存檔，以便跟其他流量或不同供水折扣條件的情境疊圖比對。")
         
         col_scen_name, col_scen_btn = st.columns([3, 1])
         with col_scen_name:
             new_scen_name = st.text_input(
-                "請輸入此情境名稱 (例：氣候上限值 / Q75特枯水 / 八折供水)：", 
+                "請輸入此情境名稱 (例：氣候區間上限 / Q80 / Q90)：", 
                 value="情境A", 
                 key="new_scen_name_input"
             )
@@ -1041,7 +1041,6 @@ with tab_products:
             if st.button("💾 暫存此情境", use_container_width=True, type="secondary"):
                 clean_name = new_scen_name.strip()
                 if clean_name:
-                    # 深拷貝避免指針衝突
                     st.session_state.scenarios[clean_name] = st.session_state.sim_results.copy()
                     st.success(f"✅ 已成功暫存情境：『{clean_name}』！")
                     st.rerun()
@@ -1069,7 +1068,6 @@ with tab_products:
                 st.success("已清空所有情境！")
                 st.rerun()
                 
-        # 🟢 如果有勾選要呈現的情境，則輸出成果
         if selected_scenarios:
             st.markdown("---")
             
@@ -1082,7 +1080,6 @@ with tab_products:
             您可以**用滑鼠直接全選此網頁表格複製**，並**直接貼上至您的 Excel 試算表**中，格式與千分位標記皆會完美對齊。
             """)
             
-            # 自動生成與圖表時間完全對齊的 1、11、21 日曆里程點
             period_milestones = []
             curr_step = st.session_state.display_start_date
             while curr_step <= st.session_state.end_date:
@@ -1090,25 +1087,21 @@ with tab_products:
                     period_milestones.append(curr_step)
                 curr_step += datetime.timedelta(days=1)
                 
-            # 橫向資料表組裝
             horizontal_rows = []
             for name in selected_scenarios:
                 df_scen = st.session_state.scenarios[name].copy()
                 df_scen["日期"] = pd.to_datetime(df_scen["日期"]).dt.date
                 
-                # 第一欄對齊 Excel 圖片的「日期」列標題（實際存放情境方案名稱）
                 row_dict = {"日期": name}
                 
                 for m_date in period_milestones:
                     col_header = f"{m_date.month}月{m_date.day}日"
                     target_sim_d = get_sim_target_date(m_date)
                     
-                    # 特殊臨界處理：
-                    # 如果 target_sim_d 早於模擬日誌的首日，則去第一筆資料拿「昨日期末庫容」
                     first_sim_d = df_scen["日期"].min()
                     if target_sim_d == first_sim_d - datetime.timedelta(days=1):
                         val = df_scen[df_scen["日期"] == first_sim_d].iloc[0]["昨日期末庫容 (萬噸)"]
-                        row_dict[col_header] = f"{int(val):,}" # 轉整數並千分位化，例如 10,570
+                        row_dict[col_header] = f"{int(val):,}"
                     else:
                         match_row = df_scen[df_scen["日期"] == target_sim_d]
                         if not match_row.empty:
@@ -1122,7 +1115,6 @@ with tab_products:
             df_horiz_output = pd.DataFrame(horizontal_rows)
             st.dataframe(df_horiz_output, use_container_width=True, hide_index=True)
             
-            # 產品一 CSV 導出下載
             csv_horiz_bytes = df_horiz_output.to_csv(index=False).encode('utf-8-sig')
             st.download_button(
                 label="📥 下載 旬推估表 (Excel CSV格式)",
@@ -1132,7 +1124,7 @@ with tab_products:
             )
             
             # ==========================================
-            # 產品二：庫容推估情境對比 (Plotly 多情境曲線)
+            # 產品二：庫容推估情境對比 (Plotly 多情境曲線 - 含優化字卡位置)
             # ==========================================
             st.markdown("---")
             st.markdown("### 📈 產品二：庫容推估情境對比")
@@ -1140,7 +1132,7 @@ with tab_products:
             fig_multi = go.Figure()
             boundary_day = st.session_state.start_date - datetime.timedelta(days=1)
             
-            # 1. 歷史實際觀測庫容 (所有方案共用此歷史)
+            # 1. 歷史實際觀測庫容 (所有方案共用歷史)
             ref_df = st.session_state.scenarios[selected_scenarios[0]].copy()
             ref_df["日期"] = pd.to_datetime(ref_df["日期"]).dt.date
             df_history = ref_df[ref_df["日期"] <= boundary_day]
@@ -1155,7 +1147,7 @@ with tab_products:
                     hovertemplate="日期: %{x}<br>實際庫容: %{y:.2f} 萬噸<extra></extra>"
                 ))
                 
-            # 2. 迴圈繪製各個被勾選情境的推估實線
+            # 2. 迴圈繪製各個被勾選情境的推估曲線
             for name in selected_scenarios:
                 df_scen = st.session_state.scenarios[name].copy()
                 df_scen["日期"] = pd.to_datetime(df_scen["日期"]).dt.date
@@ -1167,18 +1159,20 @@ with tab_products:
                         y=df_proj["本日末庫容 (萬噸)"],
                         mode="lines",
                         name=f"推估庫容 ({name})",
-                        line=dict(width=2.5), # 採用 Plotly 自動色彩盤區分不同方案
+                        line=dict(width=2.5), 
                         hovertemplate="日期: %{x}<br>推估庫容: %{y:.2f} 萬噸<extra></extra>"
                     ))
                     
-            # 3. 標註設計有效庫容文字框
+            # 3. 【優化】有效庫容字卡：移至左上角外部 (x=0.0, y=1.02)，徹底避免遮擋
             max_cap = st.session_state.max_capacity
             formatted_cap = f"{max_cap:,.0f}" if max_cap == 11584.0 else f"{max_cap:,.1f}"
             fig_multi.add_annotation(
                 text=f"有效庫容：{formatted_cap}萬噸",
                 xref="paper", yref="paper",
-                x=0.98, y=0.95,
+                x=0.0, y=1.02,
                 showarrow=False,
+                xanchor="left",
+                yanchor="bottom",
                 font=dict(color="red", size=13, family="sans-serif", weight="bold"),
                 bordercolor="red",
                 borderwidth=1,
