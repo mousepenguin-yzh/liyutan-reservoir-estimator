@@ -1034,7 +1034,7 @@ with tab_outflow:
         df_daily_outflow["今日抗旱備註"] = notes
 
         # 日轉旬回推彙整
-        df_grouped = df_daily_outflow[df_daily_outflow["日期"] >= st.session_state.start_date].groupby(["年份", "月份", "旬別"]).agg(
+        df_grouped = df_daily_outflow[df_daily_outflow["開期"] if "開期" in df_daily_outflow else df_daily_outflow["日期"] >= st.session_state.start_date].groupby(["年份", "月份", "旬別"]).agg(
             up_mean=("上灌區當日流量(cms)", "mean"),
             down_mean=("下灌區當日流量(cms)", "mean"),
             pub_mean=("公共供水當日水量(萬噸)", "mean"),
@@ -1480,20 +1480,16 @@ with tab_products:
             # 2. 繪製各個被選取情境的推估未來歷線
             for name in selected_scenarios:
                 df_scen = st.session_state.scenarios[name]
-                df_proj = df_scen[pd.to_datetime(df_scen["開期"] if "開期" in df_scen else df_scen["日期"]).dt.date >= boundary_day]
-                # 相容處理日期欄位
-                if "日期" in df_proj:
-                    proj_x = pd.to_datetime(df_proj["日期"]).dt.date
-                else:
-                    proj_x = pd.to_datetime(df_proj.index).dt.date
-                fig_multi.add_trace(go.Scatter(
-                    x=proj_x,
-                    y=df_proj["本日末庫容 (萬噸)"],
-                    mode="lines",
-                    name=f"{name} (推估)",
-                    line=dict(width=2.5),
-                    hovertemplate=f"情境: {name}<br>日期: %{{x}}<br>推估庫容: %{{y:.2f}} 萬噸<extra></extra>"
-                ))
+                df_proj = df_scen[pd.to_datetime(df_scen["日期"]).dt.date >= boundary_day]
+                if not df_proj.empty:
+                    fig_multi.add_trace(go.Scatter(
+                        x=pd.to_datetime(df_proj["日期"]).dt.date,
+                        y=df_proj["本日末庫容 (萬噸)"],
+                        mode="lines",
+                        name=f"{name} (推估)",
+                        line=dict(width=2.5),
+                        hovertemplate=f"情境: {name}<br>日期: %{{x}}<br>推估庫容: %{{y:.2f}} 萬噸<extra></extra>"
+                    ))
                     
             # 3. 有效庫容字卡配置
             max_capacity = st.session_state.max_capacity
@@ -1518,4 +1514,57 @@ with tab_products:
             curr_y, curr_m = st.session_state.display_start_date.year, st.session_state.display_start_date.month
             end_y, end_m = st.session_state.end_date.year, st.session_state.end_date.month
             
-            whil
+            while (curr_y < end_y) or (curr_y == end_y and curr_m <= end_m):
+                d = datetime.date(curr_y, curr_m, 1)
+                if st.session_state.display_start_date <= d <= st.session_state.end_date:
+                    tick_dates.append(d)
+                curr_m += 1
+                if curr_m > 12:
+                    curr_m = 1
+                    curr_y += 1
+                    
+            tick_text = [f"{d.month}/{d.day}" for d in tick_dates]
+            
+            # 5. 配置無背景色塊之清爽圖表版型
+            fig_multi.update_layout(
+                title={
+                    "text": "📊 鯉魚潭水庫多情境蓄水量推估對比圖",
+                    "y": 0.95,
+                    "x": 0.5,
+                    "xanchor": "center",
+                    "yanchor": "top"
+                },
+                xaxis_title="日期",
+                yaxis_title="水庫蓄水量 (萬噸)",
+                hovermode="x unified",
+                legend=dict(
+                    orientation="h",
+                    yanchor="bottom",
+                    y=1.02,
+                    xanchor="right",
+                    x=1
+                ),
+                margin=dict(l=50, r=50, t=100, b=50),
+                plot_bgcolor="rgba(0,0,0,0)",
+                paper_bgcolor="rgba(0,0,0,0)"
+            )
+            
+            fig_multi.update_xaxes(
+                tickvals=tick_dates,
+                ticktext=tick_text,
+                showgrid=True,
+                gridwidth=0.5,
+                gridcolor="lightgray",
+                zeroline=False
+            )
+            fig_multi.update_yaxes(
+                showgrid=True,
+                gridwidth=0.5,
+                gridcolor="lightgray",
+                zeroline=False,
+                range=[0, max_capacity * 1.05]
+            )
+            
+            st.plotly_chart(fig_multi, use_container_width=True)
+    else:
+        st.info("💡 目前暫存庫中尚無儲存情境。請先至『第四階段：庫容推估演算』點擊「▶️ 開始進行庫容推估」，並於本頁籤最上方輸入情境名稱（如：常態Q50）點擊「💾 暫存此情境」即可生成本頁比對產品。")
