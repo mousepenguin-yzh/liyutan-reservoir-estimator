@@ -540,7 +540,7 @@ with tab_config:
         st.session_state.liyutan_eco_flow = st.number_input("鯉魚潭最低生態放流量 (cms)", min_value=0.0, max_value=5.0, value=st.session_state.liyutan_eco_flow, step=0.05)
     with col2:
         st.markdown("##### 📅 展示區間設定")
-        st.session_state.display_start_date = st.date_input("展示起始日期", value=st.session_state.display_start_date)
+        st.session_state.display_start_date = st.date_input("展示起始日期(若早於推估起始日期，需在下方填入實際蓄水量)", value=st.session_state.display_start_date)
         st.session_state.start_date = st.date_input("推估起始日期 (庫容推估起點)", value=st.session_state.start_date)
         st.session_state.end_date = st.date_input("預計推估結束日期 (此日不計入日計算)", value=st.session_state.end_date)
         
@@ -559,7 +559,7 @@ with tab_config:
     # 處理展示期（歷史觀測期）的逐旬蓄水量輸入
     if st.session_state.display_start_date < st.session_state.start_date:
         st.markdown("---")
-        st.markdown("##### 📈 展示區間歷史蓄水量輸入")
+        st.markdown("##### 📈 展示區間實際蓄水量輸入")
         st.caption("請輸入展示期間內，各旬末日前一日 24:00 的實際蓄水量 (萬噸)：")
         
         milestones = get_historical_milestone_dates_v2(st.session_state.display_start_date, st.session_state.start_date)
