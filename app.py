@@ -4,7 +4,7 @@ import streamlit as st
 # 0. 必須為 Streamlit 第一行指令：強制全螢幕寬版配置 (解決版面集中問題)
 # ==========================================
 st.set_page_config(
-    page_title="鯉魚潭水庫庫容推估系統 (數據對齊調校版)",
+    page_title="鯉魚潭水庫庫容推估系統",
     page_icon="💧",
     layout="wide"
 )
@@ -517,11 +517,7 @@ if "hydrology_df" not in st.session_state:
 # 6. 前端 UI 分頁排版 (含第六階段全面整合)
 # ==========================================
 
-st.title("💧 鯉魚潭水庫庫容推估系統 (數據對齊調校版)")
-st.markdown("""
-本系統底層核心物理演算完全採用**「日（Daily）」**質量守恆為步進單位，並嚴格遵循**農業控制律**、**上游引水限制**、與**生態基流量折抵**原則。
-時間曆法採用標準的**「左閉右開區間 [D_start, D_end)」**，與實務 Excel 作業無縫對接。
-""")
+st.title("💧 鯉魚潭水庫庫容推估系統")
 
 tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
     "⚙️ 第一階段：基礎參數與曆法", 
