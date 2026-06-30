@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import datetime
 import calendar
+import plotly.graph_objects as go
 
 # ==========================================
 # 1. 核心物理與曆法引擎 (Calendar Engine)
@@ -202,7 +203,103 @@ def get_default_demands(month: int) -> dict:
     return {"up_irr": up_irr, "down_irr": down_irr, "public": public_water}
 
 # ==========================================
-# 4. Streamlit 初始化與會話狀態
+# 4. 任務 A 專用圖表繪製引擎 (Plotly Engine)
+# ==========================================
+
+def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, start_date: datetime.date, max_capacity: float) -> go.Figure:
+    """
+    繪製鯉魚潭水庫蓄水量歷史與未來推估趨勢圖。
+    - 歷史觀測期 [展示起始日, 推估前一日 24:00]：黑色實線。
+    - 未來推估期 [推估前一日 24:00, 結束日前一日]：彩色折線。
+    - 兩條曲線在推估前一日 24:00 (蓄水量等於 init_capacity) 完全重合無縫相接。
+    """
+    # 建立 Plotly 畫布
+    fig = go.Figure()
+    
+    # 預備時間過濾
+    boundary_day = start_date - datetime.timedelta(days=1)
+    
+    # 確保日期型態一致便於 Plotly 解析
+    df_plot = df_sim_results.copy()
+    df_plot["日期"] = pd.to_datetime(df_plot["日期"]).dt.date
+    
+    # 1. 篩選歷史觀測期（包含邊界日以達到無縫相接）
+    df_history = df_plot[df_plot["日期"] <= boundary_day]
+    if not df_history.empty:
+        fig.add_trace(go.Scatter(
+            x=df_history["日期"],
+            y=df_history["本日末庫容 (萬噸)"],
+            mode="lines",
+            name="歷史觀測期 (觀測值線性漸變)",
+            line=dict(color="black", width=2.5),
+            hovertemplate="日期: %{x}<br>蓄水量: %{y:.2f} 萬噸<br>狀態: 📊 歷史觀測<extra></extra>"
+        ))
+        
+    # 2. 篩選未來推估期（包含邊界日以達到無縫相接）
+    df_projection = df_plot[df_plot["日期"] >= boundary_day]
+    if not df_projection.empty:
+        fig.add_trace(go.Scatter(
+            x=df_projection["日期"],
+            y=df_projection["本日末庫容 (萬噸)"],
+            mode="lines",
+            name="未來推估期 (物理守恆演算)",
+            line=dict(color="#1f77b4", width=2.5, dash="dash"),
+            hovertemplate="日期: %{x}<br>蓄水量: %{y:.2f} 萬噸<br>狀態: 🔮 未來推估<extra></extra>"
+        ))
+        
+    # 3. 繪製設計最大庫容上限參考線
+    fig.add_trace(go.Scatter(
+        x=df_plot["日期"],
+        y=[max_capacity] * len(df_plot),
+        mode="lines",
+        name="水庫設計最高庫容",
+        line=dict(color="red", width=1.2, dash="dot"),
+        hovertemplate="設計最高庫容: %{y} 萬噸<extra></extra>"
+    ))
+    
+    # 設定圖表版面（簡潔清爽、無背景底色色塊）
+    fig.update_layout(
+        title={
+            "text": "📊 鯉魚潭水庫蓄水量變化趨勢圖 (歷史觀測與未來推估)",
+            "y": 0.95,
+            "x": 0.5,
+            "xanchor": "center",
+            "yanchor": "top"
+        },
+        xaxis_title="日期時間",
+        yaxis_title="水庫蓄水量 (萬噸)",
+        hovermode="x unified",
+        legend=dict(
+            orientation="h",
+            yanchor="bottom",
+            y=1.02,
+            xanchor="right",
+            x=1
+        ),
+        margin=dict(l=50, r=50, t=100, b=50),
+        plot_bgcolor="rgba(0,0,0,0)",  # 透明繪圖背景
+        paper_bgcolor="rgba(0,0,0,0)"  # 透明紙張背景
+    )
+    
+    # 精細調整格線
+    fig.update_xaxes(
+        showgrid=True,
+        gridwidth=0.5,
+        gridcolor="lightgray",
+        zeroline=False
+    )
+    fig.update_yaxes(
+        showgrid=True,
+        gridwidth=0.5,
+        gridcolor="lightgray",
+        zeroline=False,
+        range=[0, max_capacity * 1.05]  # 給上方留出一點點餘裕
+    )
+    
+    return fig
+
+# ==========================================
+# 5. Streamlit 初始化與會話狀態
 # ==========================================
 
 st.set_page_config(
@@ -240,12 +337,12 @@ if "hist_capacity" not in st.session_state:
     st.session_state.hist_capacity = {}
 
 # ==========================================
-# 5. 前端 UI 分頁排版
+# 6. 前端 UI 分頁排版
 # ==========================================
 
 st.title("💧 鯉魚潭水庫庫容推估系統 (數據對齊調校版)")
 st.markdown("""
-本版本已將曆法計算重構為**「左閉右開區間 $[D_{\\text{start}}, D_{\\text{end}})$」**，結束日當天不計入演算。
+本版本已將曆法計算重構為**「左閉右開區間 [D_start, D_end)」**，結束日當天不計入演算。
 您可以直接在此對齊與您 Excel 檔案的各項數據。
 """)
 
@@ -808,6 +905,14 @@ with tab_simulation:
                 st.metric("庫容枯竭空庫天數", f"{dry_days} 天", delta="🚨 警告：空庫枯竭！" if dry_days > 0 else "🟢 安全")
 
             # -----------------
+            # 任務 A 視覺化呈現 (僅在模擬完成後繪製)
+            # -----------------
+            st.markdown("---")
+            st.markdown("### 📈 任務 A：庫容與推估蓄水量歷線圖")
+            fig = plot_reservoir_capacity_trend(df_sim_results, st.session_state.start_date, st.session_state.max_capacity)
+            st.plotly_chart(fig, use_container_width=True)
+
+            # -----------------
             # 產品一：水利署標準「旬度加總」彙整報表 (萬噸單位)
             # -----------------
             st.markdown("---")
@@ -842,6 +947,7 @@ with tab_simulation:
             ]
             
             # 強制排序
+            period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
             df_grouped_sim["旬別順序碼"] = df_grouped_sim["旬別"].map(period_order)
             df_grouped_sim = df_grouped_sim.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
             
@@ -873,5 +979,9 @@ with tab_simulation:
             )
             
         elif "sim_results" in st.session_state:
+            st.markdown("### 📈 任務 A：庫容與推估蓄水量歷線圖 (保留前次計算結果)")
+            fig = plot_reservoir_capacity_trend(st.session_state.sim_results, st.session_state.start_date, st.session_state.max_capacity)
+            st.plotly_chart(fig, use_container_width=True)
+
             st.markdown("##### 📅 歷史模擬明細表 (保留前次計算結果)")
             st.dataframe(st.session_state.sim_results, use_container_width=True)
