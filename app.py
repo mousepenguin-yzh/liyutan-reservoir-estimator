@@ -1244,7 +1244,7 @@ with tab_simulation:
             )
             
         elif "sim_results" in st.session_state:
-            st.markdown("### 📈 庫容與推估蓄水量歷線圖 (保留前次計算結果)")
+            st.markdown("### 📈 庫容與推估蓄水量歷線圖")
             fig = plot_reservoir_capacity_trend(
                 st.session_state.sim_results, 
                 st.session_state.display_start_date, 
@@ -1254,14 +1254,14 @@ with tab_simulation:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            st.markdown("##### 📅 歷史模擬明細表 (保留前次計算結果)")
+            st.markdown("##### 📅 歷史模擬明細表")
             st.dataframe(st.session_state.sim_results, use_container_width=True)
 
 # -----------------
 # TAB 5: 第五階段：推估成果產品 (多情境對比與字卡位置優化)
 # -----------------
 with tab_products:
-    st.subheader("📊 第五階段：推估成果產品 (多情境管理與成果比對)")
+    st.subheader("📊 第五階段：推估成果產品")
     
     # 情境暫存機制控制區
     if "sim_results" in st.session_state:
