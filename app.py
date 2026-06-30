@@ -652,7 +652,7 @@ with tab_inflow:
             dummy_paste_str = "\t".join(map(str, dummy_data_list))
             st.caption(f"💡 測試範例串（共 {len(dummy_data_list)} 個數值）： `{dummy_paste_str}`")
             
-            pasted_text = st.text_area("請在此貼上 Excel 數據 (以空格、Tab或換行分隔)：", placeholder="例如: 12.5  14.2  10.1 ...", height=80, key="inflow_paste")
+            pasted_text = st.text_area("請在此貼上 Excel 數據 (手動輸入時需以空格、Tab或換行分隔)：", placeholder="例如: 12.5  14.2  10.1 ...", height=80, key="inflow_paste")
             parsed_list = parse_pasted_data(pasted_text)
             
             if pasted_text.strip():
@@ -785,7 +785,7 @@ with tab_outflow:
                 })
             st.info("💡 系統已自動帶入歷史常態平水期供水需求。")
         else:
-            st.markdown("##### 📥 Excel 需求數據批次匯入")
+            st.markdown("##### 📥 Excel 需求數據批次匯入(手動輸入時需以空格、Tab或換行分隔)")
             def_up_list = [get_default_demands(r["月份"])["up_irr"] for _, r in proj_unique_periods.iterrows()]
             def_down_list = [get_default_demands(r["月份"])["down_irr"] for _, r in proj_unique_periods.iterrows()]
             def_pub_list = [get_default_demands(r["月份"])["public"] for _, r in proj_unique_periods.iterrows()]
