@@ -1593,8 +1593,11 @@ with tab_simulation:
                 "天然流量 (cms, 旬均值)",
                 "實際引水流量 (cms, 旬均值)",
                 "累計引入量 (萬噸)",
+                "上灌區供灌量 (cms, 旬均值)",     # 新增：cms 流量指標
                 "上灌區供灌總量 (萬噸)",
+                "下灌區供灌量 (cms, 旬均值)",     # 新增：cms 流量指標
                 "下灌區供灌總量 (萬噸)",
+                "農業供灌總量 (萬噸)",           # 新增：農業總和萬噸指標
                 "公共用水總量 (萬噸)",
                 "累計溢流量 (萬噸)"
             ]
@@ -1631,6 +1634,7 @@ with tab_simulation:
                 ]
                 
                 if not df_p_days.empty:
+                    # 原有指標計算
                     row_data_dict["天然流量 (cms, 旬均值)"][col_name] = df_p_days["天然流量 (cms)"].mean()
                     row_data_dict["實際引水流量 (cms, 旬均值)"][col_name] = df_p_days["實際引水流量 (cms)"].mean()
                     row_data_dict["累計引入量 (萬噸)"][col_name] = df_p_days["今日引入量 (萬噸)"].sum()
@@ -1638,6 +1642,15 @@ with tab_simulation:
                     row_data_dict["下灌區供灌總量 (萬噸)"][col_name] = (df_p_days["實際下灌放水 (cms)"] * 8.64).sum()
                     row_data_dict["公共用水總量 (萬噸)"][col_name] = df_p_days["公共給水量 (萬噸)"].sum()
                     row_data_dict["累計溢流量 (萬噸)"][col_name] = df_p_days["溢流量 (萬噸)"].sum()
+                    
+                    # ✨ 新增指標計算 ✨
+                    row_data_dict["上灌區供灌量 (cms, 旬均值)"][col_name] = df_p_days["實際上灌放水 (cms)"].mean()
+                    row_data_dict["下灌區供灌量 (cms, 旬均值)"][col_name] = df_p_days["實際下灌放水 (cms)"].mean()
+                    
+                    # 農業總和 (萬噸) = 上灌萬噸 + 下灌萬噸
+                    up_vol_10k = (df_p_days["實際上灌放水 (cms)"] * 8.64).sum()
+                    down_vol_10k = (df_p_days["實際下灌放水 (cms)"] * 8.64).sum()
+                    row_data_dict["農業供灌總量 (萬噸)"][col_name] = up_vol_10k + down_vol_10k
                 else:
                     for lbl in row_labels[1:]:
                         row_data_dict[lbl][col_name] = None
@@ -1652,9 +1665,10 @@ with tab_simulation:
                         if pd.isnull(val):
                             return "-"
                         if "cms" in row_name:
-                            return f"{val:,.2f}"
+                            return f"{val:,.2f}" # cms 流量保留小數兩位
                         else:
-                            return f"{val:,.0f}"
+                            return f"{val:,.0f}" # 萬噸、庫容採用整數千分位
+                        
                     df_horiz_disp[col] = df_horiz_disp.apply(lambda r: format_val(r["項目"], r[col]), axis=1)
                     
             st.dataframe(df_horiz_disp.set_index("項目"), use_container_width=True)
