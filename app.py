@@ -1686,11 +1686,7 @@ with tab_simulation:
             # 4. 旬推估資訊彙整表 (直向，維持原始設計)
             st.markdown("---")
             st.markdown("#### 📅 旬推估資訊彙整表 (直向)")
-            
-            # --- 旬推估資訊彙整表 (直向，同步新增 cms 與農業總和指標) ---
-            st.markdown("---")
-            st.markdown("#### 📅 旬推估資訊彙整表 (直向)")
-            
+                       
             df_grouped_sim = df_sim_results.groupby(["年份", "月份", "旬別"], sort=False).agg(
                 天然流量_cms=("天然流量 (cms)", "mean"),
                 實際引水流量_cms=("實際引水流量 (cms)", "mean"),
