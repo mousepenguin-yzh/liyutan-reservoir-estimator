@@ -1688,81 +1688,81 @@ with tab_simulation:
             st.markdown("#### 📅 旬推估資訊彙整表 (直向)")
             
             # --- 旬推估資訊彙整表 (直向，同步新增 cms 與農業總和指標) ---
-                st.markdown("---")
-                st.markdown("#### 📅 旬推估資訊彙整表 (直向)")
-                
-                df_grouped_sim = df_sim_results.groupby(["年份", "月份", "旬別"], sort=False).agg(
-                    天然流量_cms=("天然流量 (cms)", "mean"),
-                    實際引水流量_cms=("實際引水流量 (cms)", "mean"),
-                    累計引入量_萬噸=("今日引入量 (萬噸)", "sum"),
-                    上灌區供灌量_cms=("實際上灌放水 (cms)", "mean"),      # 新增：cms 流量指標
-                    上灌區供灌總量_萬噸=("實際上灌放水 (cms)", lambda x: round((x * 8.64).sum(), 2)),
-                    下灌區供灌量_cms=("實際下灌放水 (cms)", "mean"),      # 新增：cms 流量指標
-                    下灌區供灌總量_萬噸=("實際下灌放水 (cms)", lambda x: round((x * 8.64).sum(), 2)),
-                    公共用水總量_萬噸=("公共給水量 (萬噸)", "sum"),
-                    累計出水總量_萬噸=("今日出水總量 (萬噸)", "sum"),
-                    累計溢流量_萬噸=("溢流量 (萬噸)", "sum"),
-                    累計庫容淨變化_萬噸=("當日庫容淨變化 (萬噸)", "sum"),
-                    期末庫容_萬噸=("本日末庫容 (萬噸)", "last")
-                ).reset_index()
-                
-                # 計算農業供灌總量 (萬噸) = 上灌總量 + 下灌總量
-                df_grouped_sim["農業供灌總量_萬噸"] = df_grouped_sim["上灌區供灌總量_萬噸"] + df_grouped_sim["下灌區供灌總量_萬噸"]
-                
-                # 重命名直向表欄位，與橫表維持完全相同的文字語意
-                df_grouped_sim.columns = [
-                    "年份", "月份", "旬別",
-                    "天然流量 (cms, 旬均值)",
-                    "實際引水流量 (cms, 旬均值)",
-                    "累計引入量 (萬噸)",
-                    "上灌區供灌量 (cms, 旬均值)",
-                    "上灌區供灌總量 (萬噸)",
-                    "下灌區供灌量 (cms, 旬均值)",
-                    "下灌區供灌總量 (萬噸)",
-                    "公共用水總量 (萬噸)",
-                    "累計出水總量 (萬噸)",
-                    "累計溢流量 (萬噸)",
-                    "累計庫容淨變化 (萬噸)",
-                    "期末庫容 (萬噸)",
-                    "農業供灌總量 (萬噸)" # 暫時附加於末端
-                ]
-                
-                # 重新排列直向表欄位順序，與橫表排列順序（項目由上至下 = 直欄由左至右）精確對齊
-                ordered_cols = [
-                    "年份", "月份", "旬別",
-                    "期末庫容 (萬噸)",
-                    "天然流量 (cms, 旬均值)",
-                    "實際引水流量 (cms, 旬均值)",
-                    "累計引入量 (萬噸)",
-                    "上灌區供灌量 (cms, 旬均值)",
-                    "上灌區供灌總量 (萬噸)",
-                    "下灌區供灌量 (cms, 旬均值)",
-                    "下灌區供灌總量 (萬噸)",
-                    "農業供灌總量 (萬噸)",
-                    "公共用水總量 (萬噸)",
-                    "累計出水總量 (萬噸)",
-                    "累計溢流量 (萬噸)",
-                    "累計庫容淨變化 (萬噸)"
-                ]
-                df_grouped_sim = df_grouped_sim[ordered_cols]
-                
-                # 依時間先後進行排序
-                period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
-                df_grouped_sim["旬別順序碼"] = df_grouped_sim["旬別"].map(period_order)
-                df_grouped_sim = df_grouped_sim.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
-                
-                # 呈現表格（Streamlit dataframe 會自動根據數值型態進行易讀排版）
-                st.dataframe(df_grouped_sim, use_container_width=True)
-                
-                # 提供匯出直向 CSV 檔案，同樣保持完整的欄位定義
-                csv_data_period = df_grouped_sim.to_csv(index=False).encode('utf-8-sig')
-                st.download_button(
-                    label="📥 下載 旬推估資訊彙整表 (Excel 貼上專用)",
-                    data=csv_data_period,
-                    file_name=f"liyutan_summary_by_period_{datetime.date.today().strftime('%Y%m%d')}.csv",
-                    mime="text/csv",
-                    key="download_vertical_period_csv"
-                )
+            st.markdown("---")
+            st.markdown("#### 📅 旬推估資訊彙整表 (直向)")
+            
+            df_grouped_sim = df_sim_results.groupby(["年份", "月份", "旬別"], sort=False).agg(
+                天然流量_cms=("天然流量 (cms)", "mean"),
+                實際引水流量_cms=("實際引水流量 (cms)", "mean"),
+                累計引入量_萬噸=("今日引入量 (萬噸)", "sum"),
+                上灌區供灌量_cms=("實際上灌放水 (cms)", "mean"),      # 新增：cms 流量指標
+                上灌區供灌總量_萬噸=("實際上灌放水 (cms)", lambda x: round((x * 8.64).sum(), 2)),
+                下灌區供灌量_cms=("實際下灌放水 (cms)", "mean"),      # 新增：cms 流量指標
+                下灌區供灌總量_萬噸=("實際下灌放水 (cms)", lambda x: round((x * 8.64).sum(), 2)),
+                公共用水總量_萬噸=("公共給水量 (萬噸)", "sum"),
+                累計出水總量_萬噸=("今日出水總量 (萬噸)", "sum"),
+                累計溢流量_萬噸=("溢流量 (萬噸)", "sum"),
+                累計庫容淨變化_萬噸=("當日庫容淨變化 (萬噸)", "sum"),
+                期末庫容_萬噸=("本日末庫容 (萬噸)", "last")
+            ).reset_index()
+            
+            # 計算農業供灌總量 (萬噸) = 上灌總量 + 下灌總量
+            df_grouped_sim["農業供灌總量_萬噸"] = df_grouped_sim["上灌區供灌總量_萬噸"] + df_grouped_sim["下灌區供灌總量_萬噸"]
+            
+            # 重命名直向表欄位，與橫表維持完全相同的文字語意
+            df_grouped_sim.columns = [
+                "年份", "月份", "旬別",
+                "天然流量 (cms, 旬均值)",
+                "實際引水流量 (cms, 旬均值)",
+                "累計引入量 (萬噸)",
+                "上灌區供灌量 (cms, 旬均值)",
+                "上灌區供灌總量 (萬噸)",
+                "下灌區供灌量 (cms, 旬均值)",
+                "下灌區供灌總量 (萬噸)",
+                "公共用水總量 (萬噸)",
+                "累計出水總量 (萬噸)",
+                "累計溢流量 (萬噸)",
+                "累計庫容淨變化 (萬噸)",
+                "期末庫容 (萬噸)",
+                "農業供灌總量 (萬噸)" # 暫時附加於末端
+            ]
+            
+            # 重新排列直向表欄位順序，與橫表排列順序（項目由上至下 = 直欄由左至右）精確對齊
+            ordered_cols = [
+                "年份", "月份", "旬別",
+                "期末庫容 (萬噸)",
+                "天然流量 (cms, 旬均值)",
+                "實際引水流量 (cms, 旬均值)",
+                "累計引入量 (萬噸)",
+                "上灌區供灌量 (cms, 旬均值)",
+                "上灌區供灌總量 (萬噸)",
+                "下灌區供灌量 (cms, 旬均值)",
+                "下灌區供灌總量 (萬噸)",
+                "農業供灌總量 (萬噸)",
+                "公共用水總量 (萬噸)",
+                "累計出水總量 (萬噸)",
+                "累計溢流量 (萬噸)",
+                "累計庫容淨變化 (萬噸)"
+            ]
+            df_grouped_sim = df_grouped_sim[ordered_cols]
+            
+            # 依時間先後進行排序
+            period_order = {"上旬": 1, "中旬": 2, "下旬": 3}
+            df_grouped_sim["旬別順序碼"] = df_grouped_sim["旬別"].map(period_order)
+            df_grouped_sim = df_grouped_sim.sort_values(by=["年份", "月份", "旬別順序碼"]).drop(columns=["旬別順序碼"]).reset_index(drop=True)
+            
+            # 呈現表格
+            st.dataframe(df_grouped_sim, use_container_width=True)
+            
+            # 提供匯出直向 CSV 檔案
+            csv_data_period = df_grouped_sim.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 下載 旬推估資訊彙整表 (Excel 貼上專用)",
+                data=csv_data_period,
+                file_name=f"liyutan_summary_by_period_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="download_vertical_period_csv"
+            )
 
             # 5. 日推估資訊彙整表 (直向，維持原始設計)
             st.markdown("---")
