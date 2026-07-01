@@ -1383,8 +1383,13 @@ with tab_simulation:
     elif 'df_period_flow' not in locals() or 'df_daily_outflow' not in locals():
         st.warning("⚠️ 請確保已完成第一至三階段的入流與出流條件設定。")
     else:
-        if st.button("▶️ 開始進行庫容推估", type="primary"):
+        # 放置模擬控制按鈕
+        btn_cols = st.columns([1, 3])
+        with btn_cols[0]:
+            trigger_sim = st.button("▶️ 開始進行庫容推估", type="primary")
             
+        # 若觸發推估按鈕，則執行質量守恆物理演算
+        if trigger_sim:
             max_capacity = st.session_state.max_capacity
             shilin_eco = st.session_state.shilin_eco_flow
             liyutan_eco = st.session_state.liyutan_eco_flow
@@ -1421,7 +1426,7 @@ with tab_simulation:
                 flow_lookup[key] = item[scen_col]
                 
             for _, row in df_daily_profile.iterrows():
-                current_date = row["開期" if "開期" in row else "日期"]
+                current_date = row["日期"]
                 key = f"{row['年份']}-{row['月份']}-{row['旬別']}"
                 
                 is_projection = current_date >= st.session_state.start_date
@@ -1502,7 +1507,7 @@ with tab_simulation:
                     net_change_vol = round(curr_capacity - yesterday_capacity, 2)
                     
                     sim_daily_records.append({
-                        "開期" if "開期" in row else "日期": current_date,
+                        "日期": current_date,
                         "年份": row["年份"],
                         "月份": row["月份"],
                         "旬別": row["旬別"],
@@ -1528,9 +1533,20 @@ with tab_simulation:
             
             df_sim_results = pd.DataFrame(sim_daily_records)
             st.session_state.sim_results = df_sim_results
-            st.success("🎉 模擬演算順利結束！您可以前往『推估成果產品』頁籤儲存此情境、進行方案比對。")
+            st.session_state.total_ag_intercept_volume_10k = total_ag_intercept_volume_10k
+            st.session_state.total_spillway_overflow_10k = total_spillway_overflow_10k
+            st.toast("🎉 庫容模擬演算完成！", icon="✅")
+            st.rerun()
             
-            # --- 儀表板指標 ---
+        # ==========================================
+        # 報表與歷線圖渲染展示區（只要 Session 有數據即自動常駐呈現）
+        # ==========================================
+        if "sim_results" in st.session_state:
+            df_sim_results = st.session_state.sim_results
+            total_ag_intercept_volume_10k = st.session_state.get("total_ag_intercept_volume_10k", 0.0)
+            total_spillway_overflow_10k = st.session_state.get("total_spillway_overflow_10k", 0.0)
+            
+            # 1. 儀表板關鍵指標卡
             st.markdown("### 🏆 當前推估成果指標")
             m1, m2, m3, m4 = st.columns(4)
             with m1:
@@ -1541,10 +1557,10 @@ with tab_simulation:
             with m3:
                 st.metric("農業控制律削減總水量", f"{round(total_ag_intercept_volume_10k, 1)} 萬噸")
             with m4:
-                dry_days = sum(1 for item in sim_daily_records if item["本日末庫容 (萬噸)"] <= 0.0 and item["運行狀態"] == "🔮 未來推估")
+                dry_days = sum(1 for _, item in df_sim_results.iterrows() if item["本日末庫容 (萬噸)"] <= 0.0 and item["運行狀態"] == "🔮 未來推估")
                 st.metric("庫容枯竭空庫天數", f"{dry_days} 天", delta="🚨 警告：空庫枯竭！" if dry_days > 0 else "🟢 安全")
 
-            # --- 庫容與推估蓄水量歷線圖 ---
+            # 2. Plotly 歷線趨勢圖
             st.markdown("---")
             st.markdown("### 📈 庫容與推估蓄水量歷線圖")
             fig = plot_reservoir_capacity_trend(
@@ -1556,9 +1572,106 @@ with tab_simulation:
             )
             st.plotly_chart(fig, use_container_width=True)
 
-            # --- 旬推估資訊彙整表 ---
+            # 3. 產品：橫向調度旬綜合分析表 (新增功能)
             st.markdown("---")
-            st.markdown("#### 📅 旬推估資訊彙整表")
+            st.markdown("### ✨ 產品：橫向調度旬綜合分析表 (同仁討論與對齊專用)")
+            st.markdown("""
+            **💡 使用說明**：此橫表與第五階段產品一格式一致，直欄為旬度時間點，橫列彙整了**該旬內的所有水文天然流量、引水量、灌區放水、溢流量以及期末蓄水量**。
+            您可以**用滑鼠直接在網頁上全選複製，貼上至 Excel** 與同仁在相同推估背景情境下討論。
+            """)
+            
+            # 生成與第五階段產品一完全一致的時間點數組
+            period_milestones = []
+            curr_step = st.session_state.display_start_date
+            while curr_step <= st.session_state.end_date:
+                if curr_step.day in [1, 11, 21]:
+                    period_milestones.append(curr_step)
+                curr_step += datetime.timedelta(days=1)
+
+            row_labels = [
+                "期末庫容 (萬噸)",
+                "天然流量 (cms, 旬均值)",
+                "實際引水流量 (cms, 旬均值)",
+                "累計引入量 (萬噸)",
+                "上灌區供灌總量 (萬噸)",
+                "下灌區供灌總量 (萬噸)",
+                "公共用水總量 (萬噸)",
+                "累計溢流量 (萬噸)"
+            ]
+
+            # 建立每行資料庫容器
+            row_data_dict = {label: {"項目": label} for label in row_labels}
+
+            for m_date in period_milestones:
+                col_name = m_date.strftime("%m月%d日")
+                target_date = get_sim_target_date(m_date)
+                
+                # A. 取得期末時點的水庫庫容
+                match_day = df_sim_results[pd.to_datetime(df_sim_results["日期"]).dt.date == target_date]
+                if not match_day.empty:
+                    row_data_dict["期末庫容 (萬噸)"][col_name] = match_day.iloc[0]["本日末庫容 (萬噸)"]
+                else:
+                    row_data_dict["期末庫容 (萬噸)"][col_name] = None
+                    
+                # B. 定義該時點的前一個旬範圍，並從日記錄中累加或取均值
+                if m_date.day == 11:
+                    p_start = m_date.replace(day=1)
+                    p_end = m_date.replace(day=10)
+                elif m_date.day == 21:
+                    p_start = m_date.replace(day=11)
+                    p_end = m_date.replace(day=20)
+                else: # day == 1
+                    prev_month_end = m_date - datetime.timedelta(days=1)
+                    p_start = prev_month_end.replace(day=21)
+                    p_end = prev_month_end
+                    
+                df_p_days = df_sim_results[
+                    (pd.to_datetime(df_sim_results["日期"]).dt.date >= p_start) & 
+                    (pd.to_datetime(df_sim_results["日期"]).dt.date <= p_end)
+                ]
+                
+                if not df_p_days.empty:
+                    row_data_dict["天然流量 (cms, 旬均值)"][col_name] = df_p_days["天然流量 (cms)"].mean()
+                    row_data_dict["實際引水流量 (cms, 旬均值)"][col_name] = df_p_days["實際引水流量 (cms)"].mean()
+                    row_data_dict["累計引入量 (萬噸)"][col_name] = df_p_days["今日引入量 (萬噸)"].sum()
+                    row_data_dict["上灌區供灌總量 (萬噸)"][col_name] = (df_p_days["實際上灌放水 (cms)"] * 8.64).sum()
+                    row_data_dict["下灌區供灌總量 (萬噸)"][col_name] = (df_p_days["實際下灌放水 (cms)"] * 8.64).sum()
+                    row_data_dict["公共用水總量 (萬噸)"][col_name] = df_p_days["公共給水量 (萬噸)"].sum()
+                    row_data_dict["累計溢流量 (萬噸)"][col_name] = df_p_days["溢流量 (萬噸)"].sum()
+                else:
+                    for lbl in row_labels[1:]:
+                        row_data_dict[lbl][col_name] = None
+
+            df_horiz_analysis = pd.DataFrame([row_data_dict[label] for label in row_labels])
+            
+            # 套用與畫面對齊之整數千分位 / 小數兩位格式化呈現
+            df_horiz_disp = df_horiz_analysis.copy()
+            for col in df_horiz_disp.columns:
+                if col != "項目":
+                    def format_val(row_name, val):
+                        if pd.isnull(val):
+                            return "-"
+                        if "cms" in row_name:
+                            return f"{val:,.2f}"
+                        else:
+                            return f"{val:,.0f}"
+                    df_horiz_disp[col] = df_horiz_disp.apply(lambda r: format_val(r["項目"], r[col]), axis=1)
+                    
+            st.dataframe(df_horiz_disp.set_index("項目"), use_container_width=True)
+            
+            # 下載橫向綜合分析報表
+            csv_horiz_analysis = df_horiz_analysis.to_csv(index=False).encode('utf-8-sig')
+            st.download_button(
+                label="📥 下載 橫向調度旬綜合分析表 (CSV 格式)",
+                data=csv_horiz_analysis,
+                file_name=f"liyutan_horizontal_dispatch_analysis_{datetime.date.today().strftime('%Y%m%d')}.csv",
+                mime="text/csv",
+                key="download_horiz_analysis_csv"
+            )
+
+            # 4. 旬推估資訊彙整表 (直向，維持原始設計)
+            st.markdown("---")
+            st.markdown("#### 📅 旬推估資訊彙整表 (直向)")
             
             df_grouped_sim = df_sim_results.groupby(["年份", "月份", "旬別"], sort=False).agg(
                 天然流量_cms=("天然流量 (cms)", "mean"),
@@ -1598,10 +1711,11 @@ with tab_simulation:
                 label="📥 下載 旬推估資訊彙整表 (Excel 貼上專用)",
                 data=csv_data_period,
                 file_name=f"liyutan_summary_by_period_{datetime.date.today().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="download_vertical_period_csv"
             )
 
-            # --- 日推估資訊彙整表 ---
+            # 5. 日推估資訊彙整表 (直向，維持原始設計)
             st.markdown("---")
             st.markdown("#### 📅 日推估資訊彙整表")
             
@@ -1613,23 +1727,9 @@ with tab_simulation:
                 label="📥 下載 日推估資訊彙整表 (Excel 貼上專用)",
                 data=csv_data_daily,
                 file_name=f"liyutan_daily_details_{datetime.date.today().strftime('%Y%m%d')}.csv",
-                mime="text/csv"
+                mime="text/csv",
+                key="download_vertical_daily_csv"
             )
-            
-        elif "sim_results" in st.session_state:
-            st.markdown("### 📈 庫容與推估蓄水量歷線圖")
-            fig = plot_reservoir_capacity_trend(
-                st.session_state.sim_results, 
-                st.session_state.display_start_date, 
-                st.session_state.start_date, 
-                st.session_state.end_date, 
-                st.session_state.max_capacity
-            )
-            st.plotly_chart(fig, use_container_width=True)
-
-            st.markdown("##### 📅 歷史模擬明細表")
-            st.dataframe(st.session_state.sim_results, use_container_width=True)
-
 # -----------------
 # TAB 5: 第五階段：推估成果產品 (多情境對比與字卡位置優化)
 # -----------------
