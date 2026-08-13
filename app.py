@@ -14,6 +14,14 @@ import datetime
 import calendar
 import io
 import plotly.graph_objects as go
+import json
+from v2_workflow import (
+    SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario,
+    copy_scenario, delete_scenario, expand_shared_inflows, export_batch,
+    find_override_overlaps, import_batch, invalidate_results, new_id,
+    parse_pasted_values, rename_scenario, reorder_scenarios, run_batch,
+    scenario_template, settings_fingerprint, standardize_comparison_result,
+)
 
 # ==========================================
 # 0. 內建第一層標準水文流量資料庫 (Embedded Database)
@@ -719,11 +727,130 @@ with tab_config:
 # TAB 2: 第二階段入流與水文維護
 # -----------------
 with tab_inflow:
-    st.subheader("🌊 入流條件設定")
+    st.subheader("🌊 V2 多情境入流工作區")
     
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
+        v2_periods = [f"{int(r['年份'])}-{int(r['月份'])}-{r['旬別']}" for _, r in proj_unique_periods.iterrows()]
+        if "v2_batch" not in st.session_state or st.session_state.v2_batch.get("periods") != v2_periods:
+            v2_scenarios = scenario_template("single", v2_periods)
+            st.session_state.v2_batch = {
+                "schema": SCHEMA_NAME, "schema_version": SCHEMA_VERSION, "batch_id": new_id(),
+                "batch_name": f"{st.session_state.start_date:%Y/%m/%d} 推估",
+                "display_start_date": st.session_state.display_start_date.isoformat(),
+                "projection_start_date": st.session_state.start_date.isoformat(),
+                "projection_end_date": st.session_state.end_date.isoformat(),
+                "initial_capacity": st.session_state.init_capacity,
+                "historical_capacities": st.session_state.hist_capacity,
+                "reservoir_parameters": {"max_capacity": st.session_state.max_capacity,
+                    "shilin_eco_flow": st.session_state.shilin_eco_flow,
+                    "liyutan_eco_flow": st.session_state.liyutan_eco_flow},
+                "periods": v2_periods, "shared_period_count": min(2, len(v2_periods)),
+                "shared_inflows": {}, "scenarios": v2_scenarios, "outflows": {},
+                "date_overrides": [], "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "note": ""}
+        batch = st.session_state.v2_batch
+        old_fingerprint = settings_fingerprint(batch)
+        batch["batch_name"] = st.text_input("批次名稱", batch["batch_name"], key="v2_batch_name")
+        template_cols = st.columns(3)
+        if template_cols[0].button("單一情境", use_container_width=True):
+            batch["scenarios"] = scenario_template("single", v2_periods); st.rerun()
+        if template_cols[1].button("標準 A／B／C", use_container_width=True):
+            batch["scenarios"] = scenario_template("standard", v2_periods); st.rerun()
+        if template_cols[2].button("空白自訂情境", use_container_width=True):
+            batch["scenarios"] = scenario_template("custom", v2_periods); st.rerun()
+        batch["shared_period_count"] = st.slider("共用旬數", 0, len(v2_periods),
+            int(batch["shared_period_count"]), help="從推估起點連續共用；0 表示各情境由第一旬獨立。")
+
+        def edit_inflow_table(title, keys, cells, editor_key, default_source):
+            st.markdown(f"#### {title}")
+            rows = [{"旬別": key, "入流 (cms)": cells.get(key, {}).get("cms"),
+                     "資料來源": cells.get(key, {}).get("source_type", default_source),
+                     "備註": cells.get(key, {}).get("note", "")} for key in keys]
+            edited = st.data_editor(pd.DataFrame(rows), hide_index=True, use_container_width=True,
+                disabled=["旬別"], key=editor_key,
+                column_config={"入流 (cms)": st.column_config.NumberColumn(min_value=0.0, format="%.4f")})
+            for record in edited.to_dict("records"):
+                value = record["入流 (cms)"]
+                cells[record["旬別"]] = {"cms": None if pd.isna(value) else float(value),
+                    "source_type": record["資料來源"] or default_source, "source_unit": UNIT_CMS,
+                    "source_value": None if pd.isna(value) else float(value), "note": record["備註"] or ""}
+
+        shared_keys = v2_periods[:batch["shared_period_count"]]
+        if shared_keys:
+            edit_inflow_table("共用期間（只輸入一次）", shared_keys, batch["shared_inflows"], "v2_shared_editor", "共用研判")
+        divergent = v2_periods[batch["shared_period_count"]:]
+        for scenario in sorted(batch["scenarios"], key=lambda x: x["order"]):
+            sid = scenario["scenario_id"]
+            with st.expander(f"{scenario['order'] + 1}. {scenario['name']}", expanded=len(batch["scenarios"]) == 1):
+                controls = st.columns([3, 1, 1, 1, 1])
+                renamed = controls[0].text_input("情境名稱", scenario["name"], key=f"v2_name_{sid}")
+                scenario["name"] = renamed.strip() or scenario["name"]
+                if controls[1].button("複製", key=f"v2_copy_{sid}"):
+                    batch["scenarios"] = copy_scenario(batch["scenarios"], sid); st.rerun()
+                if controls[2].button("上移", key=f"v2_up_{sid}", disabled=scenario["order"] == 0):
+                    ids = [s["scenario_id"] for s in batch["scenarios"]]; i = ids.index(sid); ids[i-1:i+1] = reversed(ids[i-1:i+1])
+                    batch["scenarios"] = reorder_scenarios(batch["scenarios"], ids); st.rerun()
+                if controls[3].button("下移", key=f"v2_down_{sid}", disabled=scenario["order"] == len(batch["scenarios"])-1):
+                    ids = [s["scenario_id"] for s in batch["scenarios"]]; i = ids.index(sid); ids[i:i+2] = reversed(ids[i:i+2])
+                    batch["scenarios"] = reorder_scenarios(batch["scenarios"], ids); st.rerun()
+                if controls[4].button("刪除", key=f"v2_del_{sid}", disabled=len(batch["scenarios"]) == 1):
+                    batch["scenarios"] = delete_scenario(batch["scenarios"], sid); st.rerun()
+                if divergent:
+                    tool1, tool2 = st.columns(2)
+                    q_choice = tool1.selectbox("以 Q 值填入分歧期間", [f"Q{x}" for x in range(5, 100, 5)], index=17, key=f"v2_q_{sid}")
+                    if tool1.button("套用 Q 值", key=f"v2_apply_q_{sid}"):
+                        for key in divergent:
+                            _, month, period = key.split("-", 2); value = get_dynamic_shilin_flow(int(month), period, q_choice)
+                            scenario["inflows"][key] = {"cms": value, "source_type": q_choice, "source_unit": UNIT_CMS, "source_value": value, "note": ""}
+                        st.rerun()
+                    unit_label = tool2.radio("貼上原始單位", ["cms", "萬噸／日"], horizontal=True, key=f"v2_unit_{sid}")
+                    pasted = st.text_area("貼上分歧期間數值", key=f"v2_paste_{sid}", placeholder="支援空白、Tab、換行與千分位逗號")
+                    if pasted.strip():
+                        try:
+                            preview = parse_pasted_values(pasted, UNIT_CMS if unit_label == "cms" else UNIT_10K_TON_DAY)
+                            st.caption(f"預期 {len(divergent)} 筆；實際解析 {len(preview)} 筆")
+                            st.dataframe(pd.DataFrame([{"旬別": k if i < len(divergent) else "超出範圍", "原始值": p["source_value"], "cms": p["cms"]}
+                                for i, p in enumerate(preview) for k in [divergent[i] if i < len(divergent) else ""]]), hide_index=True)
+                            if len(preview) != len(divergent): st.error("筆數不符，不可套用。")
+                            elif st.button("確認套用貼上資料", key=f"v2_apply_paste_{sid}"):
+                                for key, parsed in zip(divergent, preview):
+                                    scenario["inflows"][key] = {**parsed, "source_type": "貼上", "note": ""}
+                                st.rerun()
+                        except ValueError as exc: st.error(str(exc))
+                    edit_inflow_table("情境分歧資料", divergent, scenario["inflows"], f"v2_editor_{sid}", "手動")
+        if st.button("➕ 新增情境"):
+            batch["scenarios"] = add_scenario(batch["scenarios"], f"情境 {len(batch['scenarios']) + 1}", v2_periods); st.rerun()
+
+        with st.expander("設定檔 JSON 匯入／匯出"):
+            batch.update({"display_start_date": st.session_state.display_start_date.isoformat(),
+                "projection_start_date": st.session_state.start_date.isoformat(), "projection_end_date": st.session_state.end_date.isoformat(),
+                "initial_capacity": st.session_state.init_capacity, "historical_capacities": st.session_state.hist_capacity,
+                "reservoir_parameters": {"max_capacity": st.session_state.max_capacity, "shilin_eco_flow": st.session_state.shilin_eco_flow,
+                    "liyutan_eco_flow": st.session_state.liyutan_eco_flow}})
+            st.download_button("下載完整設定 JSON", export_batch(batch), f"liyutan-{batch['batch_id']}.json", "application/json")
+            uploaded = st.file_uploader("載入設定 JSON", type="json", key="v2_json_upload")
+            if uploaded:
+                try:
+                    candidate = import_batch(uploaded.getvalue().decode("utf-8")); st.success(f"預覽：{candidate['batch_name']}，{len(candidate['scenarios'])} 個情境，{len(candidate['periods'])} 旬")
+                    if st.button("確認覆蓋目前設定", type="primary"):
+                        st.session_state.display_start_date = datetime.date.fromisoformat(candidate["display_start_date"])
+                        st.session_state.start_date = datetime.date.fromisoformat(candidate["projection_start_date"])
+                        st.session_state.end_date = datetime.date.fromisoformat(candidate["projection_end_date"])
+                        st.session_state.init_capacity = float(candidate["initial_capacity"])
+                        st.session_state.hist_capacity = candidate.get("historical_capacities", {})
+                        params = candidate["reservoir_parameters"]
+                        st.session_state.max_capacity = float(params["max_capacity"])
+                        st.session_state.shilin_eco_flow = float(params["shilin_eco_flow"])
+                        st.session_state.liyutan_eco_flow = float(params["liyutan_eco_flow"])
+                        st.session_state.override_list = [{**ov, "start": datetime.date.fromisoformat(ov["start"]),
+                            "end": datetime.date.fromisoformat(ov["end"])} for ov in candidate["date_overrides"]]
+                        st.session_state.v2_batch = candidate; st.session_state.pop("v2_batch_results", None); st.rerun()
+                except (ValueError, UnicodeDecodeError) as exc: st.error(f"設定檔驗證失敗：{exc}")
+        if settings_fingerprint(batch) != old_fingerprint and st.session_state.get("v2_batch_results"):
+            st.session_state.v2_results_stale = True
+        st.markdown("---")
+        st.markdown("### 填值協助工具與年度資料維護")
         # 第一區塊：主要入流模式選擇
         inflow_options = [
             "內建標準水文情境 (Q5~Q95)", 
@@ -1369,6 +1496,25 @@ with tab_outflow:
                 st.toast("🔄 已還原為系統預設前一年度資料。", icon="🔄")
                 st.rerun()
 
+# V2 將第三階段產生的逐日出流視為整個批次唯一共用條件。
+if "v2_batch" in st.session_state and "df_daily_outflow" in locals():
+    st.session_state.v2_batch["date_overrides"] = [
+        {**ov, "start": ov["start"].isoformat(), "end": ov["end"].isoformat()}
+        for ov in st.session_state.override_list
+    ]
+    overlap_pairs = find_override_overlaps(st.session_state.v2_batch["date_overrides"])
+    if overlap_pairs:
+        st.error("❌ 出流覆蓋期間重疊，請先移除衝突規則；第四階段將阻止計算。衝突：" +
+                 "、".join(f"#{a + 1}/#{b + 1}" for a, b in overlap_pairs))
+    st.session_state.v2_batch["outflows"] = {
+        f"{int(row['年份'])}-{int(row['月份'])}-{row['旬別']}": {
+            "upstream_irrigation_cms": float(row["上灌區當日流量(cms)"]),
+            "downstream_irrigation_cms": float(row["下灌區當日流量(cms)"]),
+            "public_water_10k_ton_per_day": float(row["公共供水當日水量(萬噸)"]),
+            "source_type": row.get("調度狀態", "共用出流"), "note": row.get("今日抗旱備註", "")}
+        for _, row in df_daily_outflow.groupby(["年份", "月份", "旬別"], sort=False).first().reset_index().iterrows()
+    }
+
 # -----------------
 # TAB 4: 第四階段：核心庫容守恆演算
 # -----------------
@@ -1383,6 +1529,50 @@ with tab_simulation:
     elif 'df_period_flow' not in locals() or 'df_daily_outflow' not in locals():
         st.warning("⚠️ 請確保已完成第一至三階段的入流與出流條件設定。")
     else:
+        st.markdown("### V2 批次計算")
+        if st.session_state.get("v2_results_stale"):
+            st.warning("⚠️ 步驟二或三的資料已變更；下列舊結果已失效，請重新計算。")
+        if st.button("▶️ 一次計算所有有效情境", type="primary", key="v2_run_all"):
+            conflicts = find_override_overlaps(st.session_state.v2_batch["date_overrides"])
+            if conflicts:
+                st.error("出流覆蓋期間重疊，已阻止計算。")
+            else:
+                projection_profile = generate_date_profile(st.session_state.start_date, st.session_state.end_date)
+                results = run_batch(st.session_state.v2_batch, projection_profile, df_daily_outflow)
+                st.session_state.v2_batch_results = results
+                st.session_state.v2_batch["results"] = {sid: {k: v for k, v in item.items() if k != "data"} for sid, item in results.items()}
+                st.session_state.v2_batch["results_fingerprint"] = settings_fingerprint(st.session_state.v2_batch)
+                st.session_state.v2_results_stale = False
+                successful = [s for s in st.session_state.v2_batch["scenarios"] if results[s["scenario_id"]]["status"] == "success"]
+                preferred = next((s for s in successful if s["name"] == "C. 專業評估"), successful[0] if successful else None)
+                if preferred: st.session_state.v2_selected_scenario = preferred["scenario_id"]
+                st.rerun()
+        v2_results = st.session_state.get("v2_batch_results", {})
+        if v2_results:
+            summary_rows = []
+            scenario_lookup = {s["scenario_id"]: s for s in st.session_state.v2_batch["scenarios"]}
+            for sid, item in v2_results.items():
+                row = {"情境": scenario_lookup.get(sid, {}).get("name", sid), "狀態": "✅ 成功" if item["status"] == "success" else "❌ 失敗"}
+                if item["status"] == "success":
+                    row.update({"期末庫容": item["summary"]["final_capacity"], "最低庫容": item["summary"]["minimum_capacity"],
+                        "累積溢流": item["summary"]["spill_volume"], "農業削減總量": item["summary"]["agricultural_reduction_volume"], "空庫天數": item["summary"]["dry_days"]})
+                else: row["錯誤"] = item["error"]
+                summary_rows.append(row)
+            st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
+            successful_ids = [sid for sid, item in v2_results.items() if item["status"] == "success"]
+            if successful_ids:
+                if len(successful_ids) > 1:
+                    selected_id = st.selectbox("查看完整詳細結果", successful_ids,
+                        format_func=lambda sid: scenario_lookup[sid]["name"], key="v2_selected_scenario")
+                else: selected_id = successful_ids[0]
+                selected_result = v2_results[selected_id]
+                # Existing detailed reports below remain the single source of product rendering.
+                st.session_state.sim_results = selected_result["data"]
+                st.session_state.total_ag_intercept_volume_10k = selected_result["summary"]["agricultural_reduction_volume"]
+                st.session_state.total_spillway_overflow_10k = selected_result["summary"]["spill_volume"]
+                st.caption(f"目前詳細顯示：{scenario_lookup[selected_id]['name']}（切換只改顯示，不重新演算）")
+        st.markdown("---")
+        st.caption("以下保留單一情境舊版按鈕，供相容性核對；正式多情境請使用上方批次計算。")
         # 放置模擬控制按鈕
         btn_cols = st.columns([1, 3])
         with btn_cols[0]:
@@ -1780,6 +1970,33 @@ with tab_simulation:
 # -----------------
 with tab_products:
     st.subheader("📊 第五階段：推估成果產品")
+    if "v2_comparison_results" not in st.session_state:
+        st.session_state.v2_comparison_results = {}
+    successful_v2 = {sid: item for sid, item in st.session_state.get("v2_batch_results", {}).items()
+                     if item["status"] == "success"}
+    if successful_v2:
+        st.markdown("### V2 批次加入跨批次比較")
+        add_cols = st.columns(2)
+        selected_v2 = st.session_state.get("v2_selected_scenario")
+        add_all = add_cols[0].button("➕ 一次加入所有成功情境", use_container_width=True)
+        add_selected = add_cols[1].button("➕ 只加入目前選定情境", use_container_width=True,
+            disabled=selected_v2 not in successful_v2)
+        if add_all or add_selected:
+            ids = list(successful_v2) if add_all else [selected_v2]
+            added = 0
+            lookup = {s["scenario_id"]: s for s in st.session_state.v2_batch["scenarios"]}
+            for sid in ids:
+                normalized = standardize_comparison_result(st.session_state.v2_batch, lookup[sid], successful_v2[sid]["data"])
+                if normalized["result_id"] in st.session_state.v2_comparison_results: continue
+                st.session_state.v2_comparison_results[normalized["result_id"]] = normalized
+                display_name = f"{normalized['batch_name']}｜{normalized['scenario_name']}"
+                # Legacy products consume name -> DataFrame; IDs and snapshots remain in the V2 registry.
+                st.session_state.scenarios[display_name] = normalized["result"].copy()
+                added += 1
+            st.success(f"已加入 {added} 筆；重複結果已自動略過。")
+            st.rerun()
+        st.caption(f"標準化比較庫目前共 {len(st.session_state.v2_comparison_results)} 筆，可與其他批次累積比較。")
+        st.markdown("---")
     
     # 情境暫存機制控制區
     if "sim_results" in st.session_state:
