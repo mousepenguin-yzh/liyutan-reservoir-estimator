@@ -188,6 +188,46 @@ def results_are_current(batch: dict) -> bool:
     return bool(batch.get("results")) and batch.get("results_fingerprint") == settings_fingerprint(batch)
 
 
+def invalidate_session_results(state: dict) -> None:
+    """Atomically retire every UI reference to V2 results before a rerun.
+
+    Keeping this operation in the domain layer prevents buttons from forgetting
+    one of the several Session State result aliases.
+    """
+    state.pop("v2_batch_results", None)
+    state.pop("v2_selected_scenario", None)
+    state.pop("sim_results", None)
+    state.pop("total_ag_intercept_volume_10k", None)
+    state.pop("total_spillway_overflow_10k", None)
+    state["v2_results_stale"] = True
+    batch = state.get("v2_batch")
+    if batch:
+        batch.pop("results", None)
+        batch.pop("results_fingerprint", None)
+
+
+def store_session_results(state: dict, results: dict) -> None:
+    """Store a result set together with the exact settings fingerprint."""
+    batch = state["v2_batch"]
+    state["v2_batch_results"] = results
+    batch["results_fingerprint"] = settings_fingerprint(batch)
+    state["v2_result_fingerprint"] = batch["results_fingerprint"]
+    state["v2_results_stale"] = False
+
+
+def current_session_results(state: dict) -> dict:
+    """Return usable results, invalidating stale or orphaned scenario IDs."""
+    batch = state.get("v2_batch")
+    results = state.get("v2_batch_results")
+    if not batch or not results or state.get("v2_results_stale"):
+        return {}
+    valid_ids = {s["scenario_id"] for s in batch.get("scenarios", [])}
+    if set(results) - valid_ids or state.get("v2_result_fingerprint") != settings_fingerprint(batch):
+        invalidate_session_results(state)
+        return {}
+    return results
+
+
 def invalidate_results(batch: dict) -> dict:
     result = copy.deepcopy(batch)
     result["results_fingerprint"] = None
@@ -214,7 +254,7 @@ def validate_batch(batch: dict) -> dict:
     required = {"schema", "schema_version", "batch_id", "batch_name", "display_start_date",
                 "projection_start_date", "projection_end_date", "initial_capacity",
                 "reservoir_parameters", "periods", "shared_period_count", "shared_inflows",
-                "scenarios", "outflows", "date_overrides"}
+                "scenarios", "outflows", "daily_outflows", "date_overrides", "overrides_enabled"}
     missing = required - batch.keys()
     if missing: raise ValueError(f"設定檔缺少必要欄位：{', '.join(sorted(missing))}")
     if batch["schema"] != SCHEMA_NAME or batch["schema_version"] != SCHEMA_VERSION:
@@ -227,6 +267,41 @@ def validate_batch(batch: dict) -> dict:
     if not isinstance(batch["scenarios"], list) or not batch["scenarios"]: raise ValueError("至少需要一個情境")
     ids = [s.get("scenario_id") for s in batch["scenarios"]]
     if None in ids or len(ids) != len(set(ids)): raise ValueError("情境 ID 必須存在且唯一")
+    orders = [s.get("order") for s in batch["scenarios"]]
+    if sorted(orders) != list(range(len(orders))): raise ValueError("情境排序必須為連續且唯一的 0 起始整數")
+    for scenario in batch["scenarios"]:
+        if not str(scenario.get("name", "")).strip(): raise ValueError("情境名稱不可空白")
+        if set(scenario.get("inflows", {})) != set(periods): raise ValueError(f"{scenario['name']} 的旬別入流對應不完整")
+        for key, cell in scenario["inflows"].items():
+            value = cell.get("cms")
+            if value is not None: _finite_nonnegative(value, f"{scenario['name']} {key} 入流")
+    shared_count = int(batch["shared_period_count"])
+    if set(batch["shared_inflows"]) - set(periods[:shared_count]): raise ValueError("共用入流包含非共用旬別")
+    for key, cell in batch["shared_inflows"].items():
+        _finite_nonnegative(cell.get("cms"), f"共用 {key} 入流")
+    if set(batch["outflows"]) != set(periods): raise ValueError("共用出流旬別對應不完整")
+    for key, outflow in batch["outflows"].items():
+        for field in ("upstream_irrigation_cms", "downstream_irrigation_cms", "public_water_10k_ton_per_day"):
+            _finite_nonnegative(outflow.get(field), f"{key} {field}")
+    daily = batch.get("daily_outflows")
+    if not isinstance(daily, list) or not daily: raise ValueError("設定檔缺少權威逐日出流")
+    expected_dates = {(start + dt.timedelta(days=i)).isoformat() for i in range((end - start).days)}
+    actual_dates = set()
+    for record in daily:
+        date = _date(record.get("date"))
+        if not start <= date < end: raise ValueError(f"逐日出流日期超出推估期間：{date}")
+        if date.isoformat() in actual_dates: raise ValueError(f"逐日出流日期重複：{date}")
+        actual_dates.add(date.isoformat())
+        for field in ("upstream_irrigation_cms", "downstream_irrigation_cms", "public_water_10k_ton_per_day"):
+            _finite_nonnegative(record.get(field), f"{date} {field}")
+    if actual_dates != expected_dates: raise ValueError("逐日出流未完整涵蓋推估期間")
+    if not isinstance(batch.get("overrides_enabled"), bool): raise ValueError("覆寫啟用狀態必須為布林值")
+    for index, override in enumerate(batch["date_overrides"], 1):
+        start_override, end_override = _date(override.get("start")), _date(override.get("end"))
+        if start_override > end_override: raise ValueError(f"第 {index} 筆覆寫日期無效")
+        if not str(override.get("reason", "")).strip(): raise ValueError(f"第 {index} 筆覆寫原因不可空白")
+        for field in ("up_irr", "down_irr", "public"):
+            _finite_nonnegative(override.get(field), f"第 {index} 筆覆寫 {field}")
     find_override_overlaps(batch["date_overrides"])
     _finite_nonnegative(batch["initial_capacity"], "起始庫容")
     return copy.deepcopy(batch)
@@ -327,3 +402,41 @@ def run_batch(batch: dict, daily_profile: pd.DataFrame, daily_outflow: pd.DataFr
         except Exception as exc:  # scenario isolation is a batch requirement
             results[scenario["scenario_id"]] = {"status": "error", "error": str(exc)}
     return results
+
+
+def daily_outflow_frame(batch: dict) -> pd.DataFrame:
+    """Rebuild the exact authoritative daily workspace saved in JSON."""
+    rows = []
+    for item in batch["daily_outflows"]:
+        date = _date(item["date"])
+        period = "上旬" if date.day <= 10 else "中旬" if date.day <= 20 else "下旬"
+        rows.append({"日期": date, "年份": date.year, "月份": date.month, "旬別": period,
+             "上灌區當日流量(cms)": item["upstream_irrigation_cms"],
+             "下灌區當日流量(cms)": item["downstream_irrigation_cms"],
+             "公共供水當日水量(萬噸)": item["public_water_10k_ton_per_day"],
+             "調度狀態": item.get("source_type", "共用出流"),
+             "今日抗旱備註": item.get("note", "")})
+    return pd.DataFrame(rows)
+
+
+def prepend_history(projection: pd.DataFrame, display_start: dt.date, projection_start: dt.date,
+                    daily_capacities: dict[dt.date, float], initial_capacity: float) -> pd.DataFrame:
+    """Create legacy-compatible observation rows before V2 projection rows."""
+    if display_start >= projection_start:
+        return projection.copy()
+    records, capacity = [], daily_capacities.get(display_start - dt.timedelta(days=1), initial_capacity)
+    date = display_start
+    while date < projection_start:
+        yesterday = capacity
+        capacity = daily_capacities.get(date, yesterday)
+        period = "上旬" if date.day <= 10 else "中旬" if date.day <= 20 else "下旬"
+        records.append({"日期": date, "年份": date.year, "月份": date.month, "旬別": period,
+            "運行狀態": "📊 觀測/歷史", "天然流量 (cms)": 0.0, "原上灌需求 (cms)": 0.0,
+            "原下灌需求 (cms)": 0.0, "實際上灌放水 (cms)": 0.0, "實際下灌放水 (cms)": 0.0,
+            "農業削減狀態": "🟢 觀測", "農業削減量 (cms)": 0.0, "士林堰河道保留 (cms)": 0.0,
+            "實際引水流量 (cms)": 0.0, "今日引入量 (萬噸)": 0.0, "大壩河道放流 (cms)": 0.0,
+            "公共給水量 (萬噸)": 0.0, "今日出水總量 (萬噸)": 0.0, "溢流量 (萬噸)": 0.0,
+            "昨日期末庫容 (萬噸)": round(yesterday, 2), "本日末庫容 (萬噸)": round(capacity, 2),
+            "當日庫容淨變化 (萬噸)": round(capacity - yesterday, 2)})
+        date += dt.timedelta(days=1)
+    return pd.concat([pd.DataFrame(records), projection], ignore_index=True)

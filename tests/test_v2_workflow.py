@@ -7,9 +7,10 @@ import pytest
 from v2_workflow import (SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS,
     add_scenario, copy_scenario, delete_scenario, expand_shared_inflows, export_batch,
     find_override_overlaps, import_batch, invalidate_results, make_scenario,
-    parse_pasted_values, rename_scenario, reorder_scenarios, results_are_current,
+    current_session_results, daily_outflow_frame, invalidate_session_results,
+    parse_pasted_values, prepend_history, rename_scenario, reorder_scenarios, results_are_current,
     run_batch, run_water_balance, scenario_template, settings_fingerprint, to_cms,
-    validate_scenario)
+    standardize_comparison_result, store_session_results, validate_scenario)
 
 PERIODS = ["2026-8-上旬", "2026-8-中旬", "2026-8-下旬"]
 
@@ -28,7 +29,11 @@ def batch():
         "periods": PERIODS, "shared_period_count": 0, "shared_inflows": {}, "scenarios": scenarios,
         "outflows": {key: {"upstream_irrigation_cms": 2.7, "downstream_irrigation_cms": .3,
                             "public_water_10k_ton_per_day": 60} for key in PERIODS},
-        "date_overrides": [], "created_at": "2026-08-13T00:00:00+00:00", "note": ""}
+        "daily_outflows": [{"date": f"2026-08-{day:02d}", "upstream_irrigation_cms": 2.7,
+            "downstream_irrigation_cms": .3, "public_water_10k_ton_per_day": 60,
+            "source_type": "前一年度", "note": ""} for day in range(1, 32)],
+        "date_overrides": [], "overrides_enabled": False,
+        "created_at": "2026-08-13T00:00:00+00:00", "note": ""}
 
 
 def profiles(days=3):
@@ -118,3 +123,78 @@ def test_single_scenario_matches_legacy_formula_reference():
     # Legacy app.py: diversion=(10-max(2.7,2.7))*8.64=63.07; out=60+2.592=62.59.
     assert frame["本日末庫容 (萬噸)"].tolist() == [8000.48, 8000.96]
     assert summary["final_capacity"] == 8000.96
+
+
+def test_ui_state_delete_template_and_outflow_changes_invalidate_results():
+    value = batch(); state = {"v2_batch": value}
+    results = {value["scenarios"][0]["scenario_id"]: {"status": "success", "data": pd.DataFrame()}}
+    store_session_results(state, results)
+    assert current_session_results(state) is results
+    # A button handler must invalidate before rerun; removed IDs can never leak/KeyError.
+    invalidate_session_results(state)
+    value["scenarios"] = scenario_template("standard", PERIODS)
+    assert current_session_results(state) == {}
+    assert "v2_selected_scenario" not in state
+    store_session_results(state, {s["scenario_id"]: {"status": "success"} for s in value["scenarios"]})
+    value["daily_outflows"][0]["public_water_10k_ton_per_day"] = 55
+    assert current_session_results(state) == {}
+
+
+def test_fresh_session_json_restores_authoritative_daily_outflow_and_override():
+    value = batch()
+    value["overrides_enabled"] = True
+    value["date_overrides"] = [{"start": "2026-08-04", "end": "2026-08-06", "up_irr": 1,
+        "down_irr": 2, "public": 45, "reason": "抗旱測試"}]
+    for item in value["daily_outflows"]:
+        if "2026-08-04" <= item["date"] <= "2026-08-06":
+            item.update({"upstream_irrigation_cms": 1, "downstream_irrigation_cms": 2,
+                         "public_water_10k_ton_per_day": 45, "source_type": "抗旱覆寫"})
+    fresh_state = {"v2_batch": import_batch(export_batch(value))}
+    restored = daily_outflow_frame(fresh_state["v2_batch"])
+    assert fresh_state["v2_batch"]["overrides_enabled"] is True
+    assert fresh_state["v2_batch"]["date_overrides"] == value["date_overrides"]
+    assert restored.loc[restored["日期"] == dt.date(2026, 8, 5), "公共供水當日水量(萬噸)"].item() == 45
+    assert len(restored) == 31
+
+
+def test_same_display_names_different_settings_keep_unique_result_ids_and_snapshots():
+    first = batch(); second = copy.deepcopy(first); second["initial_capacity"] = 7000
+    scenario1, scenario2 = first["scenarios"][0], second["scenarios"][0]
+    frame = pd.DataFrame({"日期": [dt.date(2026, 8, 1)], "本日末庫容 (萬噸)": [1]})
+    one = standardize_comparison_result(first, scenario1, frame)
+    two = standardize_comparison_result(second, scenario2, frame)
+    registry = {one["result_id"]: one, two["result_id"]: two}
+    assert len(registry) == 2
+    assert {item["settings_snapshot"]["initial_capacity"] for item in registry.values()} == {8000, 7000}
+
+
+def test_v2_history_and_representative_boundaries_match_independent_legacy_reference():
+    dates = pd.date_range("2026-01-19", "2026-02-03", inclusive="left").date
+    profile = pd.DataFrame({"日期": dates, "年份": [d.year for d in dates], "月份": [d.month for d in dates],
+                            "旬別": ["上旬" if d.day <= 10 else "中旬" if d.day <= 20 else "下旬" for d in dates]})
+    out = pd.DataFrame({"日期": dates, "上灌區當日流量(cms)": [20] * len(dates),
+                        "下灌區當日流量(cms)": [10] * len(dates),
+                        "公共供水當日水量(萬噸)": [120] * len(dates)})
+    keys = {f"{d.year}-{d.month}-{'上旬' if d.day <= 10 else '中旬' if d.day <= 20 else '下旬'}" for d in dates}
+
+    def legacy_reference(initial, inflow):
+        cap, rows = initial, []
+        for _ in dates:
+            actual_u = min(20, inflow); actual_d = min(10, max(0, inflow - actual_u))
+            diversion = min(33, max(0, inflow - min(inflow, max(2.7, actual_u))))
+            calculated = cap + round(diversion * 8.64, 2) - round(120 + round(max(.3, actual_d) * 8.64, 2), 2)
+            spill = round(max(0, calculated - 11584), 2); cap = 11584 if calculated > 11584 else max(0, round(calculated, 2))
+            rows.append((cap, spill, round(30 - actual_u - actual_d, 2)))
+        return rows
+
+    for initial, inflow in [(11580, 80), (500, 1)]:  # spill and agricultural reduction / empty boundary
+        actual, _ = run_water_balance(profile, {key: inflow for key in keys}, out, initial, 11584, 2.7, .3)
+        expected = legacy_reference(initial, inflow)
+        assert list(zip(actual["本日末庫容 (萬噸)"], actual["溢流量 (萬噸)"], actual["農業削減量 (cms)"])) == expected
+    projection, _ = run_water_balance(profile, {key: 10 for key in keys}, out, 8000, 11584, 2.7, .3)
+    history = {dt.date(2026, 1, 15): 7900, dt.date(2026, 1, 16): 7920,
+               dt.date(2026, 1, 17): 7950, dt.date(2026, 1, 18): 8000}
+    combined = prepend_history(projection, dt.date(2026, 1, 15), dt.date(2026, 1, 19), history, 8000)
+    assert combined.iloc[:4]["運行狀態"].eq("📊 觀測/歷史").all()
+    assert combined.iloc[4:]["運行狀態"].eq("🔮 未來推估").all()
+    assert combined["日期"].iloc[0] == dt.date(2026, 1, 15)

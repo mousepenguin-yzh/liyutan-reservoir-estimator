@@ -207,6 +207,8 @@ pytest -q
 
 測試涵蓋單位換算、貼上解析、共用旬展開、情境操作、輸入驗證、覆蓋重疊、JSON round-trip、結果失效、共用出流，以及單一情境與原公式的逐日結果相容性。
 
+Repository 亦包含 `.github/workflows/tests.yml`，每次 push 與 Pull Request 都會使用 Python 3.12 執行 compileall 與完整 pytest 測試。
+
 ## 後續文件待補
 
 - Q5～Q95 的統計期間、測站、計算方法及資料來源。
