@@ -143,6 +143,58 @@ def expand_shared_inflows(periods: list[str], shared_count: int, shared: dict, s
     return result
 
 
+def change_shared_period_count(batch: dict, new_count: int, confirmed_values: dict | None = None) -> dict:
+    """Safely change the continuous shared prefix without discarding inflows.
+
+    Shrinking copies former shared cells into every scenario. Growing requires
+    explicit values for every newly shared period, so no scenario wins silently.
+    """
+    result = copy.deepcopy(batch)
+    periods, old_count = result["periods"], int(result["shared_period_count"])
+    if not 0 <= new_count <= len(periods): raise ValueError("共用旬數超出範圍")
+    if new_count < old_count:
+        for key in periods[new_count:old_count]:
+            if key not in result["shared_inflows"]: raise ValueError(f"共用入流缺少 {key}")
+            for scenario in result["scenarios"]:
+                scenario["inflows"][key] = copy.deepcopy(result["shared_inflows"][key])
+    elif new_count > old_count:
+        confirmed_values = confirmed_values or {}
+        missing = [key for key in periods[old_count:new_count] if key not in confirmed_values]
+        if missing: raise ValueError("新納入共用旬需確認共用值：" + "、".join(missing))
+        for key in periods[old_count:new_count]:
+            _finite_nonnegative(confirmed_values[key].get("cms"), f"共用 {key} 入流")
+            result["shared_inflows"][key] = copy.deepcopy(confirmed_values[key])
+    result["shared_period_count"] = new_count
+    result["shared_inflows"] = {key: result["shared_inflows"][key]
+                                for key in periods[:new_count] if key in result["shared_inflows"]}
+    return result
+
+
+def sync_daily_outflows(batch: dict, frame: pd.DataFrame) -> dict:
+    """Persist only [projection_start, projection_end) as authoritative outflow."""
+    result = copy.deepcopy(batch); start = _date(result["projection_start_date"]); end = _date(result["projection_end_date"])
+    filtered = frame[(pd.to_datetime(frame["日期"]).dt.date >= start) & (pd.to_datetime(frame["日期"]).dt.date < end)].copy()
+    result["daily_outflows"] = [{"date": pd.Timestamp(row["日期"]).date().isoformat(),
+        "upstream_irrigation_cms": float(row["上灌區當日流量(cms)"]),
+        "downstream_irrigation_cms": float(row["下灌區當日流量(cms)"]),
+        "public_water_10k_ton_per_day": float(row["公共供水當日水量(萬噸)"]),
+        "source_type": row.get("調度狀態", "共用出流"), "note": row.get("今日抗旱備註", "")}
+        for _, row in filtered.iterrows()]
+    grouped = filtered.groupby(["年份", "月份", "旬別"], sort=False).first().reset_index()
+    result["outflows"] = {f"{int(row['年份'])}-{int(row['月份'])}-{row['旬別']}": {
+        "upstream_irrigation_cms": float(row["上灌區當日流量(cms)"]),
+        "downstream_irrigation_cms": float(row["下灌區當日流量(cms)"]),
+        "public_water_10k_ton_per_day": float(row["公共供水當日水量(萬噸)"]),
+        "source_type": row.get("調度狀態", "共用出流"), "note": row.get("今日抗旱備註", "")}
+        for _, row in grouped.iterrows()}
+    return result
+
+
+def safe_export_batch(batch: dict) -> tuple[str | None, str | None]:
+    try: return export_batch(batch), None
+    except (ValueError, TypeError, KeyError) as exc: return None, str(exc)
+
+
 def validate_scenario(scenario: dict, periods: list[str]) -> list[str]:
     errors = []
     for key in periods:
@@ -276,7 +328,12 @@ def validate_batch(batch: dict) -> dict:
             value = cell.get("cms")
             if value is not None: _finite_nonnegative(value, f"{scenario['name']} {key} 入流")
     shared_count = int(batch["shared_period_count"])
-    if set(batch["shared_inflows"]) - set(periods[:shared_count]): raise ValueError("共用入流包含非共用旬別")
+    expected_shared = set(periods[:shared_count])
+    actual_shared = set(batch["shared_inflows"])
+    if actual_shared != expected_shared:
+        missing_shared = expected_shared - actual_shared
+        if missing_shared: raise ValueError("共用入流缺少：" + "、".join(sorted(missing_shared)))
+        raise ValueError("共用入流包含非共用旬別")
     for key, cell in batch["shared_inflows"].items():
         _finite_nonnegative(cell.get("cms"), f"共用 {key} 入流")
     if set(batch["outflows"]) != set(periods): raise ValueError("共用出流旬別對應不完整")
@@ -302,7 +359,8 @@ def validate_batch(batch: dict) -> dict:
         if not str(override.get("reason", "")).strip(): raise ValueError(f"第 {index} 筆覆寫原因不可空白")
         for field in ("up_irr", "down_irr", "public"):
             _finite_nonnegative(override.get(field), f"第 {index} 筆覆寫 {field}")
-    find_override_overlaps(batch["date_overrides"])
+    if batch["overrides_enabled"] and find_override_overlaps(batch["date_overrides"]):
+        raise ValueError("啟用的出流覆寫期間不可重疊")
     _finite_nonnegative(batch["initial_capacity"], "起始庫容")
     return copy.deepcopy(batch)
 
@@ -382,7 +440,7 @@ def run_water_balance(daily_profile: pd.DataFrame, inflows: dict[str, float], da
 
 def run_batch(batch: dict, daily_profile: pd.DataFrame, daily_outflow: pd.DataFrame) -> dict:
     batch = validate_batch(batch)
-    conflicts = find_override_overlaps(batch["date_overrides"])
+    conflicts = find_override_overlaps(batch["date_overrides"]) if batch["overrides_enabled"] else []
     if conflicts: raise ValueError(f"出流覆蓋期間重疊：{conflicts}")
     expanded = expand_shared_inflows(batch["periods"], batch["shared_period_count"],
                                      batch["shared_inflows"], batch["scenarios"])

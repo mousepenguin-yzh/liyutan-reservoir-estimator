@@ -17,11 +17,12 @@ import plotly.graph_objects as go
 import json
 from v2_workflow import (
     SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario,
-    copy_scenario, delete_scenario, expand_shared_inflows, export_batch,
+    change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows,
     current_session_results, daily_outflow_frame, find_override_overlaps, import_batch,
     invalidate_session_results, new_id, prepend_history,
     parse_pasted_values, rename_scenario, reorder_scenarios, run_batch,
-    scenario_template, settings_fingerprint, standardize_comparison_result, store_session_results,
+    safe_export_batch, scenario_template, settings_fingerprint, standardize_comparison_result,
+    store_session_results, sync_daily_outflows,
 )
 
 # ==========================================
@@ -765,9 +766,19 @@ with tab_inflow:
             help="從推估起點連續共用；變更須確認，既有各旬值會保留。", key="v2_requested_shared")
         if requested_shared != batch["shared_period_count"]:
             st.warning("共用範圍將改變；既有旬值會保留，但新納入共用的旬別需確認共用值。")
+            confirmed_shared = {}
+            if requested_shared > batch["shared_period_count"]:
+                for key in v2_periods[batch["shared_period_count"]:requested_shared]:
+                    value = st.number_input(f"確認 {key} 共用入流 (cms)", min_value=0.0, value=None,
+                                            key=f"v2_confirm_shared_{key}")
+                    if value is not None:
+                        confirmed_shared[key] = {"cms": float(value), "source_type": "共用研判",
+                            "source_unit": UNIT_CMS, "source_value": float(value), "note": "共用旬轉換確認"}
             if st.button("確認變更共用旬數"):
-                batch["shared_period_count"] = requested_shared
-                invalidate_session_results(st.session_state); st.rerun()
+                try:
+                    st.session_state.v2_batch = change_shared_period_count(batch, requested_shared, confirmed_shared)
+                    invalidate_session_results(st.session_state); st.rerun()
+                except ValueError as exc: st.error(str(exc))
 
         def edit_inflow_table(title, keys, cells, editor_key, default_source):
             st.markdown(f"#### {title}")
@@ -835,10 +846,10 @@ with tab_inflow:
                 "initial_capacity": st.session_state.init_capacity, "historical_capacities": st.session_state.hist_capacity,
                 "reservoir_parameters": {"max_capacity": st.session_state.max_capacity, "shilin_eco_flow": st.session_state.shilin_eco_flow,
                     "liyutan_eco_flow": st.session_state.liyutan_eco_flow}})
-            if batch.get("daily_outflows") and batch.get("outflows"):
-                st.download_button("下載完整設定 JSON", export_batch(batch), f"liyutan-{batch['batch_id']}.json", "application/json")
-            else:
-                st.info("完成步驟三的共用出流工作區後即可匯出完整設定。")
+            json_text, export_error = safe_export_batch(batch)
+            if json_text:
+                st.download_button("下載完整設定 JSON", json_text, f"liyutan-{batch['batch_id']}.json", "application/json")
+            else: st.info(f"設定尚未完成，暫不能匯出：{export_error}")
             uploaded = st.file_uploader("載入設定 JSON", type="json", key="v2_json_upload")
             if uploaded:
                 try:
@@ -859,7 +870,7 @@ with tab_inflow:
                         st.session_state.v2_batch = candidate
                         st.session_state.v2_outflows_authoritative = True
                         invalidate_session_results(st.session_state); st.rerun()
-                except (ValueError, UnicodeDecodeError) as exc: st.error(f"設定檔驗證失敗：{exc}")
+                except (ValueError, TypeError, KeyError, UnicodeDecodeError) as exc: st.error(f"設定檔驗證失敗：{exc}")
         if settings_fingerprint(batch) != old_fingerprint and st.session_state.get("v2_batch_results"):
             invalidate_session_results(st.session_state)
         st.markdown("---")
@@ -1103,6 +1114,19 @@ with tab_inflow:
 # -----------------
 with tab_outflow:
     st.subheader("🚰 出流標的設定與抗旱調整")
+    if st.session_state.get("v2_outflows_authoritative") and st.session_state.get("v2_batch"):
+        st.success("目前使用匯入設定檔出流；下方原工作區僅供參考，並非目前正式條件。")
+        imported_daily = daily_outflow_frame(st.session_state.v2_batch)
+        imported_summary = imported_daily.groupby(["年份", "月份", "旬別"], sort=False).agg(
+            上灌區加權均值=("上灌區當日流量(cms)", "mean"), 下灌區加權均值=("下灌區當日流量(cms)", "mean"),
+            公共給水加權均值=("公共供水當日水量(萬噸)", "mean"), 覆寫日數=("調度狀態", lambda x: x.astype(str).str.contains("覆寫").sum())).reset_index()
+        st.dataframe(imported_summary, hide_index=True, use_container_width=True)
+        if st.session_state.v2_batch.get("date_overrides"):
+            st.caption("匯入的逐日覆寫規則")
+            st.dataframe(pd.DataFrame(st.session_state.v2_batch["date_overrides"]), hide_index=True, use_container_width=True)
+        if st.button("改用目前步驟三工作區並覆蓋匯入出流", key="v2_release_imported_outflow"):
+            st.session_state.v2_outflows_authoritative = False
+            invalidate_session_results(st.session_state); st.rerun()
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
     else:
@@ -1515,36 +1539,19 @@ with tab_outflow:
 if "v2_batch" in st.session_state and "df_daily_outflow" in locals():
     if st.session_state.get("v2_outflows_authoritative"):
         df_daily_outflow = daily_outflow_frame(st.session_state.v2_batch)
-        st.info("目前共用出流由匯入設定檔完整還原（逐日權威資料）。若要改用上方工作區，請先明確切換。")
-        if st.button("改用目前步驟三工作區並覆蓋匯入出流", key="v2_release_imported_outflow"):
-            st.session_state.v2_outflows_authoritative = False
-            invalidate_session_results(st.session_state); st.rerun()
     batch_before_outflow_sync = settings_fingerprint(st.session_state.v2_batch)
     st.session_state.v2_batch["overrides_enabled"] = bool(enable_override)
     st.session_state.v2_batch["date_overrides"] = [
         {**ov, "start": ov["start"].isoformat(), "end": ov["end"].isoformat()}
         for ov in st.session_state.override_list
     ]
-    overlap_pairs = find_override_overlaps(st.session_state.v2_batch["date_overrides"])
+    overlap_pairs = find_override_overlaps(st.session_state.v2_batch["date_overrides"]) if enable_override else []
     if overlap_pairs:
         st.error("❌ 出流覆蓋期間重疊，請先移除衝突規則；第四階段將阻止計算。衝突：" +
                  "、".join(f"#{a + 1}/#{b + 1}" for a, b in overlap_pairs))
-    st.session_state.v2_batch["outflows"] = {
-        f"{int(row['年份'])}-{int(row['月份'])}-{row['旬別']}": {
-            "upstream_irrigation_cms": float(row["上灌區當日流量(cms)"]),
-            "downstream_irrigation_cms": float(row["下灌區當日流量(cms)"]),
-            "public_water_10k_ton_per_day": float(row["公共供水當日水量(萬噸)"]),
-            "source_type": row.get("調度狀態", "共用出流"), "note": row.get("今日抗旱備註", "")}
-        for _, row in df_daily_outflow.groupby(["年份", "月份", "旬別"], sort=False).first().reset_index().iterrows()
-    }
-    st.session_state.v2_batch["daily_outflows"] = [
-        {"date": pd.Timestamp(row["日期"]).date().isoformat(),
-         "upstream_irrigation_cms": float(row["上灌區當日流量(cms)"]),
-         "downstream_irrigation_cms": float(row["下灌區當日流量(cms)"]),
-         "public_water_10k_ton_per_day": float(row["公共供水當日水量(萬噸)"]),
-         "source_type": row.get("調度狀態", "共用出流"), "note": row.get("今日抗旱備註", "")}
-        for _, row in df_daily_outflow.iterrows()
-        if pd.Timestamp(row["日期"]).date() >= st.session_state.start_date]
+    synced = sync_daily_outflows(st.session_state.v2_batch, df_daily_outflow)
+    st.session_state.v2_batch["outflows"] = synced["outflows"]
+    st.session_state.v2_batch["daily_outflows"] = synced["daily_outflows"]
     if settings_fingerprint(st.session_state.v2_batch) != batch_before_outflow_sync and st.session_state.get("v2_batch_results"):
         invalidate_session_results(st.session_state)
 
@@ -1566,7 +1573,8 @@ with tab_simulation:
         if st.session_state.get("v2_results_stale"):
             st.warning("⚠️ 步驟二或三的資料已變更；下列舊結果已失效，請重新計算。")
         if st.button("▶️ 一次計算所有有效情境", type="primary", key="v2_run_all"):
-            conflicts = find_override_overlaps(st.session_state.v2_batch["date_overrides"])
+            conflicts = (find_override_overlaps(st.session_state.v2_batch["date_overrides"])
+                         if st.session_state.v2_batch["overrides_enabled"] else [])
             if conflicts:
                 st.error("出流覆蓋期間重疊，已阻止計算。")
             else:
@@ -2029,7 +2037,8 @@ with tab_products:
                 normalized = standardize_comparison_result(st.session_state.v2_batch, lookup[sid], successful_v2[sid]["data"])
                 if normalized["result_id"] in st.session_state.v2_comparison_results: continue
                 st.session_state.v2_comparison_results[normalized["result_id"]] = normalized
-                display_name = f"{normalized['batch_name']}｜{normalized['scenario_name']} [{normalized['result_id'][-8:]}]"
+                display_name = (f"{normalized['batch_name']}｜{normalized['scenario_name']} "
+                                f"[情境 {normalized['scenario_id'][:8]}｜結果 {normalized['result_id'].split(':')[-1][:6]}]")
                 # Legacy products consume name -> DataFrame; IDs and snapshots remain in the V2 registry.
                 st.session_state.scenarios[display_name] = normalized["result"].copy()
                 added += 1

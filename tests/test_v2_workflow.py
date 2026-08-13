@@ -5,12 +5,12 @@ import pandas as pd
 import pytest
 
 from v2_workflow import (SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS,
-    add_scenario, copy_scenario, delete_scenario, expand_shared_inflows, export_batch,
+    add_scenario, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows, export_batch,
     find_override_overlaps, import_batch, invalidate_results, make_scenario,
     current_session_results, daily_outflow_frame, invalidate_session_results,
-    parse_pasted_values, prepend_history, rename_scenario, reorder_scenarios, results_are_current,
+    parse_pasted_values, prepend_history, rename_scenario, reorder_scenarios, results_are_current, safe_export_batch,
     run_batch, run_water_balance, scenario_template, settings_fingerprint, to_cms,
-    standardize_comparison_result, store_session_results, validate_scenario)
+    standardize_comparison_result, store_session_results, sync_daily_outflows, validate_scenario)
 
 PERIODS = ["2026-8-上旬", "2026-8-中旬", "2026-8-下旬"]
 
@@ -198,3 +198,72 @@ def test_v2_history_and_representative_boundaries_match_independent_legacy_refer
     assert combined.iloc[:4]["運行狀態"].eq("📊 觀測/歷史").all()
     assert combined.iloc[4:]["運行狀態"].eq("🔮 未來推估").all()
     assert combined["日期"].iloc[0] == dt.date(2026, 1, 15)
+
+
+def test_display_period_never_pollutes_outflows_and_round_trip_runs():
+    value = batch()
+    dates = pd.date_range("2026-07-25", "2026-09-01", inclusive="left").date
+    frame = pd.DataFrame({"日期": dates, "年份": [d.year for d in dates], "月份": [d.month for d in dates],
+        "旬別": ["上旬" if d.day <= 10 else "中旬" if d.day <= 20 else "下旬" for d in dates],
+        "上灌區當日流量(cms)": 2.7, "下灌區當日流量(cms)": .3,
+        "公共供水當日水量(萬噸)": 60., "調度狀態": "共用出流", "今日抗旱備註": ""})
+    synced = sync_daily_outflows(value, frame)
+    assert set(synced["outflows"]) == set(PERIODS)
+    assert len(synced["daily_outflows"]) == 31
+    restored = import_batch(export_batch(synced))
+    daily, _ = profiles(); results = run_batch(restored, daily, daily_outflow_frame(restored))
+    assert next(iter(results.values()))["status"] == "success"
+    combined = prepend_history(next(iter(results.values()))["data"], dt.date(2026, 7, 25), dt.date(2026, 8, 1),
+        {dt.date(2026, 7, 24): 7900, dt.date(2026, 7, 31): 8000}, 8000)
+    assert combined.iloc[0]["日期"] == dt.date(2026, 7, 25)
+
+
+def test_safe_export_reports_incomplete_shared_inflow_without_raising():
+    value = batch(); value["shared_period_count"] = 2
+    text, error = safe_export_batch(value)
+    assert text is None and "共用" in error
+
+
+@pytest.mark.parametrize("old,new", [(2, 0), (3, 2)])
+def test_shrinking_shared_periods_copies_values_to_every_scenario(old, new):
+    value = batch(); value["scenarios"] = scenario_template("standard", PERIODS); value["shared_period_count"] = old
+    value["shared_inflows"] = {key: cell(i + 5, "共用") for i, key in enumerate(PERIODS[:old])}
+    changed = change_shared_period_count(value, new)
+    assert set(changed["shared_inflows"]) == set(PERIODS[:new])
+    for scenario in changed["scenarios"]:
+        for key in PERIODS[new:old]: assert scenario["inflows"][key]["cms"] == value["shared_inflows"][key]["cms"]
+    assert import_batch(export_batch(changed))["shared_period_count"] == new
+
+
+@pytest.mark.parametrize("old,new", [(0, 2), (2, 3)])
+def test_growing_shared_periods_requires_explicit_confirmation(old, new):
+    value = batch(); value["shared_period_count"] = old
+    value["shared_inflows"] = {key: cell(10) for key in PERIODS[:old]}
+    before = copy.deepcopy(value["scenarios"])
+    with pytest.raises(ValueError, match="確認"): change_shared_period_count(value, new)
+    assert value["scenarios"] == before
+    confirmed = {key: cell(20, "確認") for key in PERIODS[old:new]}
+    changed = change_shared_period_count(value, new, confirmed)
+    assert changed["scenarios"] == before
+    assert import_batch(export_batch(changed))["shared_period_count"] == new
+
+
+def test_disabled_overlapping_overrides_do_not_block_export_or_run():
+    value = batch(); value["date_overrides"] = [
+        {"start": "2026-08-01", "end": "2026-08-03", "up_irr": 1, "down_irr": 1, "public": 40, "reason": "保留1"},
+        {"start": "2026-08-02", "end": "2026-08-04", "up_irr": 1, "down_irr": 1, "public": 40, "reason": "保留2"}]
+    value["overrides_enabled"] = False
+    restored = import_batch(export_batch(value)); daily, out = profiles()
+    assert next(iter(run_batch(restored, daily, out).values()))["status"] == "success"
+    value["overrides_enabled"] = True
+    with pytest.raises(ValueError): export_batch(value)
+
+
+def test_same_batch_same_name_scenarios_have_distinct_step_five_keys():
+    value = batch(); first = value["scenarios"][0]; second = copy.deepcopy(first)
+    second["scenario_id"] = "different-scenario-id"; second["name"] = first["name"]; second["order"] = 1
+    value["scenarios"] = [first, second]
+    frame = pd.DataFrame({"日期": [dt.date(2026, 8, 1)]})
+    items = [standardize_comparison_result(value, scenario, frame) for scenario in value["scenarios"]]
+    assert len({item["result_id"] for item in items}) == 2
+    assert len({f"{item['scenario_id'][:8]}-{item['result_id'].split(':')[-1][:6]}" for item in items}) == 2
