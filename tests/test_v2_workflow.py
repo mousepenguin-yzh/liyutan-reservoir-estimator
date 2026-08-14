@@ -423,3 +423,21 @@ def test_scenario_widget_keys_change_as_one_unit_after_json_import_version_bump(
     assert set(before) == {"name", "q", "paste_unit", "paste_text", "editor"}
     assert all(before[name] != after[name] for name in before)
     assert "same-id" in after["name"]
+
+
+def test_stable_comparison_labels_delete_reused_second_without_touching_third():
+    registry = {key: {"batch_name": "批次", "scenario_name": "同名", "result": key}
+                for key in ("r1", "r2", "r3")}
+    registry, scenarios = migrate_comparison_state(registry, {})
+    registry, scenarios = remove_comparison_results(registry, scenarios, ["r2"])
+    registry["r4"] = {"batch_name": "批次", "scenario_name": "同名", "result": "r4"}
+    registry, scenarios = migrate_comparison_state(registry, scenarios)
+    labels = comparison_display_labels(registry)
+    assert labels == {result_id: item["display_name"] for result_id, item in registry.items()}
+    assert labels["r3"] == "批次｜同名（第 3 次）"
+    second_id = next(result_id for result_id, label in labels.items() if label == "批次｜同名（第 2 次）")
+    assert second_id == "r4"
+    registry, scenarios = remove_comparison_results(registry, scenarios, [second_id])
+    assert "r4" not in registry and "批次｜同名（第 2 次）" not in scenarios
+    assert registry["r3"]["display_name"] == "批次｜同名（第 3 次）"
+    assert scenarios["批次｜同名（第 3 次）"] == "r3"

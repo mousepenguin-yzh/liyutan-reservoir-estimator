@@ -212,9 +212,12 @@ def format_summary_number(value: Any) -> str:
 
 
 def comparison_display_labels(items: dict[str, dict]) -> dict[str, str]:
-    """Friendly unique labels keyed by result_id; no technical ID is exposed."""
+    """Stable friendly labels keyed by result_id; never renumber migrated items."""
     counts, labels = {}, {}
     for result_id, item in items.items():
+        if item.get("display_name"):
+            labels[result_id] = item["display_name"]
+            continue
         base = f"{item['batch_name']}｜{item['scenario_name']}"
         counts[base] = counts.get(base, 0) + 1
         labels[result_id] = base if counts[base] == 1 else f"{base}（第 {counts[base]} 次）"

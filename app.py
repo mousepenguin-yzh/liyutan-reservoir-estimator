@@ -2057,7 +2057,8 @@ with tab_products:
         st.session_state.v2_comparison_results = {}
     st.session_state.v2_comparison_results, st.session_state.scenarios = migrate_comparison_state(
         st.session_state.v2_comparison_results, st.session_state.scenarios)
-    comparison_labels = comparison_display_labels(st.session_state.v2_comparison_results)
+    comparison_labels = {result_id: item["display_name"]
+                         for result_id, item in st.session_state.v2_comparison_results.items()}
     if comparison_labels:
         with st.expander("V2 比較項目管理"):
             remove_result_ids = st.multiselect("選取要刪除的比較項目", list(comparison_labels),
