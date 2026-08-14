@@ -16,12 +16,13 @@ import io
 import plotly.graph_objects as go
 import json
 from v2_workflow import (
-    SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario,
+    SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario, apply_q_inflows,
     apply_shared_paste, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows,
     current_session_results, daily_outflow_frame, find_override_overlaps, import_batch,
     invalidate_session_results, new_id, prepend_history,
     parse_pasted_values, rename_scenario, reorder_scenarios, run_batch,
-    safe_export_batch, scenario_template, settings_fingerprint, shared_inflow_rows, standardize_comparison_result,
+    comparison_display_labels, format_summary_number, safe_export_batch, scenario_template,
+    settings_fingerprint, shared_inflow_rows, standardize_comparison_result,
     store_session_results, sync_daily_outflows,
 )
 
@@ -778,8 +779,9 @@ with tab_inflow:
             rows = [{"旬別": key, "入流 (cms)": cells.get(key, {}).get("cms"),
                      "資料來源": cells.get(key, {}).get("source_type", default_source),
                      "備註": cells.get(key, {}).get("note", "")} for key in keys]
+            editor_version = st.session_state.get(f"{editor_key}_version", 0)
             edited = st.data_editor(pd.DataFrame(rows), hide_index=True, use_container_width=True,
-                disabled=["旬別"], key=editor_key,
+                disabled=["旬別"], key=f"{editor_key}_{editor_version}",
                 column_config={"入流 (cms)": st.column_config.NumberColumn(min_value=0.0, format="%.4f")})
             for record in edited.to_dict("records"):
                 value = record["入流 (cms)"]
@@ -841,9 +843,13 @@ with tab_inflow:
                     tool1, tool2 = st.columns(2)
                     q_choice = tool1.selectbox("以 Q 值填入分歧期間", [f"Q{x}" for x in range(5, 100, 5)], index=17, key=f"v2_q_{sid}")
                     if tool1.button("套用 Q 值", key=f"v2_apply_q_{sid}"):
+                        q_values = {}
                         for key in divergent:
                             _, month, period = key.split("-", 2); value = get_dynamic_shilin_flow(int(month), period, q_choice)
-                            scenario["inflows"][key] = {"cms": value, "source_type": q_choice, "source_unit": UNIT_CMS, "source_value": value, "note": ""}
+                            q_values[key] = value
+                        replacement = apply_q_inflows(scenario, q_values, q_choice)
+                        batch["scenarios"] = [replacement if item["scenario_id"] == sid else item for item in batch["scenarios"]]
+                        st.session_state[f"v2_editor_{sid}_version"] = st.session_state.get(f"v2_editor_{sid}_version", 0) + 1
                         invalidate_session_results(st.session_state); st.rerun()
                     unit_label = tool2.radio("貼上原始單位", ["cms", "萬噸／日"], horizontal=True, key=f"v2_unit_{sid}")
                     pasted = st.text_area("貼上分歧期間數值", key=f"v2_paste_{sid}", placeholder="支援空白、Tab、換行與千分位逗號")
@@ -1623,8 +1629,11 @@ with tab_simulation:
             for sid, item in v2_results.items():
                 row = {"情境": scenario_lookup.get(sid, {}).get("name", sid), "狀態": "✅ 成功" if item["status"] == "success" else "❌ 失敗"}
                 if item["status"] == "success":
-                    row.update({"期末庫容": item["summary"]["final_capacity"], "最低庫容": item["summary"]["minimum_capacity"],
-                        "累積溢流": item["summary"]["spill_volume"], "農業削減總量": item["summary"]["agricultural_reduction_volume"], "空庫天數": item["summary"]["dry_days"]})
+                    row.update({"期末庫容": format_summary_number(item["summary"]["final_capacity"]),
+                        "最低庫容": format_summary_number(item["summary"]["minimum_capacity"]),
+                        "累積溢流": format_summary_number(item["summary"]["spill_volume"]),
+                        "農業削減總量": format_summary_number(item["summary"]["agricultural_reduction_volume"]),
+                        "空庫天數": item["summary"]["dry_days"]})
                 else: row["錯誤"] = item["error"]
                 summary_rows.append(row)
             st.dataframe(pd.DataFrame(summary_rows), hide_index=True, use_container_width=True)
@@ -2041,6 +2050,17 @@ with tab_products:
     st.subheader("📊 第五階段：推估成果產品")
     if "v2_comparison_results" not in st.session_state:
         st.session_state.v2_comparison_results = {}
+    comparison_labels = comparison_display_labels(st.session_state.v2_comparison_results)
+    if comparison_labels:
+        with st.expander("V2 比較項目管理"):
+            remove_result_ids = st.multiselect("選取要刪除的比較項目", list(comparison_labels),
+                format_func=lambda result_id: comparison_labels[result_id], key="v2_remove_comparisons")
+            if st.button("刪除選取項目", disabled=not remove_result_ids):
+                for result_id in remove_result_ids:
+                    item = st.session_state.v2_comparison_results.pop(result_id, None)
+                    if item and item.get("legacy_display_name"):
+                        st.session_state.scenarios.pop(item["legacy_display_name"], None)
+                st.rerun()
     successful_v2 = {sid: item for sid, item in current_session_results(st.session_state).items()
                      if item["status"] == "success"}
     if successful_v2:
@@ -2060,8 +2080,8 @@ with tab_products:
                 normalized = standardize_comparison_result(st.session_state.v2_batch, lookup[sid], successful_v2[sid]["data"])
                 if normalized["result_id"] in st.session_state.v2_comparison_results: continue
                 st.session_state.v2_comparison_results[normalized["result_id"]] = normalized
-                display_name = (f"{normalized['batch_name']}｜{normalized['scenario_name']} "
-                                f"[情境 {normalized['scenario_id'][:8]}｜結果 {normalized['result_id'].split(':')[-1][:6]}]")
+                display_name = comparison_display_labels(st.session_state.v2_comparison_results)[normalized["result_id"]]
+                normalized["legacy_display_name"] = display_name
                 # Legacy products consume name -> DataFrame; IDs and snapshots remain in the V2 registry.
                 st.session_state.scenarios[display_name] = normalized["result"].copy()
                 added += 1

@@ -5,7 +5,8 @@ import pandas as pd
 import pytest
 
 from v2_workflow import (SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS,
-    add_scenario, apply_shared_paste, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows, export_batch,
+    add_scenario, apply_q_inflows, apply_shared_paste, change_shared_period_count, comparison_display_labels,
+    copy_scenario, delete_scenario, expand_shared_inflows, export_batch, format_summary_number,
     find_override_overlaps, import_batch, invalidate_results, make_scenario,
     current_session_results, daily_outflow_frame, invalidate_session_results,
     parse_pasted_values, prepend_history, rename_scenario, reorder_scenarios, results_are_current, safe_export_batch,
@@ -301,3 +302,39 @@ def test_shared_workspace_paste_supports_cms_and_ten_thousand_tons_per_day():
     volume = apply_shared_paste(value, "86.4\n172.8", UNIT_10K_TON_DAY)
     assert [volume["shared_inflows"][key]["cms"] for key in PERIODS[:2]] == pytest.approx([10, 20])
     with pytest.raises(ValueError, match="預期 2 筆"): apply_shared_paste(value, "10", UNIT_CMS)
+
+
+def test_apply_q_overwrites_manual_value_and_source_then_allows_manual_edit():
+    scenario = make_scenario("測試", PERIODS)
+    scenario["inflows"][PERIODS[1]] = cell(5, "手動")
+    applied = apply_q_inflows(scenario, {key: 12.5 + i for i, key in enumerate(PERIODS)}, "Q50")
+    assert applied["inflows"][PERIODS[1]]["cms"] == 13.5
+    assert applied["inflows"][PERIODS[1]]["source_type"] == "Q50"
+    assert applied["inflows"][PERIODS[1]]["source_value"] == 13.5
+    # Choosing another Q in the UI does nothing until this explicit function is called.
+    unchanged = copy.deepcopy(applied)
+    assert unchanged == applied
+    applied["inflows"][PERIODS[1]] = cell(7, "手動")
+    assert applied["inflows"][PERIODS[1]]["cms"] == 7
+    assert applied["inflows"][PERIODS[1]]["source_type"] == "手動"
+
+
+@pytest.mark.parametrize(("value", "expected"), [(4438.8, "4438.80"), (0, "0.00"),
+                                                   (-0.000000000003, "0.00"), (12.345, "12.35")])
+def test_summary_number_display_has_two_decimals_and_no_negative_zero(value, expected):
+    assert format_summary_number(value) == expected
+
+
+def test_comparison_labels_hide_ids_and_duplicates_remain_addressable_by_result_id():
+    items = {
+        "result-secret-1": {"batch_name": "2026/08/21 推估", "scenario_name": "A. 氣候上限值", "scenario_id": "scenario-secret-1"},
+        "result-secret-2": {"batch_name": "2026/08/21 推估", "scenario_name": "A. 氣候上限值", "scenario_id": "scenario-secret-2"},
+        "result-secret-3": {"batch_name": "2026/08/21 推估", "scenario_name": "A. 氣候上限值", "scenario_id": "scenario-secret-3"},
+    }
+    labels = comparison_display_labels(items)
+    assert labels["result-secret-1"] == "2026/08/21 推估｜A. 氣候上限值"
+    assert labels["result-secret-2"].endswith("（第 2 次）")
+    assert labels["result-secret-3"].endswith("（第 3 次）")
+    assert all("secret" not in label and "result" not in label for label in labels.values())
+    items.pop("result-secret-2")
+    assert "result-secret-2" not in items and len(items) == 2

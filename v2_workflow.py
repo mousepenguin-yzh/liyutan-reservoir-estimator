@@ -193,6 +193,34 @@ def apply_shared_paste(batch: dict, text: str, unit: str) -> dict:
     return result
 
 
+def apply_q_inflows(scenario: dict, period_values: dict[str, float], source: str) -> dict:
+    """Explicitly replace every selected period's value and provenance."""
+    result = copy.deepcopy(scenario)
+    for key, value in period_values.items():
+        number = _finite_nonnegative(value, f"{key} 入流")
+        if key not in result["inflows"]: raise ValueError(f"情境不包含旬別：{key}")
+        result["inflows"][key] = {"cms": number, "source_type": source,
+            "source_unit": UNIT_CMS, "source_value": number, "note": ""}
+    return result
+
+
+def format_summary_number(value: Any) -> str:
+    number = float(value)
+    if not math.isfinite(number): raise ValueError("摘要數值必須是有限數值")
+    if abs(number) < 0.005: number = 0.0
+    return f"{number:.2f}"
+
+
+def comparison_display_labels(items: dict[str, dict]) -> dict[str, str]:
+    """Friendly unique labels keyed by result_id; no technical ID is exposed."""
+    counts, labels = {}, {}
+    for result_id, item in items.items():
+        base = f"{item['batch_name']}｜{item['scenario_name']}"
+        counts[base] = counts.get(base, 0) + 1
+        labels[result_id] = base if counts[base] == 1 else f"{base}（第 {counts[base]} 次）"
+    return labels
+
+
 def sync_daily_outflows(batch: dict, frame: pd.DataFrame) -> dict:
     """Persist only [projection_start, projection_end) as authoritative outflow."""
     result = copy.deepcopy(batch); start = _date(result["projection_start_date"]); end = _date(result["projection_end_date"])
