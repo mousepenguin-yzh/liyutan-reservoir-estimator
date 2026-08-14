@@ -23,7 +23,7 @@ from v2_workflow import (
     parse_pasted_values, rename_scenario, reorder_scenarios, run_batch,
     build_summary_frame, comparison_display_labels, migrate_batch_periods, migrate_comparison_state,
     remove_comparison_results, safe_export_batch, scenario_template, settings_fingerprint,
-    shared_inflow_rows, standardize_comparison_result,
+    scenario_widget_keys, shared_inflow_rows, standardize_comparison_result,
     store_session_results, sync_daily_outflows,
 )
 
@@ -785,9 +785,8 @@ with tab_inflow:
             rows = [{"旬別": key, "入流 (cms)": cells.get(key, {}).get("cms"),
                      "資料來源": cells.get(key, {}).get("source_type", default_source),
                      "備註": cells.get(key, {}).get("note", "")} for key in keys]
-            editor_version = st.session_state.get(f"{editor_key}_version", 0)
             edited = st.data_editor(pd.DataFrame(rows), hide_index=True, use_container_width=True,
-                disabled=["旬別"], key=f"{editor_key}_{editor_version}_{widget_version}",
+                disabled=["旬別"], key=editor_key,
                 column_config={"入流 (cms)": st.column_config.NumberColumn(min_value=0.0, format="%.4f")})
             for record in edited.to_dict("records"):
                 value = record["入流 (cms)"]
@@ -835,9 +834,11 @@ with tab_inflow:
         divergent = v2_periods[batch["shared_period_count"]:]
         for scenario in sorted(batch["scenarios"], key=lambda x: x["order"]):
             sid = scenario["scenario_id"]
+            editor_version = st.session_state.get(f"v2_editor_{sid}_version", 0)
+            widget_keys = scenario_widget_keys(sid, widget_version, editor_version)
             with st.expander(f"{scenario['order'] + 1}. {scenario['name']}", expanded=len(batch["scenarios"]) == 1):
                 controls = st.columns([3, 1, 1, 1, 1])
-                renamed = controls[0].text_input("情境名稱", scenario["name"], key=f"v2_name_{sid}")
+                renamed = controls[0].text_input("情境名稱", scenario["name"], key=widget_keys["name"])
                 scenario["name"] = renamed.strip() or scenario["name"]
                 if controls[1].button("複製", key=f"v2_copy_{sid}"):
                     batch["scenarios"] = copy_scenario(batch["scenarios"], sid); invalidate_session_results(st.session_state); st.rerun()
@@ -851,7 +852,7 @@ with tab_inflow:
                     batch["scenarios"] = delete_scenario(batch["scenarios"], sid); invalidate_session_results(st.session_state); st.rerun()
                 if divergent:
                     tool1, tool2 = st.columns(2)
-                    q_choice = tool1.selectbox("以 Q 值填入分歧期間", [f"Q{x}" for x in range(5, 100, 5)], index=17, key=f"v2_q_{sid}")
+                    q_choice = tool1.selectbox("以 Q 值填入分歧期間", [f"Q{x}" for x in range(5, 100, 5)], index=17, key=widget_keys["q"])
                     if tool1.button("套用 Q 值", key=f"v2_apply_q_{sid}"):
                         q_values = {}
                         for key in divergent:
@@ -861,8 +862,8 @@ with tab_inflow:
                         batch["scenarios"] = [replacement if item["scenario_id"] == sid else item for item in batch["scenarios"]]
                         st.session_state[f"v2_editor_{sid}_version"] = st.session_state.get(f"v2_editor_{sid}_version", 0) + 1
                         invalidate_session_results(st.session_state); st.rerun()
-                    unit_label = tool2.radio("貼上原始單位", ["cms", "萬噸／日"], horizontal=True, key=f"v2_unit_{sid}")
-                    pasted = st.text_area("貼上分歧期間數值", key=f"v2_paste_{sid}", placeholder="支援空白、Tab、換行與千分位逗號")
+                    unit_label = tool2.radio("貼上原始單位", ["cms", "萬噸／日"], horizontal=True, key=widget_keys["paste_unit"])
+                    pasted = st.text_area("貼上分歧期間數值", key=widget_keys["paste_text"], placeholder="支援空白、Tab、換行與千分位逗號")
                     if pasted.strip():
                         try:
                             preview = parse_pasted_values(pasted, UNIT_CMS if unit_label == "cms" else UNIT_10K_TON_DAY)
@@ -876,7 +877,7 @@ with tab_inflow:
                                 st.session_state[f"v2_editor_{sid}_version"] = st.session_state.get(f"v2_editor_{sid}_version", 0) + 1
                                 invalidate_session_results(st.session_state); st.rerun()
                         except ValueError as exc: st.error(str(exc))
-                    edit_inflow_table("情境分歧資料", divergent, scenario["inflows"], f"v2_editor_{sid}", "手動")
+                    edit_inflow_table("情境分歧資料", divergent, scenario["inflows"], widget_keys["editor"], "手動")
         if st.button("➕ 新增情境"):
             batch["scenarios"] = add_scenario(batch["scenarios"], f"情境 {len(batch['scenarios']) + 1}", v2_periods); invalidate_session_results(st.session_state); st.rerun()
 

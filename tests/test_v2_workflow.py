@@ -12,7 +12,8 @@ from v2_workflow import (SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS
     migrate_batch_periods, migrate_comparison_state, parse_pasted_values, prepend_history,
     remove_comparison_results, rename_scenario, reorder_scenarios, results_are_current, safe_export_batch,
     run_batch, run_water_balance, scenario_template, settings_fingerprint, to_cms,
-    shared_inflow_rows, standardize_comparison_result, store_session_results, sync_daily_outflows, validate_scenario)
+    scenario_widget_keys, shared_inflow_rows, standardize_comparison_result, store_session_results,
+    sync_daily_outflows, validate_scenario)
 
 PERIODS = ["2026-8-上旬", "2026-8-中旬", "2026-8-下旬"]
 
@@ -390,3 +391,35 @@ def test_period_migration_preserves_overlap_names_and_values(new_periods):
         assert scenario["inflows"][PERIODS[0]]["cms"] == 10 + index
         for key in set(new_periods) - set(PERIODS): assert scenario["inflows"][key]["cms"] is None
     assert set(migrated["scenarios"][0]["inflows"]) == set(new_periods)
+
+
+def test_earliest_comparison_alias_is_reconstructed_without_touching_unrelated_scenario():
+    result_id = "batch-id:scenario-id:abcdef987654"
+    item = {"batch_name": "批次", "scenario_name": "情境", "scenario_id": "scenario-id-123", "result": "v2-data"}
+    old = "批次｜情境 [情境 scenario｜結果 abcdef]"
+    registry, scenarios = migrate_comparison_state({result_id: item}, {old: "v2-data", "使用者自訂": "keep"})
+    assert old not in scenarios
+    assert scenarios["批次｜情境"] == "v2-data"
+    assert scenarios["使用者自訂"] == "keep"
+    assert registry[result_id]["display_name"] == "批次｜情境"
+
+
+def test_prepending_period_moves_old_shared_value_into_every_scenario():
+    value = batch(); value["scenarios"] = scenario_template("standard", PERIODS)
+    value["shared_period_count"] = 2
+    value["shared_inflows"] = {PERIODS[0]: cell(8, "共用"), PERIODS[1]: cell(9, "共用")}
+    migrated = migrate_batch_periods(value, ["2026-7-下旬"] + PERIODS)
+    assert migrated["shared_inflows"]["2026-7-下旬"]["cms"] is None
+    assert migrated["shared_inflows"][PERIODS[0]]["cms"] == 8
+    # Original second shared period is now the first divergent period.
+    for scenario in migrated["scenarios"]:
+        assert scenario["inflows"][PERIODS[1]]["cms"] == 9
+        assert scenario["inflows"][PERIODS[1]]["source_type"] == "共用"
+
+
+def test_scenario_widget_keys_change_as_one_unit_after_json_import_version_bump():
+    before = scenario_widget_keys("same-id", 3, 1)
+    after = scenario_widget_keys("same-id", 4, 1)
+    assert set(before) == {"name", "q", "paste_unit", "paste_text", "editor"}
+    assert all(before[name] != after[name] for name in before)
+    assert "same-id" in after["name"]

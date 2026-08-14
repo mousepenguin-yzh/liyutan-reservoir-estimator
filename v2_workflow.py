@@ -245,6 +245,12 @@ def migrate_comparison_state(registry: dict[str, dict], scenarios: dict[str, Any
     used = set()
     for result_id, item in registry.items():
         old = item.get("legacy_display_name") or item.get("display_name")
+        if not old:
+            # Earliest V2 sessions only stored the generated alias in scenarios.
+            suffix = str(result_id).split(":")[-1][:6]
+            if item.get("scenario_id"):
+                old = (f"{item['batch_name']}｜{item['scenario_name']} "
+                       f"[情境 {str(item['scenario_id'])[:8]}｜結果 {suffix}]")
         if item.get("display_name") and item["display_name"] not in used and "[情境 " not in item["display_name"]:
             friendly = item["display_name"]
         else:
@@ -270,13 +276,21 @@ def remove_comparison_results(registry: dict, scenarios: dict, result_ids: Itera
 def migrate_batch_periods(batch: dict, new_periods: list[str]) -> dict:
     """Preserve overlapping scenario/shared cells while changing projection dates."""
     result = copy.deepcopy(batch); old_periods = result["periods"]
+    old_shared_keys = set(old_periods[:int(result["shared_period_count"])])
+    previous_shared = copy.deepcopy(result["shared_inflows"])
     for scenario in result["scenarios"]:
         previous = scenario["inflows"]
         scenario["inflows"] = {key: copy.deepcopy(previous[key]) if key in previous else {
             "cms": None, "source_type": "待填", "source_unit": UNIT_CMS, "source_value": None, "note": ""}
             for key in new_periods}
     shared_count = min(int(result["shared_period_count"]), len(new_periods))
-    previous_shared = result["shared_inflows"]
+    new_shared_keys = set(new_periods[:shared_count])
+    # A former shared period that shifts beyond the new prefix becomes a
+    # scenario period; copy the authoritative shared value to every scenario.
+    for key in (old_shared_keys - new_shared_keys) & set(new_periods):
+        if key in previous_shared:
+            for scenario in result["scenarios"]:
+                scenario["inflows"][key] = copy.deepcopy(previous_shared[key])
     result["shared_inflows"] = {key: copy.deepcopy(previous_shared[key]) if key in previous_shared else {
         "cms": None, "source_type": "待填", "source_unit": UNIT_CMS, "source_value": None, "note": ""}
         for key in new_periods[:shared_count]}
@@ -284,6 +298,14 @@ def migrate_batch_periods(batch: dict, new_periods: list[str]) -> dict:
     result["outflows"] = {key: value for key, value in result.get("outflows", {}).items() if key in new_periods}
     result["daily_outflows"] = []
     return result
+
+
+def scenario_widget_keys(scenario_id: str, widget_version: int, editor_version: int = 0) -> dict[str, str]:
+    """All batch-sensitive widget keys, testable as one migration contract."""
+    suffix = f"{scenario_id}_{widget_version}"
+    return {"name": f"v2_name_{suffix}", "q": f"v2_q_{suffix}",
+            "paste_unit": f"v2_unit_{suffix}", "paste_text": f"v2_paste_{suffix}",
+            "editor": f"v2_editor_{scenario_id}_{editor_version}_{widget_version}"}
 
 
 def sync_daily_outflows(batch: dict, frame: pd.DataFrame) -> dict:
