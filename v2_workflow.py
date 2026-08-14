@@ -143,7 +143,8 @@ def expand_shared_inflows(periods: list[str], shared_count: int, shared: dict, s
     return result
 
 
-def change_shared_period_count(batch: dict, new_count: int, confirmed_values: dict | None = None) -> dict:
+def change_shared_period_count(batch: dict, new_count: int, confirmed_values: dict | None = None,
+                               allow_pending: bool = False) -> dict:
     """Safely change the continuous shared prefix without discarding inflows.
 
     Shrinking copies former shared cells into every scenario. Growing requires
@@ -160,13 +161,35 @@ def change_shared_period_count(batch: dict, new_count: int, confirmed_values: di
     elif new_count > old_count:
         confirmed_values = confirmed_values or {}
         missing = [key for key in periods[old_count:new_count] if key not in confirmed_values]
-        if missing: raise ValueError("新納入共用旬需確認共用值：" + "、".join(missing))
-        for key in periods[old_count:new_count]:
+        if missing and not allow_pending: raise ValueError("新納入共用旬需確認共用值：" + "、".join(missing))
+        for key in missing:
+            result["shared_inflows"][key] = {"cms": None, "source_type": "待填",
+                "source_unit": UNIT_CMS, "source_value": None, "note": ""}
+        for key in confirmed_values:
             _finite_nonnegative(confirmed_values[key].get("cms"), f"共用 {key} 入流")
             result["shared_inflows"][key] = copy.deepcopy(confirmed_values[key])
     result["shared_period_count"] = new_count
     result["shared_inflows"] = {key: result["shared_inflows"][key]
                                 for key in periods[:new_count] if key in result["shared_inflows"]}
+    return result
+
+
+def shared_inflow_rows(batch: dict) -> list[dict]:
+    """Presentation-safe rows: pending values are blank, never the string None."""
+    rows = []
+    for key in batch["periods"][:batch["shared_period_count"]]:
+        cell = batch["shared_inflows"].get(key, {})
+        rows.append({"period": key, "cms": cell.get("cms"),
+                     "display_value": "" if cell.get("cms") is None else str(cell["cms"]),
+                     "status": "待填" if cell.get("cms") is None else "已填"})
+    return rows
+
+
+def apply_shared_paste(batch: dict, text: str, unit: str) -> dict:
+    result = copy.deepcopy(batch); keys = result["periods"][:result["shared_period_count"]]
+    parsed = parse_pasted_values(text, unit, len(keys))
+    for key, value in zip(keys, parsed):
+        result["shared_inflows"][key] = {**value, "source_type": "共用貼上", "note": ""}
     return result
 
 

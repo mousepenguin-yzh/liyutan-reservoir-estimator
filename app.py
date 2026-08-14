@@ -17,11 +17,11 @@ import plotly.graph_objects as go
 import json
 from v2_workflow import (
     SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario,
-    change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows,
+    apply_shared_paste, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows,
     current_session_results, daily_outflow_frame, find_override_overlaps, import_batch,
     invalidate_session_results, new_id, prepend_history,
     parse_pasted_values, rename_scenario, reorder_scenarios, run_batch,
-    safe_export_batch, scenario_template, settings_fingerprint, standardize_comparison_result,
+    safe_export_batch, scenario_template, settings_fingerprint, shared_inflow_rows, standardize_comparison_result,
     store_session_results, sync_daily_outflows,
 )
 
@@ -763,22 +763,15 @@ with tab_inflow:
                 batch["scenarios"] = scenario_template(kind, v2_periods)
                 invalidate_session_results(st.session_state); st.rerun()
         requested_shared = st.slider("共用旬數", 0, len(v2_periods), int(batch["shared_period_count"]),
-            help="從推估起點連續共用；變更須確認，既有各旬值會保留。", key="v2_requested_shared")
+            help="所有情境由推估起點開始，共同使用相同入流的旬數。", key="v2_requested_shared")
         if requested_shared != batch["shared_period_count"]:
-            st.warning("共用範圍將改變；既有旬值會保留，但新納入共用的旬別需確認共用值。")
-            confirmed_shared = {}
             if requested_shared > batch["shared_period_count"]:
-                for key in v2_periods[batch["shared_period_count"]:requested_shared]:
-                    value = st.number_input(f"確認 {key} 共用入流 (cms)", min_value=0.0, value=None,
-                                            key=f"v2_confirm_shared_{key}")
-                    if value is not None:
-                        confirmed_shared[key] = {"cms": float(value), "source_type": "共用研判",
-                            "source_unit": UNIT_CMS, "source_value": float(value), "note": "共用旬轉換確認"}
-            if st.button("確認變更共用旬數"):
-                try:
-                    st.session_state.v2_batch = change_shared_period_count(batch, requested_shared, confirmed_shared)
-                    invalidate_session_results(st.session_state); st.rerun()
-                except ValueError as exc: st.error(str(exc))
+                st.session_state.v2_batch = change_shared_period_count(batch, requested_shared, allow_pending=True)
+                invalidate_session_results(st.session_state); st.rerun()
+            st.info("移出共用範圍的旬值會複製到每個情境，不會遺失。")
+            if st.button("確認縮減共用旬數"):
+                st.session_state.v2_batch = change_shared_period_count(batch, requested_shared)
+                invalidate_session_results(st.session_state); st.rerun()
 
         def edit_inflow_table(title, keys, cells, editor_key, default_source):
             st.markdown(f"#### {title}")
@@ -796,7 +789,37 @@ with tab_inflow:
 
         shared_keys = v2_periods[:batch["shared_period_count"]]
         if shared_keys:
-            edit_inflow_table("共用期間（只輸入一次）", shared_keys, batch["shared_inflows"], "v2_shared_editor", "共用研判")
+            st.markdown("#### 共用入流工作區")
+            st.caption(f"目前前{len(shared_keys)}旬由所有情境共用；第{len(shared_keys) + 1}旬起分情境設定。" if len(shared_keys) < len(v2_periods)
+                       else f"目前全部{len(shared_keys)}旬由所有情境共用。")
+            for row in shared_inflow_rows(batch):
+                label, input_col, status_col = st.columns([3, 3, 1])
+                label.markdown(f"**{row['period']}**")
+                value = input_col.number_input("共用入流 (cms)", min_value=0.0, value=row["cms"],
+                    placeholder="待填", key=f"v2_shared_value_{row['period']}", label_visibility="visible")
+                status_col.caption("待填" if value is None else "已填")
+                batch["shared_inflows"][row["period"]] = {"cms": None if value is None else float(value),
+                    "source_type": "待填" if value is None else "共用研判", "source_unit": UNIT_CMS,
+                    "source_value": None if value is None else float(value), "note": ""}
+            with st.expander("從 Excel 複製貼上共用入流"):
+                shared_unit = st.radio("原始單位", ["cms", "旬平均萬噸／日"], horizontal=True, key="v2_shared_paste_unit")
+                shared_paste = st.text_area("貼上數值", placeholder="可使用 Tab、空白或換行分隔", key="v2_shared_paste")
+                if shared_paste.strip():
+                    try:
+                        preview = parse_pasted_values(shared_paste, UNIT_CMS if shared_unit == "cms" else UNIT_10K_TON_DAY)
+                        st.caption(f"預期 {len(shared_keys)} 筆；實際解析 {len(preview)} 筆")
+                        st.dataframe(pd.DataFrame([{"旬別": shared_keys[i] if i < len(shared_keys) else "超出範圍",
+                            "原始值": item["source_value"], "換算後 cms": item["cms"]} for i, item in enumerate(preview)]), hide_index=True)
+                        if len(preview) != len(shared_keys): st.error("筆數不符，不可套用。")
+                        elif st.button("確認套用共用入流貼上資料"):
+                            st.session_state.v2_batch = apply_shared_paste(batch, shared_paste,
+                                UNIT_CMS if shared_unit == "cms" else UNIT_10K_TON_DAY)
+                            invalidate_session_results(st.session_state); st.rerun()
+                    except ValueError as exc: st.error(str(exc))
+            missing_shared = [row["period"] for row in shared_inflow_rows(batch) if row["cms"] is None]
+            if missing_shared: st.warning("共用入流尚待填：" + "、".join(missing_shared) + "。完成前不能演算或匯出 JSON。")
+        else:
+            st.info("目前共用 0 旬；所有情境從第一旬起分別設定入流。")
         divergent = v2_periods[batch["shared_period_count"]:]
         for scenario in sorted(batch["scenarios"], key=lambda x: x["order"]):
             sid = scenario["scenario_id"]

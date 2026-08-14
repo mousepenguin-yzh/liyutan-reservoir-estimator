@@ -5,12 +5,12 @@ import pandas as pd
 import pytest
 
 from v2_workflow import (SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS,
-    add_scenario, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows, export_batch,
+    add_scenario, apply_shared_paste, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows, export_batch,
     find_override_overlaps, import_batch, invalidate_results, make_scenario,
     current_session_results, daily_outflow_frame, invalidate_session_results,
     parse_pasted_values, prepend_history, rename_scenario, reorder_scenarios, results_are_current, safe_export_batch,
     run_batch, run_water_balance, scenario_template, settings_fingerprint, to_cms,
-    standardize_comparison_result, store_session_results, sync_daily_outflows, validate_scenario)
+    shared_inflow_rows, standardize_comparison_result, store_session_results, sync_daily_outflows, validate_scenario)
 
 PERIODS = ["2026-8-上旬", "2026-8-中旬", "2026-8-下旬"]
 
@@ -267,3 +267,37 @@ def test_same_batch_same_name_scenarios_have_distinct_step_five_keys():
     items = [standardize_comparison_result(value, scenario, frame) for scenario in value["scenarios"]]
     assert len({item["result_id"] for item in items}) == 2
     assert len({f"{item['scenario_id'][:8]}-{item['result_id'].split(':')[-1][:6]}" for item in items}) == 2
+
+
+def test_default_two_shared_periods_are_visible_blank_inputs_not_none_text():
+    value = batch(); value["shared_period_count"] = 2
+    value["shared_inflows"] = {key: {"cms": None, "source_type": "待填", "source_unit": "cms",
+        "source_value": None, "note": ""} for key in PERIODS[:2]}
+    rows = shared_inflow_rows(value)
+    assert len(rows) == 2
+    assert [row["display_value"] for row in rows] == ["", ""]
+    assert [row["status"] for row in rows] == ["待填", "待填"]
+
+
+def test_one_to_two_adds_pending_row_in_same_workspace_without_scenario_choice():
+    value = batch(); value["shared_period_count"] = 1; value["shared_inflows"] = {PERIODS[0]: cell(8)}
+    scenarios_before = copy.deepcopy(value["scenarios"])
+    changed = change_shared_period_count(value, 2, allow_pending=True)
+    assert len(shared_inflow_rows(changed)) == 2
+    assert shared_inflow_rows(changed)[1]["status"] == "待填"
+    assert changed["scenarios"] == scenarios_before
+    text, error = safe_export_batch(changed)
+    assert text is None and PERIODS[1] in error
+    daily, out = profiles()
+    with pytest.raises(ValueError): run_batch(changed, daily, out)
+
+
+def test_shared_workspace_paste_supports_cms_and_ten_thousand_tons_per_day():
+    value = batch(); value["shared_period_count"] = 2
+    value["shared_inflows"] = {key: {"cms": None, "source_type": "待填", "source_unit": "cms",
+        "source_value": None, "note": ""} for key in PERIODS[:2]}
+    cms = apply_shared_paste(value, "10\t20", UNIT_CMS)
+    assert [cms["shared_inflows"][key]["cms"] for key in PERIODS[:2]] == [10, 20]
+    volume = apply_shared_paste(value, "86.4\n172.8", UNIT_10K_TON_DAY)
+    assert [volume["shared_inflows"][key]["cms"] for key in PERIODS[:2]] == pytest.approx([10, 20])
+    with pytest.raises(ValueError, match="預期 2 筆"): apply_shared_paste(value, "10", UNIT_CMS)
