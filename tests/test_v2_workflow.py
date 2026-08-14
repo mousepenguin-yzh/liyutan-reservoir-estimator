@@ -5,11 +5,12 @@ import pandas as pd
 import pytest
 
 from v2_workflow import (SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS,
-    add_scenario, apply_q_inflows, apply_shared_paste, change_shared_period_count, comparison_display_labels,
-    copy_scenario, delete_scenario, expand_shared_inflows, export_batch, format_summary_number,
+    add_scenario, apply_q_inflows, apply_shared_paste, build_summary_frame, change_shared_period_count,
+    comparison_display_labels, copy_scenario, delete_scenario, expand_shared_inflows, export_batch, format_summary_number,
     find_override_overlaps, import_batch, invalidate_results, make_scenario,
     current_session_results, daily_outflow_frame, invalidate_session_results,
-    parse_pasted_values, prepend_history, rename_scenario, reorder_scenarios, results_are_current, safe_export_batch,
+    migrate_batch_periods, migrate_comparison_state, parse_pasted_values, prepend_history,
+    remove_comparison_results, rename_scenario, reorder_scenarios, results_are_current, safe_export_batch,
     run_batch, run_water_balance, scenario_template, settings_fingerprint, to_cms,
     shared_inflow_rows, standardize_comparison_result, store_session_results, sync_daily_outflows, validate_scenario)
 
@@ -338,3 +339,54 @@ def test_comparison_labels_hide_ids_and_duplicates_remain_addressable_by_result_
     assert all("secret" not in label and "result" not in label for label in labels.values())
     items.pop("result-secret-2")
     assert "result-secret-2" not in items and len(items) == 2
+
+
+def test_summary_frame_keeps_numeric_values_and_normalizes_tiny_negative():
+    results = {"one": {"status": "success", "summary": {"final_capacity": 11584,
+        "minimum_capacity": 4438.8, "spill_volume": 156.816,
+        "agricultural_reduction_volume": -0.000000000003, "dry_days": 2}}}
+    frame = build_summary_frame(results, {"one": "情境"})
+    for column in ["期末庫容", "最低庫容", "累積溢流", "農業削減總量"]:
+        assert pd.api.types.is_numeric_dtype(frame[column])
+    assert frame.loc[0, "農業削減總量"] == 0.0
+    assert format(frame.loc[0, "期末庫容"], ".2f") == "11584.00"
+    assert format(frame.loc[0, "累積溢流"], ".2f") == "156.82"
+    assert frame.loc[0, "空庫天數"] == 2
+
+
+def test_legacy_comparison_names_migrate_and_atomic_delete_clear_readd():
+    old = "批次｜同名 [情境 abcdef12｜結果 123456]"
+    registry = {
+        "r1": {"batch_name": "批次", "scenario_name": "同名", "legacy_display_name": old, "result": "one"},
+        "r2": {"batch_name": "批次", "scenario_name": "同名", "legacy_display_name": "old2", "result": "two"},
+        "r3": {"batch_name": "批次", "scenario_name": "同名", "legacy_display_name": "old3", "result": "three"}}
+    migrated, scenarios = migrate_comparison_state(registry, {old: "one", "old2": "two", "old3": "three"})
+    assert list(scenarios) == ["批次｜同名", "批次｜同名（第 2 次）", "批次｜同名（第 3 次）"]
+    assert all("情境 " not in name and "結果 " not in name for name in scenarios)
+    migrated, scenarios = remove_comparison_results(migrated, scenarios, ["r2"])
+    assert "r2" not in migrated and "批次｜同名（第 2 次）" not in scenarios
+    migrated["r4"] = {"batch_name": "批次", "scenario_name": "同名", "result": "four"}
+    migrated, scenarios = migrate_comparison_state(migrated, scenarios)
+    assert migrated["r4"]["display_name"] == "批次｜同名（第 2 次）"
+    assert scenarios["批次｜同名"] == "one" and scenarios["批次｜同名（第 3 次）"] == "three"
+    migrated, scenarios = {}, {}
+    migrated["r1"] = {"batch_name": "批次", "scenario_name": "同名", "result": "readded"}
+    migrated, scenarios = migrate_comparison_state(migrated, scenarios)
+    assert scenarios == {"批次｜同名": "readded"}
+
+
+@pytest.mark.parametrize("new_periods", [
+    PERIODS + ["2026-9-上旬"],
+    PERIODS[:2],
+    ["2026-7-下旬"] + PERIODS,
+])
+def test_period_migration_preserves_overlap_names_and_values(new_periods):
+    value = batch(); value["scenarios"] = scenario_template("standard", PERIODS)
+    for index, scenario in enumerate(value["scenarios"]):
+        scenario["inflows"][PERIODS[0]] = cell(10 + index, "原資料")
+    migrated = migrate_batch_periods(value, new_periods)
+    assert [s["name"] for s in migrated["scenarios"]] == [s["name"] for s in value["scenarios"]]
+    for index, scenario in enumerate(migrated["scenarios"]):
+        assert scenario["inflows"][PERIODS[0]]["cms"] == 10 + index
+        for key in set(new_periods) - set(PERIODS): assert scenario["inflows"][key]["cms"] is None
+    assert set(migrated["scenarios"][0]["inflows"]) == set(new_periods)

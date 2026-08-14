@@ -221,6 +221,71 @@ def comparison_display_labels(items: dict[str, dict]) -> dict[str, str]:
     return labels
 
 
+def build_summary_frame(results: dict, scenario_names: dict[str, str]) -> pd.DataFrame:
+    """Build numeric UI data; formatting belongs to Streamlit column config."""
+    rows = []
+    for scenario_id, item in results.items():
+        row = {"情境": scenario_names.get(scenario_id, scenario_id),
+               "狀態": "✅ 成功" if item["status"] == "success" else "❌ 失敗"}
+        if item["status"] == "success":
+            values = item["summary"]
+            for label, key in (("期末庫容", "final_capacity"), ("最低庫容", "minimum_capacity"),
+                               ("累積溢流", "spill_volume"), ("農業削減總量", "agricultural_reduction_volume")):
+                number = float(values[key]); rounded = round(number, 2)
+                row[label] = 0.0 if rounded == 0 else number
+            row["空庫天數"] = int(values["dry_days"])
+        else: row["錯誤"] = item["error"]
+        rows.append(row)
+    return pd.DataFrame(rows)
+
+
+def migrate_comparison_state(registry: dict[str, dict], scenarios: dict[str, Any]) -> tuple[dict, dict]:
+    """Assign stable friendly names and atomically migrate legacy aliases."""
+    registry, scenarios = copy.deepcopy(registry), copy.deepcopy(scenarios)
+    used = set()
+    for result_id, item in registry.items():
+        old = item.get("legacy_display_name") or item.get("display_name")
+        if item.get("display_name") and item["display_name"] not in used and "[情境 " not in item["display_name"]:
+            friendly = item["display_name"]
+        else:
+            base = f"{item['batch_name']}｜{item['scenario_name']}"; friendly = base; occurrence = 1
+            while friendly in used:
+                occurrence += 1; friendly = f"{base}（第 {occurrence} 次）"
+        used.add(friendly)
+        data = scenarios.pop(old, None) if old else None
+        if data is None: data = item.get("result")
+        item["display_name"] = friendly; item["legacy_display_name"] = friendly
+        if data is not None: scenarios[friendly] = data
+    return registry, scenarios
+
+
+def remove_comparison_results(registry: dict, scenarios: dict, result_ids: Iterable[str]) -> tuple[dict, dict]:
+    registry, scenarios = copy.deepcopy(registry), copy.deepcopy(scenarios)
+    for result_id in result_ids:
+        item = registry.pop(result_id, None)
+        if item: scenarios.pop(item.get("display_name") or item.get("legacy_display_name"), None)
+    return registry, scenarios
+
+
+def migrate_batch_periods(batch: dict, new_periods: list[str]) -> dict:
+    """Preserve overlapping scenario/shared cells while changing projection dates."""
+    result = copy.deepcopy(batch); old_periods = result["periods"]
+    for scenario in result["scenarios"]:
+        previous = scenario["inflows"]
+        scenario["inflows"] = {key: copy.deepcopy(previous[key]) if key in previous else {
+            "cms": None, "source_type": "待填", "source_unit": UNIT_CMS, "source_value": None, "note": ""}
+            for key in new_periods}
+    shared_count = min(int(result["shared_period_count"]), len(new_periods))
+    previous_shared = result["shared_inflows"]
+    result["shared_inflows"] = {key: copy.deepcopy(previous_shared[key]) if key in previous_shared else {
+        "cms": None, "source_type": "待填", "source_unit": UNIT_CMS, "source_value": None, "note": ""}
+        for key in new_periods[:shared_count]}
+    result["shared_period_count"] = shared_count; result["periods"] = list(new_periods)
+    result["outflows"] = {key: value for key, value in result.get("outflows", {}).items() if key in new_periods}
+    result["daily_outflows"] = []
+    return result
+
+
 def sync_daily_outflows(batch: dict, frame: pd.DataFrame) -> dict:
     """Persist only [projection_start, projection_end) as authoritative outflow."""
     result = copy.deepcopy(batch); start = _date(result["projection_start_date"]); end = _date(result["projection_end_date"])
