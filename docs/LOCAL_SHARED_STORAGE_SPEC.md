@@ -188,6 +188,8 @@ period_key,month,period,upstream_irrigation_cms,downstream_irrigation_cms,public
 
 ```json
 {
+  "schema": "liyutan-reservoir-estimator/reservoir-parameters",
+  "schema_version": 1,
   "max_capacity_10k_ton": 11584.0,
   "shilin_ecological_flow_cms": 2.7,
   "liyutan_ecological_release_cms": 0.3,
@@ -281,6 +283,8 @@ period_key,month,period,upstream_irrigation_cms,downstream_irrigation_cms,public
 
 `inputs.json` 以目前 V2 批次 JSON 的語意為基礎，正式 schema 定稿時至少保留：
 
+2-2 固定永久保存外層 schema 為 `liyutan-reservoir-estimator/official-inputs` version 1，欄位包含 `annual_data_version_id`、`batch_id`、`official_scenario_ids`、含 33 cms 欄位的 `reservoir_parameters` 正式快照，以及不含清單外情境的現有 V2 `batch`。正式設定指紋以整份驗證後的外層資料進行 deterministic fingerprint。
+
 - 批次與日期欄位。
 - 起始庫容與歷史庫容。
 - 完整水庫參數快照。
@@ -297,7 +301,8 @@ period_key,month,period,upstream_irrigation_cms,downstream_irrigation_cms,public
 每個要正式保存且成功完成演算的情境一列，至少包含：
 
 ```text
-scenario_id,scenario_name,scenario_order,calculation_status,settings_fingerprint,
+version_id,batch_id,scenario_id,scenario_name,scenario_order,
+calculation_status,settings_fingerprint,
 final_capacity_10k_ton,minimum_capacity_10k_ton,
 spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 ```
@@ -306,7 +311,7 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 ### 6.5 `daily_results.csv`
 
-使用長表格式，每列代表一個情境的一日結果。至少包含 `version_id`、`batch_id`、`scenario_id`、`date`，以及目前逐日結果產品的完整欄位，包括天然流量、需求、實際放水、削減、士林堰河道保留、實際引水、引入量、大壩河道放流、公共給水、總出水、溢流、昨日庫容、本日庫容及淨變化。
+使用長表格式，每列代表一個情境的一日結果。至少包含 `version_id`、`batch_id`、`scenario_id`、`settings_fingerprint`、`date`，以及目前逐日結果產品的完整欄位，包括天然流量、需求、實際放水、削減、士林堰河道保留、實際引水、引入量、大壩河道放流、公共給水、總出水、溢流、昨日庫容、本日庫容及淨變化。
 
 檔案必須完整涵蓋 manifest 中每一個 `official_scenario_ids` 的全部推估日期，且不得包含清單外情境。欄位名稱、順序、型別與單位必須由資料 schema 固定；不得只保存畫面格式化後的字串。
 
@@ -334,6 +339,8 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 ```json
 {
+  "schema": "liyutan-reservoir-estimator/committed",
+  "schema_version": 1,
   "version_id": "<version_id>",
   "committed_at": "2026-08-14T02:15:34Z",
   "manifest_file": "manifest.json",
@@ -529,6 +536,8 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 ## 18. 後續開發階段與獨立驗收條件
 
 ### 2-2：永久資料 schema 與純邏輯驗證
+
+狀態：已完成（2026-09-02）。實作位於 `shared_storage_schema.py`，合成 fixture 與自動化測試位於 `tests/test_shared_storage_schema.py`。本階段只驗證記憶體中的 JSON／CSV bytes 與版本包，不讀寫或連接公司內網共享資料夾；共享資料唯讀啟動仍屬 2-3。
 
 範圍：新增不依賴 Streamlit 的 JSON／CSV schema、序列化、checksum、版本完整性與 36 旬驗證函式；把 33 cms 納入參數資料結構，但不先改公式。
 

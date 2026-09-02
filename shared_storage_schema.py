@@ -1,0 +1,770 @@
+"""Pure schemas and validators for versioned shared-storage artifacts.
+
+This module deliberately performs no filesystem, network, or Streamlit work.
+Version bundles are mappings of relative file names to bytes, so callers can
+validate staging data before any later SMB publishing implementation exists.
+"""
+
+from __future__ import annotations
+
+import copy
+import csv
+import datetime as dt
+import hashlib
+import io
+import json
+import math
+import re
+from collections.abc import Mapping, Sequence
+from typing import Any
+
+
+SCHEMA_VERSION = 1
+SHARED_ROOT_SCHEMA = "liyutan-reservoir-estimator/shared-root"
+ANNUAL_VERSION_SCHEMA = "liyutan-reservoir-estimator/annual-data-version"
+RESERVOIR_PARAMETERS_SCHEMA = "liyutan-reservoir-estimator/reservoir-parameters"
+ANNUAL_CURRENT_SCHEMA = "liyutan-reservoir-estimator/annual-data-current"
+OFFICIAL_ESTIMATE_SCHEMA = "liyutan-reservoir-estimator/official-estimate-version"
+OFFICIAL_INPUTS_SCHEMA = "liyutan-reservoir-estimator/official-inputs"
+OFFICIAL_CURRENT_SCHEMA = "liyutan-reservoir-estimator/official-estimate-current"
+COMMITTED_SCHEMA = "liyutan-reservoir-estimator/committed"
+BATCH_SCHEMA = "liyutan-reservoir-estimator/batch"
+BATCH_SCHEMA_VERSION = 1
+
+PERIODS = ("上旬", "中旬", "下旬")
+Q_COLUMNS = tuple(f"q{quantile:02d}_cms" for quantile in range(5, 100, 5))
+HYDROLOGY_COLUMNS = ("period_key", "month", "period", *Q_COLUMNS)
+OUTFLOW_COLUMNS = (
+    "period_key",
+    "month",
+    "period",
+    "upstream_irrigation_cms",
+    "downstream_irrigation_cms",
+    "public_water_10k_ton_per_day",
+)
+SUMMARY_COLUMNS = (
+    "version_id",
+    "batch_id",
+    "scenario_id",
+    "scenario_name",
+    "scenario_order",
+    "calculation_status",
+    "settings_fingerprint",
+    "final_capacity_10k_ton",
+    "minimum_capacity_10k_ton",
+    "spill_volume_10k_ton",
+    "agricultural_reduction_volume_10k_ton",
+    "dry_days",
+)
+DAILY_RESULT_COLUMNS = (
+    "version_id",
+    "batch_id",
+    "scenario_id",
+    "settings_fingerprint",
+    "date",
+    "natural_inflow_cms",
+    "upstream_demand_cms",
+    "downstream_demand_cms",
+    "actual_upstream_release_cms",
+    "actual_downstream_release_cms",
+    "agricultural_reduction_cms",
+    "shilin_river_release_cms",
+    "actual_diversion_cms",
+    "diversion_volume_10k_ton",
+    "dam_release_cms",
+    "public_water_10k_ton",
+    "total_outflow_10k_ton",
+    "spill_volume_10k_ton",
+    "previous_capacity_10k_ton",
+    "end_capacity_10k_ton",
+    "net_capacity_change_10k_ton",
+)
+
+ANNUAL_DATA_FILES = (
+    "hydrology_q.csv",
+    "outflow_demand.csv",
+    "reservoir_parameters.json",
+)
+ANNUAL_REQUIRED_FILES = ("version.json", *ANNUAL_DATA_FILES, "COMMITTED.json")
+OFFICIAL_DATA_FILES = ("inputs.json", "scenario_summaries.csv", "daily_results.csv")
+OFFICIAL_REQUIRED_FILES = ("manifest.json", *OFFICIAL_DATA_FILES, "COMMITTED.json")
+
+_SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
+_GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+_CSV_INTEGER_RE = re.compile(r"^(0|[1-9][0-9]*)$")
+
+
+class StorageValidationError(ValueError):
+    """Raised when a shared-storage artifact violates its schema."""
+
+
+def _fail(message: str) -> None:
+    raise StorageValidationError(message)
+
+
+def _validate_json_value(value: Any, path: str = "$") -> None:
+    if value is None or isinstance(value, (str, bool, int)):
+        return
+    if isinstance(value, float):
+        if not math.isfinite(value):
+            _fail(f"{path} 不可為 NaN 或 Infinity")
+        return
+    if isinstance(value, list):
+        for index, item in enumerate(value):
+            _validate_json_value(item, f"{path}[{index}]")
+        return
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if not isinstance(key, str):
+                _fail(f"{path} 的 JSON key 必須是字串")
+            _validate_json_value(item, f"{path}.{key}")
+        return
+    _fail(f"{path} 含有不支援的 JSON 型別：{type(value).__name__}")
+
+
+def stable_json_dumps(value: Any) -> str:
+    """Serialize JSON deterministically as UTF-8-compatible text."""
+    _validate_json_value(value)
+    return json.dumps(
+        value,
+        ensure_ascii=False,
+        allow_nan=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+
+
+def serialize_json(value: Any) -> bytes:
+    return (stable_json_dumps(value) + "\n").encode("utf-8")
+
+
+def deserialize_json(data: bytes | str) -> Any:
+    if isinstance(data, bytes):
+        try:
+            text = data.decode("utf-8-sig")
+        except UnicodeDecodeError as exc:
+            raise StorageValidationError("JSON 必須使用 UTF-8") from exc
+    elif isinstance(data, str):
+        text = data
+    else:
+        _fail("JSON 輸入必須是 bytes 或 str")
+    try:
+        value = json.loads(
+            text,
+            parse_constant=lambda token: _fail(f"JSON 不允許 {token}"),
+            object_pairs_hook=_json_object_without_duplicates,
+        )
+    except json.JSONDecodeError as exc:
+        raise StorageValidationError(f"JSON 格式錯誤：{exc.msg}") from exc
+    _validate_json_value(value)
+    return value
+
+
+def _json_object_without_duplicates(pairs: list[tuple[str, Any]]) -> dict:
+    result = {}
+    for key, value in pairs:
+        if key in result:
+            _fail(f"JSON key 不可重複：{key}")
+        result[key] = value
+    return result
+
+
+def sha256_bytes(data: bytes) -> str:
+    if not isinstance(data, bytes):
+        _fail("SHA-256 輸入必須是 bytes")
+    return hashlib.sha256(data).hexdigest()
+
+
+def deterministic_fingerprint(value: Any) -> str:
+    return sha256_bytes(stable_json_dumps(value).encode("utf-8"))
+
+
+def serialize_csv(rows: Sequence[Mapping[str, Any]], columns: Sequence[str]) -> bytes:
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+        _fail("CSV rows 必須是序列")
+    fieldnames = tuple(columns)
+    if not fieldnames or len(set(fieldnames)) != len(fieldnames):
+        _fail("CSV 欄位定義無效")
+    stream = io.StringIO(newline="")
+    writer = csv.DictWriter(stream, fieldnames=fieldnames, lineterminator="\n")
+    writer.writeheader()
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, Mapping) or set(row) != set(fieldnames):
+            _fail(f"CSV 第 {index} 列欄位不完整或含未知欄位")
+        writer.writerow({column: row[column] for column in fieldnames})
+    return stream.getvalue().encode("utf-8")
+
+
+def deserialize_csv(data: bytes, columns: Sequence[str]) -> list[dict[str, str]]:
+    if not isinstance(data, bytes):
+        _fail("CSV 輸入必須是 bytes")
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        raise StorageValidationError("CSV 必須使用 UTF-8") from exc
+    reader = csv.DictReader(io.StringIO(text, newline=""))
+    expected = tuple(columns)
+    if tuple(reader.fieldnames or ()) != expected:
+        _fail(f"CSV 欄位必須固定為：{', '.join(expected)}")
+    rows = []
+    for index, row in enumerate(reader, 1):
+        if None in row or any(value is None for value in row.values()):
+            _fail(f"CSV 第 {index} 列欄位數量錯誤")
+        rows.append(dict(row))
+    return rows
+
+
+def _mapping(value: Any, label: str) -> dict:
+    if not isinstance(value, dict):
+        _fail(f"{label} 必須是 JSON object")
+    return value
+
+
+def _required(data: Mapping[str, Any], fields: Sequence[str], label: str) -> None:
+    missing = [field for field in fields if field not in data]
+    if missing:
+        _fail(f"{label} 缺少必要欄位：{', '.join(missing)}")
+
+
+def _schema(data: Any, expected: str, label: str) -> dict:
+    item = _mapping(data, label)
+    _required(item, ("schema", "schema_version"), label)
+    if item["schema"] != expected:
+        _fail(f"{label} schema 不支援：{item['schema']}")
+    if (
+        isinstance(item["schema_version"], bool)
+        or not isinstance(item["schema_version"], int)
+        or item["schema_version"] != SCHEMA_VERSION
+    ):
+        _fail(f"{label} schema version 不支援：{item['schema_version']}")
+    return item
+
+
+def _string(value: Any, label: str) -> str:
+    if not isinstance(value, str) or not value.strip():
+        _fail(f"{label} 必須是非空白字串")
+    return value
+
+
+def _optional_string(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    return _string(value, label)
+
+
+def _integer(value: Any, label: str, minimum: int = 0) -> int:
+    if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
+        _fail(f"{label} 必須是大於等於 {minimum} 的整數")
+    return value
+
+
+def _number(value: Any, label: str, nonnegative: bool = True) -> float:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _fail(f"{label} 必須是數字")
+    number = float(value)
+    if not math.isfinite(number):
+        _fail(f"{label} 必須是有限數值")
+    if nonnegative and number < 0:
+        _fail(f"{label} 不可為負值")
+    return number
+
+
+def _csv_number(value: Any, label: str, nonnegative: bool = True) -> float:
+    if not isinstance(value, str) or not value.strip():
+        _fail(f"{label} 必須是數字")
+    try:
+        number = float(value)
+    except ValueError as exc:
+        raise StorageValidationError(f"{label} 必須是數字") from exc
+    if not math.isfinite(number):
+        _fail(f"{label} 必須是有限數值")
+    if nonnegative and number < 0:
+        _fail(f"{label} 不可為負值")
+    return number
+
+
+def _csv_integer(value: Any, label: str, minimum: int = 0) -> int:
+    if not isinstance(value, str) or not _CSV_INTEGER_RE.fullmatch(value):
+        _fail(f"{label} 必須是整數")
+    number = int(value)
+    if number < minimum:
+        _fail(f"{label} 必須大於等於 {minimum}")
+    return number
+
+
+def _timestamp(value: Any, label: str) -> dt.datetime:
+    text = _string(value, label)
+    try:
+        parsed = dt.datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise StorageValidationError(f"{label} 必須是 ISO 8601 時間") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        _fail(f"{label} 必須包含時區")
+    return parsed
+
+
+def _date(value: Any, label: str) -> dt.date:
+    text = _string(value, label)
+    try:
+        parsed = dt.date.fromisoformat(text)
+    except ValueError as exc:
+        raise StorageValidationError(f"{label} 必須是 YYYY-MM-DD") from exc
+    if text != parsed.isoformat():
+        _fail(f"{label} 必須是 YYYY-MM-DD")
+    return parsed
+
+
+def _sha256(value: Any, label: str) -> str:
+    text = _string(value, label)
+    if not _SHA256_RE.fullmatch(text):
+        _fail(f"{label} 必須是小寫 64 字元 SHA-256")
+    return text
+
+
+def _unique_strings(value: Any, label: str, allow_empty: bool = False) -> list[str]:
+    if not isinstance(value, list):
+        _fail(f"{label} 必須是陣列")
+    items = [_string(item, f"{label}[{index}]") for index, item in enumerate(value)]
+    if not allow_empty and not items:
+        _fail(f"{label} 不可為空")
+    if len(items) != len(set(items)):
+        _fail(f"{label} 不可重複")
+    return items
+
+
+def _file_manifest(value: Any, required_files: Sequence[str], label: str) -> dict:
+    files = _mapping(value, f"{label}.files")
+    _required(files, required_files, f"{label}.files")
+    for filename, metadata in files.items():
+        _string(filename, f"{label}.files filename")
+        item = _mapping(metadata, f"{label}.files.{filename}")
+        _required(item, ("sha256",), f"{label}.files.{filename}")
+        _sha256(item["sha256"], f"{label}.files.{filename}.sha256")
+    return files
+
+
+def validate_system(data: Any) -> dict:
+    item = _schema(data, SHARED_ROOT_SCHEMA, "system.json")
+    _required(item, ("reservoir_id", "display_name"), "system.json")
+    if item["reservoir_id"] != "liyutan":
+        _fail("system.json reservoir_id 必須是 liyutan")
+    _string(item["display_name"], "system.json.display_name")
+    return copy.deepcopy(item)
+
+
+def validate_reservoir_parameters(data: Any) -> dict:
+    item = _schema(data, RESERVOIR_PARAMETERS_SCHEMA, "reservoir_parameters.json")
+    fields = (
+        "max_capacity_10k_ton",
+        "shilin_ecological_flow_cms",
+        "liyutan_ecological_release_cms",
+        "shilin_diversion_limit_cms",
+    )
+    _required(item, fields, "reservoir_parameters.json")
+    for field in fields:
+        _number(item[field], f"reservoir_parameters.json.{field}")
+    return copy.deepcopy(item)
+
+
+def _validate_period_rows(
+    rows: Sequence[Mapping[str, Any]], columns: Sequence[str], numeric_columns: Sequence[str], label: str
+) -> list[dict]:
+    if isinstance(rows, (str, bytes)) or not isinstance(rows, Sequence):
+        _fail(f"{label} rows 必須是序列")
+    expected_periods = {(month, period) for month in range(1, 13) for period in PERIODS}
+    seen: set[tuple[int, str]] = set()
+    validated = []
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, Mapping) or set(row) != set(columns):
+            _fail(f"{label} 第 {index} 列欄位不完整或含未知欄位")
+        month = _csv_integer(row["month"], f"{label} 第 {index} 列 month", 1)
+        if month > 12:
+            _fail(f"{label} 第 {index} 列 month 必須介於 1 到 12")
+        period = row["period"]
+        if period not in PERIODS:
+            _fail(f"{label} 第 {index} 列 period 必須是上旬、中旬或下旬")
+        expected_key = f"{month:02d}-{period}"
+        if row["period_key"] != expected_key:
+            _fail(f"{label} 第 {index} 列 period_key 應為 {expected_key}")
+        key = (month, period)
+        if key in seen:
+            _fail(f"{label} 旬別重複：{expected_key}")
+        seen.add(key)
+        for column in numeric_columns:
+            _csv_number(row[column], f"{label} 第 {index} 列 {column}")
+        validated.append(dict(row))
+    missing = expected_periods - seen
+    extra = seen - expected_periods
+    if len(validated) != 36 or missing or extra:
+        missing_text = "、".join(f"{month:02d}-{period}" for month, period in sorted(missing))
+        _fail(f"{label} 必須完整包含 36 旬；缺少：{missing_text or '無'}")
+    return validated
+
+
+def validate_hydrology_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict]:
+    return _validate_period_rows(rows, HYDROLOGY_COLUMNS, Q_COLUMNS, "hydrology_q.csv")
+
+
+def validate_outflow_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict]:
+    return _validate_period_rows(
+        rows, OUTFLOW_COLUMNS, OUTFLOW_COLUMNS[3:], "outflow_demand.csv"
+    )
+
+
+def validate_annual_version(data: Any) -> dict:
+    item = _schema(data, ANNUAL_VERSION_SCHEMA, "version.json")
+    _required(
+        item,
+        (
+            "version_id",
+            "applicable_year",
+            "created_at",
+            "operator_display_name",
+            "note",
+            "source_references",
+            "files",
+        ),
+        "version.json",
+    )
+    _string(item["version_id"], "version.json.version_id")
+    _integer(item["applicable_year"], "version.json.applicable_year", 1)
+    _timestamp(item["created_at"], "version.json.created_at")
+    _string(item["operator_display_name"], "version.json.operator_display_name")
+    _string(item["note"], "version.json.note")
+    _unique_strings(item["source_references"], "version.json.source_references")
+    _file_manifest(item["files"], ANNUAL_DATA_FILES, "version.json")
+    return copy.deepcopy(item)
+
+
+def _validate_current(data: Any, expected_schema: str, label: str) -> dict:
+    item = _schema(data, expected_schema, label)
+    _required(
+        item,
+        (
+            "revision",
+            "current_version_id",
+            "previous_version_id",
+            "updated_at",
+            "operator_display_name",
+        ),
+        label,
+    )
+    _integer(item["revision"], f"{label}.revision", 1)
+    _string(item["current_version_id"], f"{label}.current_version_id")
+    _optional_string(item["previous_version_id"], f"{label}.previous_version_id")
+    _timestamp(item["updated_at"], f"{label}.updated_at")
+    _string(item["operator_display_name"], f"{label}.operator_display_name")
+    return copy.deepcopy(item)
+
+
+def validate_annual_current(data: Any) -> dict:
+    return _validate_current(data, ANNUAL_CURRENT_SCHEMA, "annual-data/current.json")
+
+
+def validate_official_current(data: Any) -> dict:
+    return _validate_current(data, OFFICIAL_CURRENT_SCHEMA, "official-estimates/current.json")
+
+
+def validate_committed(
+    data: Any, expected_manifest_file: str, expected_version_id: str | None = None
+) -> dict:
+    item = _schema(data, COMMITTED_SCHEMA, "COMMITTED.json")
+    _required(
+        item,
+        ("version_id", "committed_at", "manifest_file", "manifest_sha256"),
+        "COMMITTED.json",
+    )
+    version_id = _string(item["version_id"], "COMMITTED.json.version_id")
+    if expected_version_id is not None and version_id != expected_version_id:
+        _fail("COMMITTED.json version_id 與 manifest 不一致")
+    _timestamp(item["committed_at"], "COMMITTED.json.committed_at")
+    if item["manifest_file"] != expected_manifest_file:
+        _fail(f"COMMITTED.json manifest_file 必須是 {expected_manifest_file}")
+    _sha256(item["manifest_sha256"], "COMMITTED.json.manifest_sha256")
+    return copy.deepcopy(item)
+
+
+def _normalize_bundle(files: Mapping[str, bytes], required: Sequence[str], label: str) -> dict[str, bytes]:
+    if not isinstance(files, Mapping):
+        _fail(f"{label} 必須是檔名到 bytes 的 mapping")
+    normalized: dict[str, bytes] = {}
+    for name, data in files.items():
+        _string(name, f"{label} filename")
+        if not isinstance(data, bytes):
+            _fail(f"{label} 的 {name} 必須是 bytes")
+        normalized[name] = data
+    missing = [name for name in required if name not in normalized]
+    if missing:
+        _fail(f"{label} 缺少必要檔案：{', '.join(missing)}")
+    return normalized
+
+
+def _verify_bundle_files(
+    files: Mapping[str, bytes], manifest_files: Mapping[str, Any], control_files: Sequence[str], label: str
+) -> None:
+    expected = set(manifest_files) | set(control_files)
+    actual = set(files)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unknown = sorted(actual - expected)
+        details = []
+        if missing:
+            details.append("缺少 " + ", ".join(missing))
+        if unknown:
+            details.append("未列 checksum " + ", ".join(unknown))
+        _fail(f"{label} 檔案集合不一致：{'；'.join(details)}")
+    for filename, metadata in manifest_files.items():
+        expected_sha = metadata["sha256"]
+        actual_sha = sha256_bytes(files[filename])
+        if actual_sha != expected_sha:
+            _fail(f"{label} checksum 不符：{filename}")
+
+
+def validate_annual_bundle(files: Mapping[str, bytes]) -> dict:
+    bundle = _normalize_bundle(files, ANNUAL_REQUIRED_FILES, "年度資料版本")
+    version = validate_annual_version(deserialize_json(bundle["version.json"]))
+    manifest_files = version["files"]
+    _verify_bundle_files(bundle, manifest_files, ("version.json", "COMMITTED.json"), "年度資料版本")
+    hydrology = deserialize_csv(bundle["hydrology_q.csv"], HYDROLOGY_COLUMNS)
+    demands = deserialize_csv(bundle["outflow_demand.csv"], OUTFLOW_COLUMNS)
+    parameters = deserialize_json(bundle["reservoir_parameters.json"])
+    validate_hydrology_rows(hydrology)
+    validate_outflow_rows(demands)
+    validate_reservoir_parameters(parameters)
+    committed = validate_committed(
+        deserialize_json(bundle["COMMITTED.json"]), "version.json", version["version_id"]
+    )
+    if committed["manifest_sha256"] != sha256_bytes(bundle["version.json"]):
+        _fail("年度資料版本 manifest checksum 不符")
+    return {
+        "version": version,
+        "hydrology": hydrology,
+        "outflow_demand": demands,
+        "reservoir_parameters": copy.deepcopy(parameters),
+        "committed": committed,
+    }
+
+
+def validate_official_inputs(data: Any) -> dict:
+    item = _schema(data, OFFICIAL_INPUTS_SCHEMA, "inputs.json")
+    _required(
+        item,
+        (
+            "annual_data_version_id",
+            "batch_id",
+            "official_scenario_ids",
+            "reservoir_parameters",
+            "batch",
+        ),
+        "inputs.json",
+    )
+    annual_id = _string(item["annual_data_version_id"], "inputs.json.annual_data_version_id")
+    batch_id = _string(item["batch_id"], "inputs.json.batch_id")
+    official_ids = _unique_strings(item["official_scenario_ids"], "inputs.json.official_scenario_ids")
+    validate_reservoir_parameters(item["reservoir_parameters"])
+    batch = _schema(item["batch"], BATCH_SCHEMA, "inputs.json.batch")
+    if batch["schema_version"] != BATCH_SCHEMA_VERSION:
+        _fail("inputs.json.batch schema version 不支援")
+    _required(
+        batch,
+        (
+            "batch_id",
+            "display_start_date",
+            "projection_start_date",
+            "projection_end_date",
+            "scenarios",
+        ),
+        "inputs.json.batch",
+    )
+    if batch["batch_id"] != batch_id:
+        _fail("inputs.json batch_id 與 batch.batch_id 不一致")
+    display_start = _date(batch["display_start_date"], "inputs.json.batch.display_start_date")
+    projection_start = _date(batch["projection_start_date"], "inputs.json.batch.projection_start_date")
+    projection_end = _date(batch["projection_end_date"], "inputs.json.batch.projection_end_date")
+    if display_start > projection_start:
+        _fail("展示起日不可晚於推估起日")
+    if projection_start >= projection_end:
+        _fail("推估起日必須早於推估迄日")
+    scenarios = batch["scenarios"]
+    if not isinstance(scenarios, list):
+        _fail("inputs.json.batch.scenarios 必須是陣列")
+    scenario_ids = []
+    orders = []
+    for index, scenario_value in enumerate(scenarios):
+        scenario = _mapping(scenario_value, f"inputs.json.batch.scenarios[{index}]")
+        _required(scenario, ("scenario_id", "name", "order", "inflows"), "正式情境")
+        scenario_ids.append(_string(scenario["scenario_id"], "正式情境 scenario_id"))
+        _string(scenario["name"], "正式情境 name")
+        orders.append(_integer(scenario["order"], "正式情境 order"))
+        if not isinstance(scenario["inflows"], dict):
+            _fail("正式情境 inflows 必須是 object")
+    if len(scenario_ids) != len(set(scenario_ids)):
+        _fail("inputs.json.batch.scenarios scenario_id 不可重複")
+    if scenario_ids != official_ids:
+        _fail("inputs.json.batch.scenarios 必須依 official_scenario_ids 完整且不得夾帶其他情境")
+    if sorted(orders) != list(range(len(orders))):
+        _fail("正式情境 order 必須是連續且唯一的 0 起始整數")
+    _validate_json_value(item)
+    _string(annual_id, "inputs.json.annual_data_version_id")
+    return copy.deepcopy(item)
+
+
+def official_inputs_fingerprint(inputs: Any) -> str:
+    validated = validate_official_inputs(inputs)
+    return deterministic_fingerprint(validated)
+
+
+def validate_official_manifest(data: Any) -> dict:
+    item = _schema(data, OFFICIAL_ESTIMATE_SCHEMA, "manifest.json")
+    _required(
+        item,
+        (
+            "version_id",
+            "batch_id",
+            "batch_name",
+            "previous_official_version_id",
+            "annual_data_version_id",
+            "settings_fingerprint",
+            "official_scenario_ids",
+            "created_at",
+            "operator_display_name",
+            "note",
+            "software",
+            "batch_schema_version",
+            "files",
+        ),
+        "manifest.json",
+    )
+    _string(item["version_id"], "manifest.json.version_id")
+    _string(item["batch_id"], "manifest.json.batch_id")
+    _string(item["batch_name"], "manifest.json.batch_name")
+    _optional_string(item["previous_official_version_id"], "manifest.json.previous_official_version_id")
+    _string(item["annual_data_version_id"], "manifest.json.annual_data_version_id")
+    _sha256(item["settings_fingerprint"], "manifest.json.settings_fingerprint")
+    _unique_strings(item["official_scenario_ids"], "manifest.json.official_scenario_ids")
+    _timestamp(item["created_at"], "manifest.json.created_at")
+    _string(item["operator_display_name"], "manifest.json.operator_display_name")
+    _string(item["note"], "manifest.json.note")
+    software = _mapping(item["software"], "manifest.json.software")
+    _required(
+        software,
+        ("repository", "git_commit", "app_version", "source_tree_dirty"),
+        "manifest.json.software",
+    )
+    _string(software["repository"], "manifest.json.software.repository")
+    git_commit = _string(software["git_commit"], "manifest.json.software.git_commit")
+    if not _GIT_SHA_RE.fullmatch(git_commit):
+        _fail("manifest.json.software.git_commit 必須是 40 字元小寫 commit SHA")
+    _string(software["app_version"], "manifest.json.software.app_version")
+    if not isinstance(software["source_tree_dirty"], bool):
+        _fail("manifest.json.software.source_tree_dirty 必須是 boolean")
+    if _integer(item["batch_schema_version"], "manifest.json.batch_schema_version", 1) != BATCH_SCHEMA_VERSION:
+        _fail("manifest.json.batch_schema_version 不支援")
+    _file_manifest(item["files"], OFFICIAL_DATA_FILES, "manifest.json")
+    return copy.deepcopy(item)
+
+
+def validate_scenario_summaries(rows: Sequence[Mapping[str, Any]], manifest: Mapping[str, Any]) -> list[dict]:
+    official_ids = manifest["official_scenario_ids"]
+    seen: set[str] = set()
+    orders: set[int] = set()
+    validated = []
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, Mapping) or set(row) != set(SUMMARY_COLUMNS):
+            _fail(f"scenario_summaries.csv 第 {index} 列欄位不完整或含未知欄位")
+        if row["version_id"] != manifest["version_id"] or row["batch_id"] != manifest["batch_id"]:
+            _fail("scenario_summaries.csv 版本 ID 或批次 ID 與 manifest 不一致")
+        scenario_id = _string(row["scenario_id"], "scenario_summaries.csv scenario_id")
+        if scenario_id in seen:
+            _fail("scenario_summaries.csv scenario_id 不可重複")
+        seen.add(scenario_id)
+        _string(row["scenario_name"], "scenario_summaries.csv scenario_name")
+        order = _csv_integer(row["scenario_order"], "scenario_summaries.csv scenario_order")
+        if order in orders:
+            _fail("scenario_summaries.csv scenario_order 不可重複")
+        orders.add(order)
+        if row["calculation_status"] != "success":
+            _fail("所有正式情境的 calculation_status 必須是 success")
+        if row["settings_fingerprint"] != manifest["settings_fingerprint"]:
+            _fail("scenario_summaries.csv settings fingerprint 與 manifest 不一致")
+        for column in SUMMARY_COLUMNS[7:-1]:
+            _csv_number(row[column], f"scenario_summaries.csv {column}")
+        _csv_integer(row["dry_days"], "scenario_summaries.csv dry_days")
+        validated.append(dict(row))
+    if seen != set(official_ids) or len(validated) != len(official_ids):
+        _fail("scenario_summaries.csv 必須完整且只能包含 official_scenario_ids")
+    if orders != set(range(len(official_ids))):
+        _fail("scenario_summaries.csv scenario_order 必須連續")
+    return validated
+
+
+def validate_daily_results(
+    rows: Sequence[Mapping[str, Any]], manifest: Mapping[str, Any], inputs: Mapping[str, Any]
+) -> list[dict]:
+    start = _date(inputs["batch"]["projection_start_date"], "projection_start_date")
+    end = _date(inputs["batch"]["projection_end_date"], "projection_end_date")
+    expected_dates = {start + dt.timedelta(days=offset) for offset in range((end - start).days)}
+    per_scenario: dict[str, set[dt.date]] = {scenario_id: set() for scenario_id in manifest["official_scenario_ids"]}
+    nonnegative_columns = DAILY_RESULT_COLUMNS[5:-1]
+    validated = []
+    for index, row in enumerate(rows, 1):
+        if not isinstance(row, Mapping) or set(row) != set(DAILY_RESULT_COLUMNS):
+            _fail(f"daily_results.csv 第 {index} 列欄位不完整或含未知欄位")
+        if row["version_id"] != manifest["version_id"] or row["batch_id"] != manifest["batch_id"]:
+            _fail("daily_results.csv 版本 ID 或批次 ID 與 manifest 不一致")
+        scenario_id = row["scenario_id"]
+        if scenario_id not in per_scenario:
+            _fail("daily_results.csv 混入 official_scenario_ids 以外的情境")
+        if row["settings_fingerprint"] != manifest["settings_fingerprint"]:
+            _fail("daily_results.csv settings fingerprint 與 manifest 不一致")
+        date = _date(row["date"], "daily_results.csv date")
+        if date not in expected_dates:
+            _fail("daily_results.csv 日期超出推估期間")
+        if date in per_scenario[scenario_id]:
+            _fail("daily_results.csv 同一情境日期不可重複")
+        per_scenario[scenario_id].add(date)
+        for column in nonnegative_columns:
+            _csv_number(row[column], f"daily_results.csv {column}")
+        _csv_number(row["net_capacity_change_10k_ton"], "daily_results.csv net_capacity_change_10k_ton", False)
+        validated.append(dict(row))
+    for scenario_id, dates in per_scenario.items():
+        if dates != expected_dates:
+            _fail(f"daily_results.csv 缺少正式情境 {scenario_id} 的完整逐日結果")
+    return validated
+
+
+def validate_official_bundle(files: Mapping[str, bytes]) -> dict:
+    bundle = _normalize_bundle(files, OFFICIAL_REQUIRED_FILES, "正式推估版本")
+    manifest = validate_official_manifest(deserialize_json(bundle["manifest.json"]))
+    manifest_files = manifest["files"]
+    _verify_bundle_files(bundle, manifest_files, ("manifest.json", "COMMITTED.json"), "正式推估版本")
+    inputs = validate_official_inputs(deserialize_json(bundle["inputs.json"]))
+    if inputs["annual_data_version_id"] != manifest["annual_data_version_id"]:
+        _fail("inputs.json 年度資料版本 ID 與 manifest 不一致")
+    if inputs["batch_id"] != manifest["batch_id"]:
+        _fail("inputs.json 批次 ID 與 manifest 不一致")
+    if inputs["official_scenario_ids"] != manifest["official_scenario_ids"]:
+        _fail("inputs.json official_scenario_ids 與 manifest 不一致")
+    if official_inputs_fingerprint(inputs) != manifest["settings_fingerprint"]:
+        _fail("inputs.json 設定 fingerprint 與 manifest 不一致")
+    summaries = deserialize_csv(bundle["scenario_summaries.csv"], SUMMARY_COLUMNS)
+    daily_results = deserialize_csv(bundle["daily_results.csv"], DAILY_RESULT_COLUMNS)
+    validate_scenario_summaries(summaries, manifest)
+    validate_daily_results(daily_results, manifest, inputs)
+    scenario_lookup = {scenario["scenario_id"]: scenario for scenario in inputs["batch"]["scenarios"]}
+    for row in summaries:
+        scenario = scenario_lookup[row["scenario_id"]]
+        if row["scenario_name"] != scenario["name"] or int(row["scenario_order"]) != scenario["order"]:
+            _fail("scenario_summaries.csv 情境名稱或排序與 inputs.json 不一致")
+    committed = validate_committed(
+        deserialize_json(bundle["COMMITTED.json"]), "manifest.json", manifest["version_id"]
+    )
+    if committed["manifest_sha256"] != sha256_bytes(bundle["manifest.json"]):
+        _fail("正式推估版本 manifest checksum 不符")
+    return {
+        "manifest": manifest,
+        "inputs": inputs,
+        "scenario_summaries": summaries,
+        "daily_results": daily_results,
+        "committed": committed,
+    }
