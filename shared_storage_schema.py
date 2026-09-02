@@ -95,6 +95,11 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _CSV_INTEGER_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{number}" for number in range(1, 10)}
+    | {f"LPT{number}" for number in range(1, 10)}
+)
 
 
 class StorageValidationError(ValueError):
@@ -258,10 +263,16 @@ def _optional_string(value: Any, label: str) -> str | None:
 def validate_safe_id(value: Any, label: str = "version_id") -> str:
     """Validate an identifier that may become a Windows directory name."""
     text = _string(value, label)
-    if text in {".", ".."} or not _SAFE_ID_RE.fullmatch(text):
+    reserved_stem = text.split(".", 1)[0].upper()
+    if (
+        text in {".", ".."}
+        or not _SAFE_ID_RE.fullmatch(text)
+        or text.endswith(".")
+        or reserved_stem in _WINDOWS_RESERVED_DEVICE_NAMES
+    ):
         _fail(
             f"{label} 必須以英文字母或數字開頭，且只能包含英文字母、數字、.、_、-，"
-            "長度上限為 128 字元"
+            "長度上限為 128 字元，不得以句點結尾或使用 Windows 保留裝置名稱"
         )
     return text
 

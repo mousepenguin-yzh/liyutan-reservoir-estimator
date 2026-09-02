@@ -658,6 +658,15 @@ def test_official_manifest_rejects_unknown_filename():
         "..",
         "_starts-with-symbol",
         "a" * 129,
+        "CON",
+        "con",
+        "CON.backup",
+        "PRN",
+        "AUX.txt",
+        "NUL.json",
+        *[f"COM{number}" for number in range(1, 10)],
+        *[f"LPT{number}" for number in range(1, 10)],
+        "version.",
     ],
 )
 def test_unsafe_version_ids_are_rejected(unsafe_id):
@@ -672,7 +681,8 @@ def test_unsafe_version_ids_are_rejected(unsafe_id):
 
 
 def test_safe_version_id_is_accepted():
-    assert validate_safe_id("Annual.2027_v1-final") == "Annual.2027_v1-final"
+    safe_id = "20260902T031500Z_550e8400-e29b-41d4-a716-446655440000"
+    assert validate_safe_id(safe_id) == safe_id
 
 
 def test_csv_round_trip_is_stable():
