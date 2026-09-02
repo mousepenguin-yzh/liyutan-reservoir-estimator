@@ -18,6 +18,8 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from v2_workflow import validate_batch as validate_v2_batch
+
 
 SCHEMA_VERSION = 1
 SHARED_ROOT_SCHEMA = "liyutan-reservoir-estimator/shared-root"
@@ -92,6 +94,7 @@ OFFICIAL_REQUIRED_FILES = ("manifest.json", *OFFICIAL_DATA_FILES, "COMMITTED.jso
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _CSV_INTEGER_RE = re.compile(r"^(0|[1-9][0-9]*)$")
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
 
 
 class StorageValidationError(ValueError):
@@ -252,6 +255,23 @@ def _optional_string(value: Any, label: str) -> str | None:
     return _string(value, label)
 
 
+def validate_safe_id(value: Any, label: str = "version_id") -> str:
+    """Validate an identifier that may become a Windows directory name."""
+    text = _string(value, label)
+    if text in {".", ".."} or not _SAFE_ID_RE.fullmatch(text):
+        _fail(
+            f"{label} 必須以英文字母或數字開頭，且只能包含英文字母、數字、.、_、-，"
+            "長度上限為 128 字元"
+        )
+    return text
+
+
+def _optional_safe_id(value: Any, label: str) -> str | None:
+    if value is None:
+        return None
+    return validate_safe_id(value, label)
+
+
 def _integer(value: Any, label: str, minimum: int = 0) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         _fail(f"{label} 必須是大於等於 {minimum} 的整數")
@@ -334,7 +354,17 @@ def _unique_strings(value: Any, label: str, allow_empty: bool = False) -> list[s
 
 def _file_manifest(value: Any, required_files: Sequence[str], label: str) -> dict:
     files = _mapping(value, f"{label}.files")
-    _required(files, required_files, f"{label}.files")
+    expected = set(required_files)
+    actual = set(files)
+    if actual != expected:
+        missing = sorted(expected - actual)
+        unknown = sorted(actual - expected)
+        details = []
+        if missing:
+            details.append("缺少 " + ", ".join(missing))
+        if unknown:
+            details.append("包含未知檔名 " + ", ".join(unknown))
+        _fail(f"{label}.files 必須恰好包含正式資料檔：{'；'.join(details)}")
     for filename, metadata in files.items():
         _string(filename, f"{label}.files filename")
         item = _mapping(metadata, f"{label}.files.{filename}")
@@ -402,7 +432,18 @@ def _validate_period_rows(
 
 
 def validate_hydrology_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict]:
-    return _validate_period_rows(rows, HYDROLOGY_COLUMNS, Q_COLUMNS, "hydrology_q.csv")
+    validated = _validate_period_rows(rows, HYDROLOGY_COLUMNS, Q_COLUMNS, "hydrology_q.csv")
+    for index, row in enumerate(validated, 1):
+        values = [_csv_number(row[column], f"hydrology_q.csv 第 {index} 列 {column}") for column in Q_COLUMNS]
+        for left_column, right_column, left, right in zip(
+            Q_COLUMNS, Q_COLUMNS[1:], values, values[1:]
+        ):
+            if left < right:
+                _fail(
+                    f"hydrology_q.csv 第 {index} 列 {row['period_key']} 的 Q 值順序錯誤："
+                    f"{left_column} 必須大於等於 {right_column}"
+                )
+    return validated
 
 
 def validate_outflow_rows(rows: Sequence[Mapping[str, Any]]) -> list[dict]:
@@ -426,7 +467,7 @@ def validate_annual_version(data: Any) -> dict:
         ),
         "version.json",
     )
-    _string(item["version_id"], "version.json.version_id")
+    validate_safe_id(item["version_id"], "version.json.version_id")
     _integer(item["applicable_year"], "version.json.applicable_year", 1)
     _timestamp(item["created_at"], "version.json.created_at")
     _string(item["operator_display_name"], "version.json.operator_display_name")
@@ -450,8 +491,8 @@ def _validate_current(data: Any, expected_schema: str, label: str) -> dict:
         label,
     )
     _integer(item["revision"], f"{label}.revision", 1)
-    _string(item["current_version_id"], f"{label}.current_version_id")
-    _optional_string(item["previous_version_id"], f"{label}.previous_version_id")
+    validate_safe_id(item["current_version_id"], f"{label}.current_version_id")
+    _optional_safe_id(item["previous_version_id"], f"{label}.previous_version_id")
     _timestamp(item["updated_at"], f"{label}.updated_at")
     _string(item["operator_display_name"], f"{label}.operator_display_name")
     return copy.deepcopy(item)
@@ -474,7 +515,7 @@ def validate_committed(
         ("version_id", "committed_at", "manifest_file", "manifest_sha256"),
         "COMMITTED.json",
     )
-    version_id = _string(item["version_id"], "COMMITTED.json.version_id")
+    version_id = validate_safe_id(item["version_id"], "COMMITTED.json.version_id")
     if expected_version_id is not None and version_id != expected_version_id:
         _fail("COMMITTED.json version_id 與 manifest 不一致")
     _timestamp(item["committed_at"], "COMMITTED.json.committed_at")
@@ -558,55 +599,45 @@ def validate_official_inputs(data: Any) -> dict:
         ),
         "inputs.json",
     )
-    annual_id = _string(item["annual_data_version_id"], "inputs.json.annual_data_version_id")
+    _validate_json_value(item)
+    validate_safe_id(item["annual_data_version_id"], "inputs.json.annual_data_version_id")
     batch_id = _string(item["batch_id"], "inputs.json.batch_id")
     official_ids = _unique_strings(item["official_scenario_ids"], "inputs.json.official_scenario_ids")
-    validate_reservoir_parameters(item["reservoir_parameters"])
-    batch = _schema(item["batch"], BATCH_SCHEMA, "inputs.json.batch")
-    if batch["schema_version"] != BATCH_SCHEMA_VERSION:
-        _fail("inputs.json.batch schema version 不支援")
-    _required(
-        batch,
-        (
-            "batch_id",
-            "display_start_date",
-            "projection_start_date",
-            "projection_end_date",
-            "scenarios",
-        ),
-        "inputs.json.batch",
-    )
+    outer_parameters = validate_reservoir_parameters(item["reservoir_parameters"])
+    try:
+        batch = validate_v2_batch(item["batch"])
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise StorageValidationError(f"inputs.json.batch 未通過 V2 完整驗證：{exc}") from exc
     if batch["batch_id"] != batch_id:
         _fail("inputs.json batch_id 與 batch.batch_id 不一致")
     display_start = _date(batch["display_start_date"], "inputs.json.batch.display_start_date")
     projection_start = _date(batch["projection_start_date"], "inputs.json.batch.projection_start_date")
-    projection_end = _date(batch["projection_end_date"], "inputs.json.batch.projection_end_date")
     if display_start > projection_start:
         _fail("展示起日不可晚於推估起日")
-    if projection_start >= projection_end:
-        _fail("推估起日必須早於推估迄日")
-    scenarios = batch["scenarios"]
-    if not isinstance(scenarios, list):
-        _fail("inputs.json.batch.scenarios 必須是陣列")
-    scenario_ids = []
-    orders = []
-    for index, scenario_value in enumerate(scenarios):
-        scenario = _mapping(scenario_value, f"inputs.json.batch.scenarios[{index}]")
-        _required(scenario, ("scenario_id", "name", "order", "inflows"), "正式情境")
-        scenario_ids.append(_string(scenario["scenario_id"], "正式情境 scenario_id"))
-        _string(scenario["name"], "正式情境 name")
-        orders.append(_integer(scenario["order"], "正式情境 order"))
-        if not isinstance(scenario["inflows"], dict):
-            _fail("正式情境 inflows 必須是 object")
-    if len(scenario_ids) != len(set(scenario_ids)):
-        _fail("inputs.json.batch.scenarios scenario_id 不可重複")
+    scenario_ids = [scenario["scenario_id"] for scenario in batch["scenarios"]]
     if scenario_ids != official_ids:
         _fail("inputs.json.batch.scenarios 必須依 official_scenario_ids 完整且不得夾帶其他情境")
-    if sorted(orders) != list(range(len(orders))):
-        _fail("正式情境 order 必須是連續且唯一的 0 起始整數")
-    _validate_json_value(item)
-    _string(annual_id, "inputs.json.annual_data_version_id")
-    return copy.deepcopy(item)
+    inner_parameters = _mapping(batch["reservoir_parameters"], "inputs.json.batch.reservoir_parameters")
+    parameter_pairs = (
+        ("max_capacity_10k_ton", "max_capacity"),
+        ("shilin_ecological_flow_cms", "shilin_eco_flow"),
+        ("liyutan_ecological_release_cms", "liyutan_eco_flow"),
+    )
+    for outer_field, inner_field in parameter_pairs:
+        if inner_field not in inner_parameters:
+            _fail(f"inputs.json.batch.reservoir_parameters 缺少必要欄位：{inner_field}")
+        inner_value = _number(
+            inner_parameters[inner_field],
+            f"inputs.json.batch.reservoir_parameters.{inner_field}",
+        )
+        if float(outer_parameters[outer_field]) != inner_value:
+            _fail(
+                f"inputs.json.reservoir_parameters.{outer_field} 與 "
+                f"inputs.json.batch.reservoir_parameters.{inner_field} 不一致"
+            )
+    validated = copy.deepcopy(item)
+    validated["batch"] = batch
+    return validated
 
 
 def official_inputs_fingerprint(inputs: Any) -> str:
@@ -635,11 +666,13 @@ def validate_official_manifest(data: Any) -> dict:
         ),
         "manifest.json",
     )
-    _string(item["version_id"], "manifest.json.version_id")
+    validate_safe_id(item["version_id"], "manifest.json.version_id")
     _string(item["batch_id"], "manifest.json.batch_id")
     _string(item["batch_name"], "manifest.json.batch_name")
-    _optional_string(item["previous_official_version_id"], "manifest.json.previous_official_version_id")
-    _string(item["annual_data_version_id"], "manifest.json.annual_data_version_id")
+    _optional_safe_id(
+        item["previous_official_version_id"], "manifest.json.previous_official_version_id"
+    )
+    validate_safe_id(item["annual_data_version_id"], "manifest.json.annual_data_version_id")
     _sha256(item["settings_fingerprint"], "manifest.json.settings_fingerprint")
     _unique_strings(item["official_scenario_ids"], "manifest.json.official_scenario_ids")
     _timestamp(item["created_at"], "manifest.json.created_at")

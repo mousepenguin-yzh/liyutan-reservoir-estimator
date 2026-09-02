@@ -29,6 +29,7 @@ from shared_storage_schema import (
     validate_annual_current,
     validate_official_bundle,
     validate_official_current,
+    validate_safe_id,
     validate_system,
 )
 from v2_workflow import validate_batch
@@ -50,7 +51,12 @@ def synthetic_hydrology_rows():
     for month in range(1, 13):
         for period in PERIODS:
             row = {"period_key": f"{month:02d}-{period}", "month": month, "period": period}
-            row.update({column: month + index / 10 for index, column in enumerate(Q_COLUMNS, 1)})
+            row.update(
+                {
+                    column: month + (len(Q_COLUMNS) - index) / 10
+                    for index, column in enumerate(Q_COLUMNS)
+                }
+            )
             rows.append(row)
     return rows
 
@@ -195,7 +201,9 @@ def _official_bundle(
     }
     if input_mutator:
         input_mutator(inputs)
-    fingerprint = official_inputs_fingerprint(inputs)
+    # Compute from the fully mutated fixture so negative semantic tests still
+    # carry internally consistent fingerprints and file checksums.
+    fingerprint = deterministic_fingerprint(inputs)
     summaries = [
         {
             "version_id": "estimate-synthetic-1",
@@ -397,6 +405,20 @@ def test_valid_annual_bundle_round_trip(tmp_path):
     assert deserialize_json(target.read_bytes()) == parsed["version"]
 
 
+def test_hydrology_q_order_accepts_descending_and_equal_values():
+    rows = synthetic_hydrology_rows()
+    rows[0]["q10_cms"] = rows[0]["q05_cms"]
+    parsed = validate_annual_bundle(_annual_bundle(hydrology_rows=rows))
+    assert parsed["hydrology"][0]["q05_cms"] == parsed["hydrology"][0]["q10_cms"]
+
+
+def test_hydrology_q_order_rejects_adjacent_inversion():
+    rows = synthetic_hydrology_rows()
+    rows[0]["q10_cms"] = rows[0]["q05_cms"] + 0.1
+    with pytest.raises(StorageValidationError, match="Q 值順序錯誤"):
+        validate_annual_bundle(_annual_bundle(hydrology_rows=rows))
+
+
 @pytest.mark.parametrize("mode", ["duplicate", "missing", "bad_period", "bad_key"])
 def test_annual_period_integrity_failures(mode):
     rows = synthetic_hydrology_rows()
@@ -468,6 +490,14 @@ def test_annual_missing_file_and_checksum_mismatch_are_rejected():
         validate_annual_bundle(corrupt)
 
 
+def test_annual_manifest_rejects_unknown_filename():
+    def add_unknown_file(version):
+        version["files"]["unknown.json"] = {"sha256": "0" * 64}
+
+    with pytest.raises(StorageValidationError, match="未知檔名"):
+        validate_annual_bundle(_annual_bundle(version_mutator=add_unknown_file))
+
+
 def test_committed_manifest_checksum_mismatch_is_rejected():
     bundle = _annual_bundle()
     committed = deserialize_json(bundle["COMMITTED.json"])
@@ -489,6 +519,38 @@ def test_valid_official_bundle_round_trip(tmp_path):
     target = tmp_path / "synthetic-inputs.json"
     target.write_bytes(bundle["inputs.json"])
     assert official_inputs_fingerprint(deserialize_json(target.read_bytes())) == parsed["manifest"]["settings_fingerprint"]
+
+
+def test_official_inputs_reject_batch_missing_daily_outflow_date():
+    def remove_daily_outflow(inputs):
+        inputs["batch"]["daily_outflows"].pop()
+
+    with pytest.raises(StorageValidationError, match="逐日出流未完整涵蓋推估期間"):
+        validate_official_bundle(_official_bundle(input_mutator=remove_daily_outflow))
+
+
+def test_official_inputs_reject_scenario_missing_period_inflow():
+    def remove_period_inflow(inputs):
+        inputs["batch"]["scenarios"][0]["inflows"].pop("2027-1-上旬")
+
+    with pytest.raises(StorageValidationError, match="旬別入流對應不完整"):
+        validate_official_bundle(_official_bundle(input_mutator=remove_period_inflow))
+
+
+@pytest.mark.parametrize(
+    "outer_field",
+    [
+        "max_capacity_10k_ton",
+        "shilin_ecological_flow_cms",
+        "liyutan_ecological_release_cms",
+    ],
+)
+def test_official_inputs_reject_outer_inner_parameter_mismatch(outer_field):
+    def change_outer_parameter(inputs):
+        inputs["reservoir_parameters"][outer_field] += 0.1
+
+    with pytest.raises(StorageValidationError, match="不一致"):
+        validate_official_bundle(_official_bundle(input_mutator=change_outer_parameter))
 
 
 @pytest.mark.parametrize(
@@ -574,6 +636,43 @@ def test_official_missing_file_and_checksum_mismatch_are_rejected():
     corrupt["inputs.json"] += b"\n"
     with pytest.raises(StorageValidationError, match="checksum"):
         validate_official_bundle(corrupt)
+
+
+def test_official_manifest_rejects_unknown_filename():
+    def add_unknown_file(manifest):
+        manifest["files"]["debug.json"] = {"sha256": "0" * 64}
+
+    with pytest.raises(StorageValidationError, match="未知檔名"):
+        validate_official_bundle(_official_bundle(manifest_mutator=add_unknown_file))
+
+
+@pytest.mark.parametrize(
+    "unsafe_id",
+    [
+        "../x",
+        r"..\x",
+        r"C:\data\version",
+        "folder/version",
+        "folder version",
+        ".",
+        "..",
+        "_starts-with-symbol",
+        "a" * 129,
+    ],
+)
+def test_unsafe_version_ids_are_rejected(unsafe_id):
+    with pytest.raises(StorageValidationError):
+        validate_safe_id(unsafe_id)
+
+    def set_unsafe_version(version):
+        version["version_id"] = unsafe_id
+
+    with pytest.raises(StorageValidationError, match="version_id"):
+        validate_annual_bundle(_annual_bundle(version_mutator=set_unsafe_version))
+
+
+def test_safe_version_id_is_accepted():
+    assert validate_safe_id("Annual.2027_v1-final") == "Annual.2027_v1-final"
 
 
 def test_csv_round_trip_is_stable():

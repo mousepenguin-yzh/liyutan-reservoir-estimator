@@ -98,6 +98,7 @@ U:\經管科\水庫庫容推估系統\鯉魚潭\
 ### 4.1 命名原則
 
 - 版本 ID 必須全域唯一且不含操作人姓名，建議格式為 UTC 時間加 UUID，例如 `20260814T021530Z_550e8400-e29b-41d4-a716-446655440000`。
+- 會成為資料夾名稱或版本參照的 ID 最長 128 字元，必須以 ASCII 英文字母或數字開頭，之後只允許英文字母、數字、`.`、`_`、`-`；禁止空白、單獨的 `.`／`..`、斜線、反斜線、磁碟機與絕對路徑形式。
 - 內部關聯一律使用 ID，不使用可重複的批次名稱、情境名稱或檔名作主鍵。
 - 所有時間以 ISO 8601 保存並包含時區；建議正式檔保存 UTC，介面另顯示台北時間。
 - 檔名及欄位名稱固定，不因操作人或年度任意改名。
@@ -157,7 +158,7 @@ U:\經管科\水庫庫容推估系統\鯉魚潭\
 }
 ```
 
-`operator_display_name` 是使用者人工填報的文字，不代表已登入或已驗證身分。來源欄位不得放帳密、權杖或不應散布的敏感內容。
+`operator_display_name` 是使用者人工填報的文字，不代表已登入或已驗證身分。來源欄位不得放帳密、權杖或不應散布的敏感內容。`files` 必須恰好列出上述三個正式資料檔，不得加入未知檔名或路徑。選用的 `source` 資料夾只保存原始交換檔或來源說明，不屬於 manifest 的正式檔案集合，也不得由 `version.json.files` 引用。
 
 ### 5.3 `hydrology_q.csv`
 
@@ -170,6 +171,7 @@ period_key,month,period,q05_cms,q10_cms,...,q90_cms,q95_cms
 - `period_key` 採固定年度內旬鍵，例如 `01-上旬`；不得依列號推算。
 - `month` 為 1～12；`period` 只能是 `上旬`、`中旬`、`下旬`。
 - Q5～Q95 每 5 一級，必須全部存在且為非負有限數值，單位固定為 cms。
+- 依鯉魚潭資料的超越機率語意，每一旬必須符合 `q05_cms >= q10_cms >= ... >= q95_cms`；相鄰值可以相等。
 - 36 旬必須恰好各出現一次，不可重複或缺漏。
 
 ### 5.4 `outflow_demand.csv`
@@ -277,13 +279,15 @@ period_key,month,period,upstream_irrigation_cms,downstream_irrigation_cms,public
 }
 ```
 
-第一版不把 `operator_display_name` 當成登入證明。畫面必須清楚標示「人工填報，未經登入驗證」。
+第一版不把 `operator_display_name` 當成登入證明。畫面必須清楚標示「人工填報，未經登入驗證」。`files` 必須恰好列出 `inputs.json`、`scenario_summaries.csv` 及 `daily_results.csv`，不得加入未知檔名或路徑。
 
 ### 6.3 `inputs.json`
 
 `inputs.json` 以目前 V2 批次 JSON 的語意為基礎，正式 schema 定稿時至少保留：
 
 2-2 固定永久保存外層 schema 為 `liyutan-reservoir-estimator/official-inputs` version 1，欄位包含 `annual_data_version_id`、`batch_id`、`official_scenario_ids`、含 33 cms 欄位的 `reservoir_parameters` 正式快照，以及不含清單外情境的現有 V2 `batch`。正式設定指紋以整份驗證後的外層資料進行 deterministic fingerprint。
+
+永久保存前，內層 `batch` 必須完整通過現有 V2 batch 驗證。外層正式參數快照的滿庫容量、士林堰生態流量及鯉魚潭生態放流量，必須分別與內層 `max_capacity`、`shilin_eco_flow` 及 `liyutan_eco_flow` 一致；士林堰引水上限目前仍只存在外層正式參數，本階段不把它套入水量平衡公式。
 
 - 批次與日期欄位。
 - 起始庫容與歷史庫容。
