@@ -88,9 +88,9 @@ U:\經管科\水庫庫容推估系統\鯉魚潭\
 │  └─ events\<YYYY>\<MM>\<timestamp>_<event_id>.json
 ├─ nonofficial\                # 選用；明確標示的臨時試算
 ├─ generated-exports\          # 選用；可重新產生的 Excel／圖表等
-├─ _staging\                   # 同一共享磁碟上的寫入暫存區
-├─ _quarantine\                # 中斷或驗證失敗內容；不可當正式版本讀取
-└─ _locks\
+├─ staging\                    # 同一共享磁碟上的寫入暫存區
+├─ quarantine\                 # 中斷或驗證失敗內容；不可當正式版本讀取
+└─ locks\
    ├─ annual-current.lock
    └─ official-current.lock
 ```
@@ -221,19 +221,24 @@ period_key,month,period,upstream_irrigation_cms,downstream_irrigation_cms,public
 
 ### 6.1 必存內容
 
+正式保存前，使用者必須明確確認本批次「要正式保存的情境集合」。集合中的每一個情境都必須在同一份目前設定下成功完成演算，且演算結果所綁定的設定指紋必須與保存當下的設定指紋一致。只要任一要正式保存的情境缺少結果、演算失敗或設定指紋已失效，就必須阻止整個正式保存；不得建立部分成功的正式版本，也不得切換目前正式推估指標。
+
 每次正式推估必須保存一份自足且可稽核的快照：
 
 - 完整輸入設定。
-- 各情境設定、排序、旬入流值、原始單位及來源。
+- 各正式保存情境的設定、排序、旬入流值、原始單位及來源。
 - 起始庫容、歷史庫容、共用出流、逐日出流及抗旱調整。
 - 水庫操作參數，包含士林堰引水上限。
-- 各情境摘要。
-- 所有成功情境的完整逐日演算結果；失敗情境另存失敗狀態與原因。
+- 所有要正式保存情境的成功摘要。
+- 所有要正式保存情境的完整逐日演算結果。
+- 保存當下的設定指紋，以及正式保存情境 ID 清單。
 - 使用的年度資料版本 ID。
 - 程式 Git commit、應用程式版本、批次 schema 版本與永久資料 schema 版本。
 - 建立時間、人工填報操作人、必填備註。
 - 儲存當下所觀察到的上一個正式推估版本 ID。
 - 每個正式檔案的 SHA-256 checksum。
+
+失敗情境的狀態與原因只能保留在目前 Streamlit 工作階段、明確標示的非正式試算，或記錄「正式保存遭阻止」的操作紀錄中；不得寫入正式推估版本內容，也不得建立為目前正式推估版本。
 
 正式推估是新增版本，不是更新既有版本。已提交版本目錄內的任何檔案都不得由應用程式直接修改或刪除。
 
@@ -250,6 +255,8 @@ period_key,month,period,upstream_irrigation_cms,downstream_irrigation_cms,public
   "batch_name": "例行推估",
   "previous_official_version_id": "<previous_estimate_version_id>",
   "annual_data_version_id": "<annual_version_id>",
+  "settings_fingerprint": "<sha256 fingerprint>",
+  "official_scenario_ids": ["<scenario_id>"],
   "created_at": "2026-08-14T02:15:30Z",
   "operator_display_name": "人工填報名稱",
   "note": "本次調整與正式保存原因",
@@ -278,7 +285,7 @@ period_key,month,period,upstream_irrigation_cms,downstream_irrigation_cms,public
 - 起始庫容與歷史庫容。
 - 完整水庫參數快照。
 - 旬別清單、共用旬數及共用入流。
-- 所有情境及每旬入流來源。
+- manifest 的 `official_scenario_ids` 所列全部情境及其每旬入流來源；不得夾帶清單外的失敗或非正式情境。
 - 旬出流與權威逐日出流。
 - 日期／抗旱覆寫及啟用狀態。
 - 年度資料版本 ID。
@@ -287,21 +294,21 @@ period_key,month,period,upstream_irrigation_cms,downstream_irrigation_cms,public
 
 ### 6.4 `scenario_summaries.csv`
 
-每個情境一列，至少包含：
+每個要正式保存且成功完成演算的情境一列，至少包含：
 
 ```text
-scenario_id,scenario_name,scenario_order,status,error,
+scenario_id,scenario_name,scenario_order,calculation_status,settings_fingerprint,
 final_capacity_10k_ton,minimum_capacity_10k_ton,
 spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 ```
 
-失敗情境保留 `status` 與 `error`；成功情境的摘要數值必須能由 `daily_results.csv` 或同版演算規則核對。
+`calculation_status` 在正式版本中只能是 `success`，且每列 `settings_fingerprint` 必須與 manifest 相同。摘要數值必須能由 `daily_results.csv` 或同版演算規則核對。若有任何要正式保存的情境失敗、缺漏或指紋不符，整份 `scenario_summaries.csv` 不得發布為正式版本。
 
 ### 6.5 `daily_results.csv`
 
 使用長表格式，每列代表一個情境的一日結果。至少包含 `version_id`、`batch_id`、`scenario_id`、`date`，以及目前逐日結果產品的完整欄位，包括天然流量、需求、實際放水、削減、士林堰河道保留、實際引水、引入量、大壩河道放流、公共給水、總出水、溢流、昨日庫容、本日庫容及淨變化。
 
-欄位名稱、順序、型別與單位必須由資料 schema 固定；不得只保存畫面格式化後的字串。
+檔案必須完整涵蓋 manifest 中每一個 `official_scenario_ids` 的全部推估日期，且不得包含清單外情境。欄位名稱、順序、型別與單位必須由資料 schema 固定；不得只保存畫面格式化後的字串。
 
 ### 6.6 `official-estimates/current.json`
 
@@ -336,7 +343,7 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 年度資料可將 `manifest_file` 指向 `version.json`。系統只有在下列條件全部成立時，才可把目錄視為完整版本：
 
-1. 目錄位於對應的 `versions` 下，不在 `_staging` 或 `_quarantine`。
+1. 目錄位於對應的 `versions` 下，不在 `staging` 或 `quarantine`。
 2. `COMMITTED.json` 存在且可解析。
 3. `version_id` 與目錄名、manifest 一致。
 4. manifest schema 受目前程式支援。
@@ -349,9 +356,9 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 ## 8. 正式推估版本生命週期
 
 1. **載入基準**：記錄目前 `official-estimates/current.json` 的 `revision` 與 `current_version_id`。
-2. **完成演算**：只有目前設定指紋一致、所有要正式保存的情境狀態明確，才可進入保存流程。
-3. **填寫與確認**：操作人及備註必填；畫面顯示年度資料版本、程式版本、上一正式版本、情境摘要與「人工填報身分未驗證」提示，使用者再次確認。
-4. **建立暫存**：在同一共享根目錄的 `_staging` 建立唯一目錄，寫入完整內容。
+2. **完成演算與硬性檢查**：先固定要正式保存的情境 ID 清單，再確認清單中的每一個情境都有成功結果，且全部結果綁定的設定指紋都與保存當下的設定指紋一致。任一情境失敗、缺少結果或指紋失效時，立即阻止整批正式保存；不得建立部分成功版本、不得進入暫存發布，也不得切換 current。失敗資訊只可留在工作階段、非正式試算或「保存遭阻止」audit event。
+3. **填寫與確認**：操作人及備註必填；畫面顯示年度資料版本、程式版本、上一正式版本、要正式保存的完整情境清單與成功摘要、設定指紋，以及「人工填報身分未驗證」提示，使用者再次確認。確認後若情境集合或任何設定改變，必須回到步驟 2 重新驗證與演算。
+4. **建立暫存**：在同一共享根目錄的 `staging` 建立唯一目錄，寫入完整內容。
 5. **驗證暫存**：重新讀回、驗證 schema、筆數、日期、參照關係及 checksum。
 6. **取得短時間鎖**：取得 `official-current.lock`，只包住最後重讀、發布與指標切換。
 7. **衝突檢查**：重新讀取 current；若 revision 或上一版本與步驟 1 不同，停止保存並提示另一位使用者已先儲存。不得自動覆蓋或自動改接新上一版本。
@@ -458,15 +465,15 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 | 中斷位置 | 系統狀態 | 復原行為 |
 | --- | --- | --- |
-| 暫存尚未寫完 | `_staging` 中沒有有效 `COMMITTED.json` | 不讀取為正式資料；下次啟動列為待清理／診斷 |
-| 暫存驗證失敗 | 不完整或 checksum 錯誤 | 移至 `_quarantine` 或保留原位並標記；禁止發布 |
+| 暫存尚未寫完 | `staging` 中沒有有效 `COMMITTED.json` | 不讀取為正式資料；下次啟動列為待清理／診斷 |
+| 暫存驗證失敗 | 不完整或 checksum 錯誤 | 移至 `quarantine` 或保留原位並標記；禁止發布 |
 | 已發布版本、current 尚未切換 | 完整但未被 current 指向的版本 | 顯示待復原版本；不得自動啟用，由使用者核對後透過正式啟用流程處理 |
 | current 暫存檔寫完、replace 前中斷 | 舊 current 仍有效 | 忽略未完成暫存檔並重試 |
 | current replace 後、audit 前中斷 | 新 current 有效，操作紀錄可能缺漏 | 啟動檢查依 current 與版本 manifest 補建「復原事件」，不得回寫版本內容 |
 | current 指向不存在或驗證失敗版本 | 正式來源不一致 | 阻止正式作業，顯示資料損壞；由指定維護人員依操作程序修復，不自動猜測其他版本 |
 | 網路於任何正式寫入途中中斷 | 結果未知 | 回報「未確認成功」；重新連線後先讀 current 與版本目錄確認，不可直接重送相同操作並假設安全 |
 
-復原工具只能建立新 audit event、切換 current 指標或隔離不完整內容，不得改寫已提交版本。`_staging`、`_quarantine` 與未被指向的完整版本都應有可檢視的診斷清單。
+復原工具只能建立新 audit event、切換 current 指標或隔離不完整內容，不得改寫已提交版本。`staging`、`quarantine` 與未被指向的完整版本都應有可檢視的診斷清單。
 
 ## 14. 操作紀錄
 
@@ -555,11 +562,13 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 ### 2-5：正式推估保存
 
-範圍：保存 inputs、摘要、完整逐日結果、manifest、checksum、上一正式版本、程式版本、人工操作人與備註。
+範圍：保存 inputs、所有正式情境的成功摘要與完整逐日結果、設定指紋、manifest、checksum、上一正式版本、程式版本、人工操作人與備註。
 
 驗收：
 
 - 必填欄位、二次確認與未驗證身分提示完整。
+- 所有要正式保存的情境都成功且設定指紋有效時才可保存；任一正式情境失敗、缺結果或指紋失效，都會阻止整批保存且不產生部分正式版本。
+- 失敗資訊只留在工作階段、非正式試算或操作紀錄，不會出現在目前正式推估版本內容。
 - 正式目錄 append-only，舊版本沒有被修改。
 - 同時保存不會靜默覆蓋；revision 衝突可重現。
 - 斷線與各寫入步驟中斷後，current 仍指向完整版本或明確進入可診斷復原狀態。
@@ -580,12 +589,15 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 範圍：提供受控啟動器／桌面捷徑、版本顯示與 GitHub 發布更新流程；一般使用者不接觸 PowerShell 或 Git。
 
+現階段本機 repository 與 GitHub 不會自動雙向同步。本機分支必須執行 push，commit 才會出現在 GitHub；GitHub Pull Request 合併後，本機 `main` 仍必須執行 fetch／pull 才會更新。供一般使用者使用的一鍵更新屬本 2-7 階段後續功能，尚未實作。
+
 驗收：
 
 - 新公司電腦依操作文件安裝後，可由桌面捷徑啟動本機 Streamlit。
 - 畫面可辨識程式版本與 Git commit。
 - 更新失敗不破壞目前可用版本，且不影響 `U:` 正式資料。
 - repository 與正式資料仍分離。
+- 一鍵更新能清楚顯示本機版本、遠端可用版本、更新結果及需要人工處理的錯誤，不把尚未實作的 Git 同步描述成現有能力。
 
 ### 2-8：多人、中斷、復原與營運驗收
 
