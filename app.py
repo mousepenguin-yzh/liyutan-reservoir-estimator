@@ -15,6 +15,7 @@ import calendar
 import io
 import plotly.graph_objects as go
 import json
+from shared_storage_reader import DataSourceMode, decide_data_source, load_shared_storage
 from v2_workflow import (
     SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario, apply_q_inflows,
     apply_shared_paste, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows,
@@ -117,6 +118,60 @@ CANONICAL_PERIODS = [
     "9月上旬", "9月中旬", "9月下旬", "10月上旬", "10月中旬", "10月下旬",
     "11月上旬", "11月中旬", "11月下旬", "12月上旬", "12月中旬", "12月下旬"
 ]
+
+
+def embedded_hydrology_frame() -> pd.DataFrame:
+    frame = pd.read_csv(io.StringIO(RAW_DEFAULT_HYDROLOGY), sep="\t")
+    frame.columns = [column.strip() for column in frame.columns]
+    return frame
+
+
+def embedded_demand_frame() -> pd.DataFrame:
+    frame = pd.read_csv(io.StringIO(RAW_DEFAULT_DEMANDS), sep="\t")
+    frame.columns = [column.strip() for column in frame.columns]
+    return frame
+
+
+def shared_hydrology_frame(rows) -> pd.DataFrame:
+    records = []
+    for row in rows:
+        record = {"工作表": f"{int(row['month'])}月{row['period']}"}
+        for quantile in range(95, 0, -5):
+            record[f"Q{quantile}"] = float(row[f"q{quantile:02d}_cms"])
+        records.append(record)
+    return pd.DataFrame(records)
+
+
+def shared_demand_frame(rows) -> pd.DataFrame:
+    return pd.DataFrame(
+        [
+            {
+                "工作表": f"{int(row['month'])}月{row['period']}",
+                "上灌區需求_cms": float(row["upstream_irrigation_cms"]),
+                "下灌區需求_cms": float(row["downstream_irrigation_cms"]),
+                "公共出水_萬噸": float(row["public_water_10k_ton_per_day"]),
+            }
+            for row in rows
+        ]
+    )
+
+
+def apply_shared_annual_data(
+    result, *, preserve_hydrology: bool = False, preserve_demand: bool = False
+) -> None:
+    annual = result.annual
+    if not preserve_hydrology:
+        st.session_state.hydrology_df = shared_hydrology_frame(annual.hydrology)
+        st.session_state.hydrology_source_status = f"共享正式版本 {annual.version['version_id']}"
+    if not preserve_demand:
+        st.session_state.demand_df = shared_demand_frame(annual.outflow_demand)
+        st.session_state.demand_source_status = f"共享正式版本 {annual.version['version_id']}"
+    parameters = annual.reservoir_parameters
+    st.session_state.max_capacity = float(parameters["max_capacity_10k_ton"])
+    st.session_state.shilin_eco_flow = float(parameters["shilin_ecological_flow_cms"])
+    st.session_state.liyutan_eco_flow = float(parameters["liyutan_ecological_release_cms"])
+    st.session_state.shilin_diversion_limit = float(parameters["shilin_diversion_limit_cms"])
+
 
 # ==========================================
 # 1. 核心物理與曆法引擎 (Calendar Engine)
@@ -574,13 +629,67 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
 # 5. Streamlit 初始化與會話狀態 (狀態持久化以繼承預設值)
 # ==========================================
 
-# 基礎參數初始化
-if "max_capacity" not in st.session_state:
-    st.session_state.max_capacity = 11584.0
-if "shilin_eco_flow" not in st.session_state:
-    st.session_state.shilin_eco_flow = 2.7
-if "liyutan_eco_flow" not in st.session_state:
-    st.session_state.liyutan_eco_flow = 0.3
+# 每次 rerun 都重新讀取 current 與完整版本；reader 不使用本機快取。
+shared_storage_result = load_shared_storage()
+if "shared_builtin_fallback_confirmed" not in st.session_state:
+    st.session_state.shared_builtin_fallback_confirmed = False
+if "hydrology_session_upload" not in st.session_state:
+    st.session_state.hydrology_session_upload = False
+if "demand_session_upload" not in st.session_state:
+    st.session_state.demand_session_upload = False
+
+session_upload_active = bool(
+    st.session_state.hydrology_session_upload or st.session_state.demand_session_upload
+)
+previous_shared_snapshot_valid = bool(st.session_state.get("shared_snapshot_valid", False))
+source_decision = decide_data_source(
+    shared_storage_result,
+    builtin_fallback_requested=st.session_state.shared_builtin_fallback_confirmed,
+    # A prior partial upload may depend on stale shared values after a failure,
+    # so it is usable only while the complete shared snapshot still validates.
+    session_upload=session_upload_active and (
+        shared_storage_result.ok or st.session_state.shared_builtin_fallback_confirmed
+    ),
+)
+
+if shared_storage_result.ok:
+    st.session_state.shared_builtin_fallback_confirmed = False
+    annual_version_id = shared_storage_result.annual.version["version_id"]
+    if (
+        st.session_state.get("loaded_shared_annual_version_id") != annual_version_id
+        or not previous_shared_snapshot_valid
+        or "hydrology_df" not in st.session_state
+        or "demand_df" not in st.session_state
+    ):
+        apply_shared_annual_data(
+            shared_storage_result,
+            preserve_hydrology=bool(st.session_state.hydrology_session_upload),
+            preserve_demand=bool(st.session_state.demand_session_upload),
+        )
+        st.session_state.loaded_shared_annual_version_id = annual_version_id
+        if st.session_state.get("v2_batch_results"):
+            invalidate_session_results(st.session_state)
+    st.session_state.shared_snapshot_valid = True
+elif source_decision.mode is DataSourceMode.BUILTIN_FALLBACK:
+    if st.session_state.get("active_data_source_mode") != DataSourceMode.BUILTIN_FALLBACK.value:
+        st.session_state.hydrology_df = embedded_hydrology_frame()
+        st.session_state.demand_df = embedded_demand_frame()
+        st.session_state.max_capacity = 11584.0
+        st.session_state.shilin_eco_flow = 2.7
+        st.session_state.liyutan_eco_flow = 0.3
+        st.session_state.shilin_diversion_limit = 33.0
+        st.session_state.hydrology_source_status = "內建備援標準流量（非正式）"
+        st.session_state.demand_source_status = "內建備援出流需求（非正式）"
+        st.session_state.hydrology_session_upload = False
+        st.session_state.demand_session_upload = False
+        if st.session_state.get("v2_batch_results"):
+            invalidate_session_results(st.session_state)
+    st.session_state.shared_snapshot_valid = False
+else:
+    st.session_state.shared_snapshot_valid = False
+
+st.session_state.active_data_source_mode = source_decision.mode.value
+st.session_state.formal_operations_available = source_decision.formal_operations_available
 
 # 時間區間初始化
 if "display_start_date" not in st.session_state:
@@ -594,7 +703,7 @@ if "end_date" not in st.session_state:
 if "init_capacity" not in st.session_state:
     st.session_state.init_capacity = 8000.0
 if "inflow_source" not in st.session_state:
-    st.session_state.inflow_source = "內建標準水文情境 (Q5~Q95)"
+    st.session_state.inflow_source = "年度標準水文情境 (Q5~Q95)"
 if "builtin_scenario" not in st.session_state:
     st.session_state.builtin_scenario = "Q50 (平水)"
 if "manual_flow_dict" not in st.session_state:
@@ -616,27 +725,58 @@ if "mixed_demand_configs" not in st.session_state:
 if "scenarios" not in st.session_state:
     st.session_state.scenarios = {}
 
-# 初始化標準水文流量資料庫
-if "hydrology_df" not in st.session_state:
-    default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
-    default_df = pd.read_csv(default_io, sep="\t")
-    default_df.columns = [c.strip() for c in default_df.columns]
-    st.session_state.hydrology_df = default_df
-    st.session_state.hydrology_source_status = "系統預設標準流量"
-
-# 初始化前一年度出流常態資料庫
-if "demand_df" not in st.session_state:
-    default_demand_io = io.StringIO(RAW_DEFAULT_DEMANDS)
-    default_demand_df = pd.read_csv(default_demand_io, sep="\t")
-    default_demand_df.columns = [c.strip() for c in default_demand_df.columns]
-    st.session_state.demand_df = default_demand_df
-    st.session_state.demand_source_status = "系統預設前一年度常態資料"
-
 # ==========================================
 # 6. 前端 UI 分頁排版 (含第六階段全面整合)
 # ==========================================
 
 st.title("💧 鯉魚潭水庫庫容推估系統")
+
+if shared_storage_result.ok:
+    annual = shared_storage_result.annual
+    st.success("✅ 已連線到共享正式資料，年度資料完整驗證成功。")
+    st.caption(f"共享資料讀取時間：{shared_storage_result.read_at}")
+    source_cols = st.columns(4)
+    source_cols[0].metric("水庫", shared_storage_result.system["display_name"])
+    source_cols[1].metric("年度資料版本", annual.version["version_id"])
+    source_cols[2].metric("資料適用年度", str(annual.version["applicable_year"]))
+    if shared_storage_result.official is None:
+        source_cols[3].metric("最近正式推估", "尚無正式推估")
+    else:
+        source_cols[3].metric("最近正式推估", shared_storage_result.official.version_id)
+        st.caption(
+            f"最近正式推估建立時間：{shared_storage_result.official.created_at}｜"
+            f"批次：{shared_storage_result.official.batch_name}"
+        )
+    if source_decision.mode is DataSourceMode.SESSION_UPLOAD:
+        st.warning(
+            "⚠️ 本次試算目前使用工作階段上傳資料，屬非正式資料；"
+            "不可冒充共享正式版本，後續正式功能必須維持停用。"
+        )
+    else:
+        st.info(f"本次試算目前使用的資料來源：{source_decision.label}")
+else:
+    storage_error = shared_storage_result.error
+    st.error(
+        f"❌ 正式資料來源不可用（{storage_error.code.value}）：{storage_error.message}"
+    )
+    if source_decision.mode in {DataSourceMode.BUILTIN_FALLBACK, DataSourceMode.SESSION_UPLOAD}:
+        st.warning(
+            f"🚨 非正式／備援資料模式：本次試算使用{source_decision.label}，"
+            "不代表共享正式資料；後續正式保存及年度更新功能不可用。"
+        )
+    else:
+        st.warning(
+            "系統不會自動使用快取、上次資料或內建資料。"
+            "若只需進行非正式試算，請明確選擇下方備援模式。"
+        )
+        if st.button("使用內建備援資料進行非正式試算", type="primary"):
+            st.session_state.shared_builtin_fallback_confirmed = True
+            st.session_state.hydrology_session_upload = False
+            st.session_state.demand_session_upload = False
+            st.rerun()
+        st.stop()
+
+st.caption(f"本次試算目前使用的資料來源：{source_decision.label}")
 
 tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
     "⚙️ 第一階段：推估需求基礎資料設定", 
@@ -919,20 +1059,20 @@ with tab_inflow:
         st.markdown("### 填值協助工具與年度資料維護")
         # 第一區塊：主要入流模式選擇
         inflow_options = [
-            "內建標準水文情境 (Q5~Q95)", 
+            "年度標準水文情境 (Q5~Q95)",
             "手動批次匯入（支援 Excel 複製貼上）", 
-            "內建與手動混合模式"
+            "年度標準與手動混合模式"
         ]
         
         if st.session_state.inflow_source not in inflow_options:
-            st.session_state.inflow_source = "內建標準水文情境 (Q5~Q95)"
+            st.session_state.inflow_source = "年度標準水文情境 (Q5~Q95)"
             
         inflow_index = inflow_options.index(st.session_state.inflow_source)
         inflow_mode = st.radio("請選擇天然流量 (cms) 來源模式：", inflow_options, index=inflow_index, horizontal=True)
         st.session_state.inflow_source = inflow_mode
         period_flow_mapping = []
         
-        if inflow_mode == "內建標準水文情境 (Q5~Q95)":
+        if inflow_mode == "年度標準水文情境 (Q5~Q95)":
             # 19 旬情境選單
             SCENARIO_OPTIONS = [
                 "Q5 (極豐水)", "Q10", "Q15", "Q20 (偏豐水)", "Q25", "Q30", "Q35", "Q40", "Q45", 
@@ -978,14 +1118,14 @@ with tab_inflow:
                         st.session_state.manual_flow_dict[f"{y}-{m}-{p}"] = flow_val
                         period_flow_mapping.append({"年份": y, "月份": m, "旬別": p, "天然流量(cms)": flow_val})
             else:
-                st.info("⚠️ 尚未貼上數據，下方目前顯示內建 Q50 預設值作為參考占位。")
+                st.info("⚠️ 尚未貼上數據，下方目前顯示年度標準 Q50 值作為參考占位。")
                 for idx, row in proj_unique_periods.iterrows():
                     period_flow_mapping.append({"年份": row["年份"], "月份": row["月份"], "旬別": row["旬別"], "天然流量(cms)": get_dynamic_shilin_flow(row["月份"], row["旬別"], "Q50 (平水)")})
                     
         else:
-            # 內建與手動混合模式
-            st.markdown("##### 🎛️ 逐旬內建與手動混合設定")
-            st.caption("您可以針對未來推估期間的各個旬別單獨指定水文入流來源（可選擇任意內建標準水文情境，或選擇自訂手動輸入）：")
+            # 年度標準與手動混合模式
+            st.markdown("##### 🎛️ 逐旬年度標準與手動混合設定")
+            st.caption("您可以針對未來推估期間的各個旬別單獨指定水文入流來源（可選擇任意年度標準水文情境，或選擇自訂手動輸入）：")
             
             MIXED_SCENARIO_OPTIONS = [
                 "Q5 (極豐水)", "Q10", "Q15", "Q20 (偏豐水)", "Q25", "Q30", "Q35", "Q40", "Q45", 
@@ -1045,9 +1185,9 @@ with tab_inflow:
                         config["manual_val"] = man_val
                         flow_val = man_val
                     else:
-                        # 從系統預設/已上傳的水文資料庫自動提取
+                        # 從目前已明確標示的年度水文資料來源提取
                         flow_val = get_dynamic_shilin_flow(m, p, selected_opt)
-                        st.markdown(f"<div style='padding-top:6px; color:#1f77b4; font-weight:bold;'>系統內建：{flow_val:.2f} cms</div>", unsafe_allow_html=True)
+                        st.markdown(f"<div style='padding-top:6px; color:#1f77b4; font-weight:bold;'>年度標準：{flow_val:.2f} cms</div>", unsafe_allow_html=True)
                         
                 # 寫入統一資料結構
                 period_flow_mapping.append({
@@ -1062,14 +1202,16 @@ with tab_inflow:
 
     # 第二區塊：資料庫維護 (隱藏至底部)
     st.markdown("<br><br>", unsafe_allow_html=True)
-    with st.expander("🛠️ 歷史標準水文資料庫 維護與年度更新專區 (年更新)", expanded=False):
-        st.markdown("#### ⚙️ 歷史標準水文主資料庫覆寫與還原")
+    with st.expander("🛠️ 歷史標準水文工作階段上傳（不會正式更新）", expanded=False):
+        st.markdown("#### ⚙️ 工作階段水文資料套用與還原")
         
         # 顯示狀態字卡
-        if st.session_state.hydrology_source_status == "系統預設標準流量":
-            st.info(f"📊 當前主資料庫狀態：🟢 **系統內建標準水文流量 (36旬)**")
+        if st.session_state.hydrology_source_status.startswith("共享正式版本"):
+            st.success(f"📊 當前水文資料：🟢 **{st.session_state.hydrology_source_status}**")
+        elif st.session_state.hydrology_source_status.startswith("內建備援"):
+            st.warning(f"📊 當前水文資料：🚨 **{st.session_state.hydrology_source_status}**")
         else:
-            st.success(f"📊 當前主資料庫狀態：🔵 **已成功載入自訂流量檔案** (來源: {st.session_state.hydrology_source_status})")
+            st.warning(f"📊 當前水文資料：⚠️ **{st.session_state.hydrology_source_status}**")
             
         m_col1, m_col2 = st.columns([2, 1])
         with m_col1:
@@ -1092,8 +1234,11 @@ with tab_inflow:
                     is_valid, validated_data = validate_uploaded_hydrology(temp_df)
                     if is_valid:
                         st.session_state.hydrology_df = validated_data
-                        st.session_state.hydrology_source_status = file_name
-                        st.toast("🎉 水文資料庫已成功覆寫更新！", icon="✅")
+                        st.session_state.hydrology_source_status = f"工作階段上傳：{file_name}（非正式）"
+                        st.session_state.hydrology_session_upload = True
+                        st.session_state.formal_operations_available = False
+                        invalidate_session_results(st.session_state)
+                        st.toast("水文資料已套用於本次工作階段（非正式）。", icon="⚠️")
                         st.rerun()
                     else:
                         st.error(f"❌ 上傳失敗！檔案結構校驗未通過：{validated_data}")
@@ -1132,23 +1277,28 @@ with tab_inflow:
             )
                 
             # 重設按鈕常駐顯示
-            if st.button("🔄 重設回系統預設標準流量", use_container_width=True, type="secondary"):
-                default_io = io.StringIO(RAW_DEFAULT_HYDROLOGY)
-                default_df = pd.read_csv(default_io, sep="\t")
-                default_df.columns = [c.strip() for c in default_df.columns]
-                st.session_state.hydrology_df = default_df
-                st.session_state.hydrology_source_status = "系統預設標準流量"
-                st.toast("🔄 已還原為系統預設標準流量。", icon="🔄")
+            if st.button("🔄 還原目前基準水文資料", use_container_width=True, type="secondary"):
+                if shared_storage_result.ok:
+                    st.session_state.hydrology_df = shared_hydrology_frame(shared_storage_result.annual.hydrology)
+                    st.session_state.hydrology_source_status = (
+                        f"共享正式版本 {shared_storage_result.annual.version['version_id']}"
+                    )
+                else:
+                    st.session_state.hydrology_df = embedded_hydrology_frame()
+                    st.session_state.hydrology_source_status = "內建備援標準流量（非正式）"
+                st.session_state.hydrology_session_upload = False
+                invalidate_session_results(st.session_state)
+                st.toast("已還原目前基準水文資料。", icon="🔄")
                 st.rerun()
 
         st.markdown("---")
-        st.markdown("##### 📖 歷史標準水文資料庫 年度更新操作指南")
+        st.markdown("##### 📖 工作階段水文資料上傳操作指南")
         st.markdown("""
         為了協助非技術人員能輕鬆維護本系統水文流量資料，請參考以下三步標準流程：
         
         * **步驟一**：點擊右側的 **「下載標準水文 Excel 範本 (推薦！)」** 獲取標準的 Excel 試算表檔案。
         * **步驟二**：使用 Excel 直接開啟該檔案。請保持首欄的旬別名稱（如「1月上旬」）完全不動，將取得之各旬最新天然流量 (cms) 填入對應欄位，直接點擊儲存，**不要變更檔案格式，維持 .xlsx 檔案**。
-        * **步驟三**：將修改完畢的 Excel (.xlsx) 檔案拖曳上傳至本專區的「檔案上傳更新」區域，系統驗證通過後即完成年度流量更新。
+        * **步驟三**：將修改完畢的 Excel (.xlsx) 檔案拖曳上傳至本專區。驗證通過後只會套用於本次工作階段，**不會更新或發布共享正式年度資料**。
         """)
 
 # -----------------
@@ -1500,13 +1650,15 @@ with tab_outflow:
 
     # 第二區塊：資料庫維護
     st.markdown("<br><br>", unsafe_allow_html=True)
-    with st.expander("🛠️ 前一年度常態出流需求資料庫 維護與覆寫專區 (年更新)", expanded=False):
-        st.markdown("#### ⚙️ 前一年度出流主資料庫覆寫與還原")
+    with st.expander("🛠️ 前一年度出流需求工作階段上傳（不會正式更新）", expanded=False):
+        st.markdown("#### ⚙️ 工作階段出流需求套用與還原")
         
-        if st.session_state.demand_source_status == "系統預設前一年度常態資料":
-            st.info("📊 當前主資料庫狀態：🟢 **系統內建前一年度需求 (36旬)**")
+        if st.session_state.demand_source_status.startswith("共享正式版本"):
+            st.success(f"📊 當前出流需求：🟢 **{st.session_state.demand_source_status}**")
+        elif st.session_state.demand_source_status.startswith("內建備援"):
+            st.warning(f"📊 當前出流需求：🚨 **{st.session_state.demand_source_status}**")
         else:
-            st.success(f"📊 當前主資料庫狀態：🔵 **已成功載入自訂出流需求檔案** (來源: {st.session_state.demand_source_status})")
+            st.warning(f"📊 當前出流需求：⚠️ **{st.session_state.demand_source_status}**")
             
         m_col1, m_col2 = st.columns([2, 1])
         with m_col1:
@@ -1528,8 +1680,11 @@ with tab_outflow:
                     is_valid, validated_data = validate_uploaded_demands(temp_df)
                     if is_valid:
                         st.session_state.demand_df = validated_data
-                        st.session_state.demand_source_status = file_name
-                        st.toast("🎉 出流需求資料庫已成功覆寫更新！", icon="✅")
+                        st.session_state.demand_source_status = f"工作階段上傳：{file_name}（非正式）"
+                        st.session_state.demand_session_upload = True
+                        st.session_state.formal_operations_available = False
+                        invalidate_session_results(st.session_state)
+                        st.toast("出流需求已套用於本次工作階段（非正式）。", icon="⚠️")
                         st.rerun()
                     else:
                         st.error(f"❌ 上傳失敗！檔案結構校驗未通過：{validated_data}")
@@ -1568,13 +1723,18 @@ with tab_outflow:
             )
                 
             # 重設按鈕常駐顯示
-            if st.button("🔄 重設回系統預設前一年度資料", use_container_width=True, type="secondary"):
-                default_demand_io = io.StringIO(RAW_DEFAULT_DEMANDS)
-                default_demand_df = pd.read_csv(default_demand_io, sep="\t")
-                default_demand_df.columns = [c.strip() for c in default_demand_df.columns]
-                st.session_state.demand_df = default_demand_df
-                st.session_state.demand_source_status = "系統預設前一年度常態資料"
-                st.toast("🔄 已還原為系統預設前一年度資料。", icon="🔄")
+            if st.button("🔄 還原目前基準出流需求", use_container_width=True, type="secondary"):
+                if shared_storage_result.ok:
+                    st.session_state.demand_df = shared_demand_frame(shared_storage_result.annual.outflow_demand)
+                    st.session_state.demand_source_status = (
+                        f"共享正式版本 {shared_storage_result.annual.version['version_id']}"
+                    )
+                else:
+                    st.session_state.demand_df = embedded_demand_frame()
+                    st.session_state.demand_source_status = "內建備援出流需求（非正式）"
+                st.session_state.demand_session_upload = False
+                invalidate_session_results(st.session_state)
+                st.toast("已還原目前基準出流需求。", icon="🔄")
                 st.rerun()
 
 # V2 將第三階段產生的逐日出流視為整個批次唯一共用條件。

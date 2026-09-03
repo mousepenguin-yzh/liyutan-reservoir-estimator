@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：第二階段第一步，文件規格定稿；功能尚未實作
+狀態：第二階段 2-3 共享資料唯讀啟動已實作；正式寫入功能尚未實作
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -555,7 +555,11 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 ### 2-3：共享資料唯讀啟動與失敗降級
 
+狀態：已完成（2026-09-02）。實作位於 `shared_storage_reader.py`，Streamlit 狀態整合位於 `app.py`，合成測試位於 `tests/test_shared_storage_reader.py`。
+
 範圍：讀取 `system.json`、current 與完整版本；顯示資料來源狀態；提供明確的內建資料非正式模式。
+
+啟動時由環境變數 `LIYUTAN_SHARED_ROOT` 指定共享根目錄；未設定時不得猜測路徑。reader 僅執行讀取，不建立、修改、重新命名或刪除共享資料。開發與自動化測試只可使用 pytest 暫存目錄及合成資料。
 
 驗收：
 
