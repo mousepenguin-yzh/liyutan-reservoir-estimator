@@ -30,6 +30,7 @@ from shared_storage_schema import (
 
 
 SHARED_ROOT_ENV = "LIYUTAN_SHARED_ROOT"
+ENABLE_SHARED_STORAGE_ENV = "LIYUTAN_ENABLE_SHARED_STORAGE"
 
 
 class StorageErrorCode(str, Enum):
@@ -98,6 +99,7 @@ class SharedStorageResult:
 
 
 class DataSourceMode(str, Enum):
+    COMPATIBILITY = "compatibility"
     OFFICIAL = "official"
     UNAVAILABLE = "unavailable"
     BUILTIN_FALLBACK = "builtin_fallback"
@@ -108,8 +110,39 @@ class DataSourceMode(str, Enum):
 class DataSourceDecision:
     mode: DataSourceMode
     can_calculate: bool
-    formal_operations_available: bool
+    shared_storage_readable: bool
+    formal_write_available: bool
     label: str
+
+    @property
+    def formal_operations_available(self) -> bool:
+        """Legacy compatibility flag; formal writes do not exist in stage 2-3."""
+        return False
+
+
+def shared_storage_enabled(environ: Mapping[str, str] | None = None) -> bool:
+    """Return whether the explicit shared-storage feature flag is enabled."""
+    env = os.environ if environ is None else environ
+    return env.get(ENABLE_SHARED_STORAGE_ENV) == "1"
+
+
+def compatibility_data_source(*, session_upload: bool = False) -> DataSourceDecision:
+    """Describe the transitional pre-shared-storage application mode."""
+    if session_upload:
+        return DataSourceDecision(
+            DataSourceMode.SESSION_UPLOAD,
+            True,
+            False,
+            False,
+            "工作階段上傳資料（非正式）",
+        )
+    return DataSourceDecision(
+        DataSourceMode.COMPATIBILITY,
+        True,
+        False,
+        False,
+        "內建年度資料（相容模式／過渡用途）",
+    )
 
 
 def decide_data_source(
@@ -123,6 +156,7 @@ def decide_data_source(
         return DataSourceDecision(
             DataSourceMode.SESSION_UPLOAD,
             True,
+            result.ok,
             False,
             "工作階段上傳資料（非正式）",
         )
@@ -131,6 +165,7 @@ def decide_data_source(
             DataSourceMode.OFFICIAL,
             True,
             True,
+            False,
             "共享正式年度資料",
         )
     if builtin_fallback_requested:
@@ -138,10 +173,12 @@ def decide_data_source(
             DataSourceMode.BUILTIN_FALLBACK,
             True,
             False,
+            False,
             "內建備援資料（非正式）",
         )
     return DataSourceDecision(
         DataSourceMode.UNAVAILABLE,
+        False,
         False,
         False,
         "正式資料來源不可用",

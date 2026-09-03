@@ -5,11 +5,14 @@ import pytest
 
 from shared_storage_reader import (
     DataSourceMode,
+    ENABLE_SHARED_STORAGE_ENV,
     SHARED_ROOT_ENV,
     SharedStorageReader,
     StorageErrorCode,
+    compatibility_data_source,
     decide_data_source,
     load_shared_storage,
+    shared_storage_enabled,
 )
 from shared_storage_schema import (
     ANNUAL_CURRENT_SCHEMA,
@@ -350,6 +353,8 @@ def test_failed_load_never_automatically_uses_builtin_data():
     decision = decide_data_source(failed)
     assert decision.mode is DataSourceMode.UNAVAILABLE
     assert not decision.can_calculate
+    assert not decision.shared_storage_readable
+    assert not decision.formal_write_available
     assert not decision.formal_operations_available
     stale_upload = decide_data_source(failed, session_upload=True)
     assert stale_upload.mode is DataSourceMode.UNAVAILABLE
@@ -361,6 +366,8 @@ def test_builtin_fallback_requires_explicit_choice_and_remains_nonofficial():
     decision = decide_data_source(failed, builtin_fallback_requested=True)
     assert decision.mode is DataSourceMode.BUILTIN_FALLBACK
     assert decision.can_calculate
+    assert not decision.shared_storage_readable
+    assert not decision.formal_write_available
     assert not decision.formal_operations_available
 
     uploaded = decide_data_source(
@@ -368,6 +375,8 @@ def test_builtin_fallback_requires_explicit_choice_and_remains_nonofficial():
     )
     assert uploaded.mode is DataSourceMode.SESSION_UPLOAD
     assert uploaded.can_calculate
+    assert not uploaded.shared_storage_readable
+    assert not uploaded.formal_write_available
     assert not uploaded.formal_operations_available
 
 
@@ -376,4 +385,47 @@ def test_session_upload_is_always_nonofficial_even_when_shared_data_is_valid(tmp
     decision = decide_data_source(loaded, session_upload=True)
     assert decision.mode is DataSourceMode.SESSION_UPLOAD
     assert decision.can_calculate
+    assert decision.shared_storage_readable
+    assert not decision.formal_write_available
     assert not decision.formal_operations_available
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (None, False),
+        ("", False),
+        ("0", False),
+        ("true", False),
+        (" 1 ", False),
+        ("1", True),
+    ],
+)
+def test_shared_storage_requires_explicit_enable_value(value, expected):
+    environ = {} if value is None else {ENABLE_SHARED_STORAGE_ENV: value}
+    assert shared_storage_enabled(environ) is expected
+
+
+def test_valid_shared_data_is_readable_but_not_formally_writable(tmp_path):
+    loaded = load_shared_storage(_build_root(tmp_path))
+    decision = decide_data_source(loaded)
+    assert decision.mode is DataSourceMode.OFFICIAL
+    assert decision.can_calculate
+    assert decision.shared_storage_readable
+    assert not decision.formal_write_available
+    assert not decision.formal_operations_available
+
+
+def test_compatibility_mode_is_calculable_but_not_shared_or_writable():
+    decision = compatibility_data_source()
+    assert decision.mode is DataSourceMode.COMPATIBILITY
+    assert decision.can_calculate
+    assert not decision.shared_storage_readable
+    assert not decision.formal_write_available
+    assert not decision.formal_operations_available
+
+    uploaded = compatibility_data_source(session_upload=True)
+    assert uploaded.mode is DataSourceMode.SESSION_UPLOAD
+    assert uploaded.can_calculate
+    assert not uploaded.shared_storage_readable
+    assert not uploaded.formal_write_available

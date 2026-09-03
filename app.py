@@ -15,7 +15,13 @@ import calendar
 import io
 import plotly.graph_objects as go
 import json
-from shared_storage_reader import DataSourceMode, decide_data_source, load_shared_storage
+from shared_storage_reader import (
+    DataSourceMode,
+    compatibility_data_source,
+    decide_data_source,
+    load_shared_storage,
+    shared_storage_enabled,
+)
 from v2_workflow import (
     SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario, apply_q_inflows,
     apply_shared_paste, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows,
@@ -629,8 +635,10 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
 # 5. Streamlit 初始化與會話狀態 (狀態持久化以繼承預設值)
 # ==========================================
 
-# 每次 rerun 都重新讀取 current 與完整版本；reader 不使用本機快取。
-shared_storage_result = load_shared_storage()
+# 只有明確啟用共享模式時，才在每次 rerun 重新讀取 current 與完整版本。
+# 未啟用時維持既有線上網站的相容模式，完全不存取共享路徑。
+shared_storage_mode_enabled = shared_storage_enabled()
+shared_storage_result = load_shared_storage() if shared_storage_mode_enabled else None
 if "shared_builtin_fallback_confirmed" not in st.session_state:
     st.session_state.shared_builtin_fallback_confirmed = False
 if "hydrology_session_upload" not in st.session_state:
@@ -642,54 +650,87 @@ session_upload_active = bool(
     st.session_state.hydrology_session_upload or st.session_state.demand_session_upload
 )
 previous_shared_snapshot_valid = bool(st.session_state.get("shared_snapshot_valid", False))
-source_decision = decide_data_source(
-    shared_storage_result,
-    builtin_fallback_requested=st.session_state.shared_builtin_fallback_confirmed,
-    # A prior partial upload may depend on stale shared values after a failure,
-    # so it is usable only while the complete shared snapshot still validates.
-    session_upload=session_upload_active and (
-        shared_storage_result.ok or st.session_state.shared_builtin_fallback_confirmed
-    ),
-)
+previous_shared_mode_enabled = st.session_state.get("shared_storage_mode_enabled")
 
-if shared_storage_result.ok:
-    st.session_state.shared_builtin_fallback_confirmed = False
-    annual_version_id = shared_storage_result.annual.version["version_id"]
-    if (
-        st.session_state.get("loaded_shared_annual_version_id") != annual_version_id
-        or not previous_shared_snapshot_valid
+if shared_storage_mode_enabled:
+    source_decision = decide_data_source(
+        shared_storage_result,
+        builtin_fallback_requested=st.session_state.shared_builtin_fallback_confirmed,
+        # A prior partial upload may depend on stale shared values after a failure,
+        # so it is usable only while the complete shared snapshot still validates.
+        session_upload=session_upload_active and (
+            shared_storage_result.ok or st.session_state.shared_builtin_fallback_confirmed
+        ),
+    )
+
+    if shared_storage_result.ok:
+        st.session_state.shared_builtin_fallback_confirmed = False
+        annual_version_id = shared_storage_result.annual.version["version_id"]
+        if (
+            st.session_state.get("loaded_shared_annual_version_id") != annual_version_id
+            or not previous_shared_snapshot_valid
+            or "hydrology_df" not in st.session_state
+            or "demand_df" not in st.session_state
+        ):
+            apply_shared_annual_data(
+                shared_storage_result,
+                preserve_hydrology=bool(st.session_state.hydrology_session_upload),
+                preserve_demand=bool(st.session_state.demand_session_upload),
+            )
+            st.session_state.loaded_shared_annual_version_id = annual_version_id
+            if st.session_state.get("v2_batch_results"):
+                invalidate_session_results(st.session_state)
+        st.session_state.shared_snapshot_valid = True
+    elif source_decision.mode is DataSourceMode.BUILTIN_FALLBACK:
+        if st.session_state.get("active_data_source_mode") != DataSourceMode.BUILTIN_FALLBACK.value:
+            st.session_state.hydrology_df = embedded_hydrology_frame()
+            st.session_state.demand_df = embedded_demand_frame()
+            st.session_state.max_capacity = 11584.0
+            st.session_state.shilin_eco_flow = 2.7
+            st.session_state.liyutan_eco_flow = 0.3
+            st.session_state.shilin_diversion_limit = 33.0
+            st.session_state.hydrology_source_status = "內建備援標準流量（非正式）"
+            st.session_state.demand_source_status = "內建備援出流需求（非正式）"
+            st.session_state.hydrology_session_upload = False
+            st.session_state.demand_session_upload = False
+            if st.session_state.get("v2_batch_results"):
+                invalidate_session_results(st.session_state)
+        st.session_state.shared_snapshot_valid = False
+    else:
+        st.session_state.shared_snapshot_valid = False
+else:
+    # Explicit compatibility mode is the pre-shared-storage behavior, not an
+    # automatic fallback from a failed shared-storage read.
+    compatibility_needs_initialization = (
+        previous_shared_mode_enabled is not False
         or "hydrology_df" not in st.session_state
         or "demand_df" not in st.session_state
-    ):
-        apply_shared_annual_data(
-            shared_storage_result,
-            preserve_hydrology=bool(st.session_state.hydrology_session_upload),
-            preserve_demand=bool(st.session_state.demand_session_upload),
-        )
-        st.session_state.loaded_shared_annual_version_id = annual_version_id
-        if st.session_state.get("v2_batch_results"):
-            invalidate_session_results(st.session_state)
-    st.session_state.shared_snapshot_valid = True
-elif source_decision.mode is DataSourceMode.BUILTIN_FALLBACK:
-    if st.session_state.get("active_data_source_mode") != DataSourceMode.BUILTIN_FALLBACK.value:
+    )
+    if compatibility_needs_initialization:
         st.session_state.hydrology_df = embedded_hydrology_frame()
         st.session_state.demand_df = embedded_demand_frame()
         st.session_state.max_capacity = 11584.0
         st.session_state.shilin_eco_flow = 2.7
         st.session_state.liyutan_eco_flow = 0.3
         st.session_state.shilin_diversion_limit = 33.0
-        st.session_state.hydrology_source_status = "內建備援標準流量（非正式）"
-        st.session_state.demand_source_status = "內建備援出流需求（非正式）"
+        st.session_state.hydrology_source_status = "內建年度標準流量（相容模式）"
+        st.session_state.demand_source_status = "內建年度出流需求（相容模式）"
         st.session_state.hydrology_session_upload = False
         st.session_state.demand_session_upload = False
         if st.session_state.get("v2_batch_results"):
             invalidate_session_results(st.session_state)
     st.session_state.shared_snapshot_valid = False
-else:
-    st.session_state.shared_snapshot_valid = False
+    session_upload_active = bool(
+        st.session_state.hydrology_session_upload or st.session_state.demand_session_upload
+    )
+    source_decision = compatibility_data_source(session_upload=session_upload_active)
 
 st.session_state.active_data_source_mode = source_decision.mode.value
-st.session_state.formal_operations_available = source_decision.formal_operations_available
+st.session_state.shared_storage_mode_enabled = shared_storage_mode_enabled
+st.session_state.shared_storage_readable = source_decision.shared_storage_readable
+st.session_state.formal_write_available = source_decision.formal_write_available
+# Legacy key retained for later stages; stage 2-3 never provides formal writes.
+st.session_state.formal_operations_available = False
 
 # 時間區間初始化
 if "display_start_date" not in st.session_state:
@@ -731,9 +772,20 @@ if "scenarios" not in st.session_state:
 
 st.title("💧 鯉魚潭水庫庫容推估系統")
 
-if shared_storage_result.ok:
+if not shared_storage_mode_enabled:
+    st.info(
+        "ℹ️ 目前為相容模式：共享資料功能尚未啟用，沿用既有內建年度資料。"
+        "此模式僅供正式本機共享系統切換前的過渡用途。"
+    )
+    if source_decision.mode is DataSourceMode.SESSION_UPLOAD:
+        st.warning(
+            "⚠️ 本次試算目前使用工作階段上傳資料，屬非正式資料；"
+            "不可冒充共享正式版本，正式寫入功能不可用。"
+        )
+elif shared_storage_result.ok:
     annual = shared_storage_result.annual
     st.success("✅ 已連線到共享正式資料，年度資料完整驗證成功。")
+    st.caption("共享資料狀態：可讀（完整驗證成功）｜正式寫入：不可用（2-3 僅提供唯讀載入）")
     st.caption(f"共享資料讀取時間：{shared_storage_result.read_at}")
     source_cols = st.columns(4)
     source_cols[0].metric("水庫", shared_storage_result.system["display_name"])
@@ -1236,6 +1288,7 @@ with tab_inflow:
                         st.session_state.hydrology_df = validated_data
                         st.session_state.hydrology_source_status = f"工作階段上傳：{file_name}（非正式）"
                         st.session_state.hydrology_session_upload = True
+                        st.session_state.formal_write_available = False
                         st.session_state.formal_operations_available = False
                         invalidate_session_results(st.session_state)
                         st.toast("水文資料已套用於本次工作階段（非正式）。", icon="⚠️")
@@ -1278,14 +1331,18 @@ with tab_inflow:
                 
             # 重設按鈕常駐顯示
             if st.button("🔄 還原目前基準水文資料", use_container_width=True, type="secondary"):
-                if shared_storage_result.ok:
+                if shared_storage_mode_enabled and shared_storage_result.ok:
                     st.session_state.hydrology_df = shared_hydrology_frame(shared_storage_result.annual.hydrology)
                     st.session_state.hydrology_source_status = (
                         f"共享正式版本 {shared_storage_result.annual.version['version_id']}"
                     )
                 else:
                     st.session_state.hydrology_df = embedded_hydrology_frame()
-                    st.session_state.hydrology_source_status = "內建備援標準流量（非正式）"
+                    st.session_state.hydrology_source_status = (
+                        "內建年度標準流量（相容模式）"
+                        if not shared_storage_mode_enabled
+                        else "內建備援標準流量（非正式）"
+                    )
                 st.session_state.hydrology_session_upload = False
                 invalidate_session_results(st.session_state)
                 st.toast("已還原目前基準水文資料。", icon="🔄")
@@ -1682,6 +1739,7 @@ with tab_outflow:
                         st.session_state.demand_df = validated_data
                         st.session_state.demand_source_status = f"工作階段上傳：{file_name}（非正式）"
                         st.session_state.demand_session_upload = True
+                        st.session_state.formal_write_available = False
                         st.session_state.formal_operations_available = False
                         invalidate_session_results(st.session_state)
                         st.toast("出流需求已套用於本次工作階段（非正式）。", icon="⚠️")
@@ -1724,14 +1782,18 @@ with tab_outflow:
                 
             # 重設按鈕常駐顯示
             if st.button("🔄 還原目前基準出流需求", use_container_width=True, type="secondary"):
-                if shared_storage_result.ok:
+                if shared_storage_mode_enabled and shared_storage_result.ok:
                     st.session_state.demand_df = shared_demand_frame(shared_storage_result.annual.outflow_demand)
                     st.session_state.demand_source_status = (
                         f"共享正式版本 {shared_storage_result.annual.version['version_id']}"
                     )
                 else:
                     st.session_state.demand_df = embedded_demand_frame()
-                    st.session_state.demand_source_status = "內建備援出流需求（非正式）"
+                    st.session_state.demand_source_status = (
+                        "內建年度出流需求（相容模式）"
+                        if not shared_storage_mode_enabled
+                        else "內建備援出流需求（非正式）"
+                    )
                 st.session_state.demand_session_upload = False
                 invalidate_session_results(st.session_state)
                 st.toast("已還原目前基準出流需求。", icon="🔄")

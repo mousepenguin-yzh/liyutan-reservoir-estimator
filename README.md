@@ -14,8 +14,8 @@
 - 完整設定可下載／載入具版本的 JSON；載入先驗證、預覽及確認，且不攜帶舊演算結果。
 - 可測的 V2 資料結構、驗證、設定交換及批次演算邏輯已拆至 `v2_workflow.py`，介面仍位於 `app.py`。
 - 第二階段 2-2 已完成 `shared_storage_schema.py` 純邏輯：正式 JSON／CSV schema、穩定序列化、SHA-256、設定指紋、年度資料與正式推估版本包驗證；合成測試位於 `tests/test_shared_storage_schema.py`。
-- 第二階段 2-3 已完成 `shared_storage_reader.py` 唯讀載入：透過 `LIYUTAN_SHARED_ROOT` 讀取並完整驗證目前年度版本及最近正式推估；不建立、修改、重新命名或刪除共享檔案。
-- 年度標準水文及出流需求仍內嵌於 `app.py`，但只在使用者明確選擇「內建備援資料」後作為非正式試算來源。
+- 第二階段 2-3 已完成 `shared_storage_reader.py` 唯讀載入：明確設定 `LIYUTAN_ENABLE_SHARED_STORAGE=1` 後，透過 `LIYUTAN_SHARED_ROOT` 讀取並完整驗證目前年度版本及最近正式推估；不建立、修改、重新命名或刪除共享檔案。
+- 共享功能尚未啟用時，既有線上 Streamlit 網站維持內建年度資料的相容模式；共享功能啟用後若讀取失敗，則只有使用者明確選擇「內建備援資料」後才能進行非正式試算。
 - 使用者可在網頁上傳年度資料，但只會套用於當次 Streamlit 工作階段，並持續標示為非正式資料，不會永久更新共享正式資料。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
@@ -152,24 +152,28 @@ streamlit run app.py
 
 ### 共享資料來源設定
 
-啟動 Streamlit 前設定環境變數 `LIYUTAN_SHARED_ROOT`。Windows PowerShell 範例：
+共享資料功能必須以 `LIYUTAN_ENABLE_SHARED_STORAGE=1` 明確啟用，並同時設定 `LIYUTAN_SHARED_ROOT`。Windows PowerShell 範例：
 
 ```powershell
+$env:LIYUTAN_ENABLE_SHARED_STORAGE = '1'
 $env:LIYUTAN_SHARED_ROOT = 'U:\經管科\水庫庫容推估系統\鯉魚潭'
 streamlit run app.py
 ```
 
-程式不會猜測其他路徑。未設定、磁碟或路徑不存在、權限不足、schema 錯誤、缺檔、manifest 或 checksum 驗證失敗時，畫面會顯示失敗類型及一般使用者可理解的處理訊息，不會自動使用舊快取或內建資料。
+未將 `LIYUTAN_ENABLE_SHARED_STORAGE` 設為精確字串 `1` 時，程式完全不讀取共享路徑，並維持 PR #8 合併前既有網站的內建年度資料操作方式。這是現有線上 Streamlit 網站在正式本機系統切換前的明確相容模式，不代表共享讀取失敗後的自動備援。未來桌面啟動器會同時設定功能開關與正式共享路徑；桌面啟動器本身不屬於 2-3 範圍。
+
+共享模式啟用後，程式不會猜測其他路徑。未設定共享根目錄、磁碟或路徑不存在、權限不足、schema 錯誤、缺檔、manifest 或 checksum 驗證失敗時，畫面會顯示失敗類型及一般使用者可理解的處理訊息，不會自動使用舊快取或內建資料。
 
 資料來源分為：
 
 | 資料來源 | 性質 | 行為 |
 | --- | --- | --- |
+| 相容模式內建年度資料 | 過渡用途 | 僅在共享功能開關未啟用時沿用既有網站行為；不讀取共享路徑，也不具正式寫入資格 |
 | 共享正式年度資料 | 正式 | `system.json`、current、版本目錄、完整 Q5～Q95、出流需求、水庫參數、manifest 與 checksum 全部通過後才整組使用 |
 | 工作階段上傳資料 | 非正式 | 只影響目前 Streamlit 工作階段；畫面持續警示，不能冒充共享正式版本 |
-| 內建備援資料 | 非正式 | 共享讀取失敗後，只有使用者明確點選備援按鈕才會啟用 |
+| 內建備援資料 | 非正式 | 已啟用共享模式但讀取失敗後，只有使用者明確點選備援按鈕才會啟用 |
 
-2-3 階段只有讀取能力，不會修改共享根目錄，也沒有年度發布、正式推估保存或假的成功流程。正式共享資料內容不得加入 Git；開發及自動化測試一律使用 pytest 暫存資料夾與合成資料。
+2-3 階段只提供正式資料讀取能力：完整驗證成功時 `shared_storage_readable=True`，但 `formal_write_available=False` 始終不變。此階段不驗證寫入權限、SMB 排他鎖、暫存檔、同目錄 rename／replace、revision 衝突或正式發布流程，不會修改共享根目錄，也沒有年度發布、正式推估保存或假的成功流程。正式共享資料內容不得加入 Git；開發及自動化測試一律使用 pytest 暫存資料夾與合成資料。
 
 ## 自動化測試
 
@@ -178,7 +182,7 @@ python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_st
 python -m pytest -q
 ```
 
-測試另涵蓋共享資料完整載入、無正式推估、路徑與權限錯誤、JSON／CSV、manifest、checksum、reservoir ID、安全版本路徑、current 競爭變更，以及必須明確選擇的非正式備援模式。所有共享資料測試只使用 pytest `tmp_path`。
+測試另涵蓋共享資料完整載入、無正式推估、路徑與權限錯誤、JSON／CSV、manifest、checksum、reservoir ID、安全版本路徑、current 競爭變更，以及 Streamlit 相容模式、共享模式與必須明確選擇的非正式備援模式。所有共享資料與 AppTest 測試只使用 pytest `tmp_path` 及合成資料。
 
 Repository 亦包含 `.github/workflows/tests.yml`，每次 push 與 Pull Request 都會使用 Python 3.12 執行 compileall 與完整 pytest 測試。
 
