@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：第二階段第一步，文件規格定稿；功能尚未實作
+狀態：第二階段 2-3 共享資料唯讀啟動已實作；正式寫入功能尚未實作
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -555,13 +555,23 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 ### 2-3：共享資料唯讀啟動與失敗降級
 
+狀態：已完成（2026-09-03 更新相容模式保護）。實作位於 `shared_storage_reader.py`，Streamlit 狀態整合位於 `app.py`，合成與 AppTest 測試位於 `tests/test_shared_storage_reader.py` 及 `tests/test_app_shared_storage_integration.py`。
+
 範圍：讀取 `system.json`、current 與完整版本；顯示資料來源狀態；提供明確的內建資料非正式模式。
+
+只有環境變數 `LIYUTAN_ENABLE_SHARED_STORAGE` 的值精確為 `1` 時才啟用嚴格共享流程，並由 `LIYUTAN_SHARED_ROOT` 指定共享根目錄；未設定根目錄時不得猜測路徑。功能開關未啟用時完全不呼叫 reader，既有線上 Streamlit 網站使用內建年度資料的明確相容模式，作為正式本機共享系統切換前的過渡措施。未來桌面啟動器會同時設定功能開關與正式共享路徑。
+
+共享模式一旦啟用，讀取失敗時不得無提示退回內建資料；只有使用者明確點選備援後才能開放非正式工作區。reader 僅執行讀取，不建立、修改、重新命名或刪除共享資料。開發與自動化測試只可使用 pytest 暫存目錄及合成資料。
+
+狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`；2-3 尚未實作或驗證任何正式寫入流程，因此所有資料來源的 `formal_write_available=False`，相容用的 `formal_operations_available` 亦固定為 `False`。只有後續 2-4／2-5 完成寫入權限、SMB 鎖定、原子取代、revision 衝突與正式發布驗證後，才能定義正式寫入可用條件。
 
 驗收：
 
 - 可從測試共享目錄讀取啟用年度資料與最近正式推估。
+- 功能開關未啟用時不讀取共享路徑，既有五步驟網站可正常使用。
 - `U:` 不存在、唯讀、schema 錯誤、缺檔及 checksum 錯誤均有明確訊息。
-- 失敗時正式保存與年度更新不可用，且不會讀取舊快取或偷偷改存本機。
+- 共享模式失敗時正式保存與年度更新不可用，且不會讀取舊快取、無提示載入內建資料或偷偷改存本機。
+- AppTest 驗證相容模式、有效共享資料、未設定共享根目錄及使用者明確備援四條實際 `app.py` 接線。
 
 ### 2-4：年度資料新增版本與啟用
 
