@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：第二階段 2-3 共享資料唯讀啟動已實作；正式寫入功能尚未實作
+狀態：第二階段 2-4B Excel 解析、驗證及差異預覽已實作；2-4C 正式寫入功能尚未實作
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -44,6 +44,10 @@ GitHub 只保存程式、測試、文件，以及不含公司正式資料的範�
 - 不以 Google Sheet、個人雲端硬碟、本機快取或本機任意資料夾取代正式共享根目錄。
 
 ## 3. 資料分級與權威來源
+
+介面用語以「系統基準資料」或「年度基準資料」稱呼技術目錄 `annual-data` 的內容。系統基準資料是所有新推估共用的預設 Q 值、年度基準出流及水庫參數；正式推估版本則保存某一次推估的完整條件與結果。單次推估的自訂入流、出流、抗旱調度及臨時參數不會反向修改系統基準。一般每旬推估不需要重新填寫年度 Excel，只有初次建立或日後更新系統基準時才使用。
+
+`系統基準資料＋本次推估調整＋計算結果＝正式推估版本`
 
 | 資料類別 | 權威來源 | 是否正式 | 保存原則 |
 | --- | --- | --- | --- |
@@ -536,8 +540,11 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 - 未來公版 Excel 必須有範本版本欄位、固定工作表／欄名、明確單位、36 旬完整性驗證、重複旬與缺漏提示、非數字／負值／未知欄位錯誤提示。
 - 2-4A 已提供可重複執行的空白公版產生器；公版固定包含 `版本資訊`、`水文Q值`、`年度基準出流`、`水庫參數`，並以穩定機器代碼搭配中文名稱。所有業務數值留白，不能視為已發布或已啟用的年度資料。
 - 上傳後必須先顯示解析與差異預覽，再由使用者確認轉成新的正式 JSON／CSV 版本；不得直接覆蓋啟用版本。
+- 2-4B 已提供獨立、無 Streamlit 相依的 Excel 解析器，以及「系統基準資料維護－Excel驗證與差異預覽」介面。解析成功只建立記憶體候選資料及標準 JSON／CSV bytes；上傳內容不套用至目前推估工作區。
+- 2-4B 預覽固定標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」；只有 `system.json` 已完整驗證且 `annual-data/current.json` 確實不存在時，才能確認沒有啟用年度版本並顯示第一版完整預覽。相容模式、根目錄未設定／不存在／無權限、`system.json` 尚未初始化、讀取失敗、資料損壞或版本不一致時，只能顯示候選內容並說明無法確認正式環境是否存在舊版，不得產生不可靠的新舊差異。
+- 水庫參數的數值、適用起日、來源及備註都屬主要差異比較內容。候選位置固定為 `AnnualDataCandidate.parameter_metadata[parameter_code]`，其中包含 `effective_start_date`、`source_reference` 與 `note`；供後續正式版本比較的相容位置為年度版本物件同層的 `parameter_metadata`。舊版未提供 metadata 時，預覽顯示「舊版未記錄」並計入變更。本約定不代表 2-4B 已修改正式 schema 或實作寫入。
 - 下載的 Excel 是正式 JSON／CSV 資料或演算結果的衍生產品，必須標示來源版本 ID，但不得反過來成為權威資料。
-- 2-4A 只將可重建公版的程式、測試與文件提交 Git；實際產生的 Excel 及使用者填寫內容不得提交 GitHub。
+- 2-4A／2-4B 只將程式、合成測試與文件提交 Git；實際產生的 Excel、使用者填寫內容、正式業務數值、畫面截圖及驗證輸出不得提交 GitHub。
 
 ## 18. 後續開發階段與獨立驗收條件
 
@@ -564,7 +571,7 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 共享模式一旦啟用，讀取失敗時不得無提示退回內建資料；只有使用者明確點選備援後才能開放非正式工作區。reader 僅執行讀取，不建立、修改、重新命名或刪除共享資料。開發與自動化測試只可使用 pytest 暫存目錄及合成資料。
 
-狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`；2-3 尚未實作或驗證任何正式寫入流程，因此所有資料來源的 `formal_write_available=False`，相容用的 `formal_operations_available` 亦固定為 `False`。只有後續 2-4／2-5 完成寫入權限、SMB 鎖定、原子取代、revision 衝突與正式發布驗證後，才能定義正式寫入可用條件。
+狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`；2-4B 仍未實作或驗證任何正式寫入流程，因此所有資料來源的 `formal_write_available=False`，相容用的 `formal_operations_available` 亦固定為 `False`。只有後續 2-4C／2-5 完成寫入權限、SMB 鎖定、原子取代、revision 衝突與正式發布驗證後，才能定義正式寫入可用條件。
 
 驗收：
 
@@ -581,10 +588,10 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 本階段拆分如下，且 2-4 整體尚未完成：
 
 - 2-4A（已完成）：只建立可重複產生的空白年度資料 Excel 公版、暫存目錄自動化測試及使用說明。Excel 只供人工填寫與交換，不是正式權威資料。
-- 2-4B（未實作）：Excel 正式解析、完整 schema 驗證及差異預覽。
+- 2-4B（已完成）：Excel 解析、完整內容驗證、記憶體候選資料、穩定 fingerprint、目前啟用年度版本差異預覽，以及在系統資料已驗證且 annual current 確實缺少時的第一版完整預覽。無法讀取或尚未初始化共享資料時只顯示候選內容，不宣稱沒有舊版。這不等同正式發布或啟用。
 - 2-4C（未實作）：正式 JSON／CSV 版本發布、current 啟用、SMB 寫入鎖、revision 衝突、audit、staging 及 quarantine。
 
-2-4A 不建立 `system.json`、`annual-data/current.json` 或任何看似已啟用的正式資料結構，也不開放正式共享根目錄寫入。
+2-4A／2-4B 不建立 `system.json`、`annual-data/current.json`、`COMMITTED.json` 或任何看似已啟用的正式資料結構，也不開放正式共享根目錄寫入；`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
 
 驗收：
 
