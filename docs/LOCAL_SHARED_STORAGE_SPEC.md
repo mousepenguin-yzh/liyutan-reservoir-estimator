@@ -534,9 +534,10 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 - 不含正式公司資料的空白 Excel 範本可放 GitHub。
 - 真正的年度資料、來源附件及正式推估成果只放公司內網共享資料夾，不提交 GitHub。
 - 未來公版 Excel 必須有範本版本欄位、固定工作表／欄名、明確單位、36 旬完整性驗證、重複旬與缺漏提示、非數字／負值／未知欄位錯誤提示。
+- 2-4A 已提供可重複執行的空白公版產生器；公版固定包含 `版本資訊`、`水文Q值`、`年度基準出流`、`水庫參數`，並以穩定機器代碼搭配中文名稱。所有業務數值留白，不能視為已發布或已啟用的年度資料。
 - 上傳後必須先顯示解析與差異預覽，再由使用者確認轉成新的正式 JSON／CSV 版本；不得直接覆蓋啟用版本。
 - 下載的 Excel 是正式 JSON／CSV 資料或演算結果的衍生產品，必須標示來源版本 ID，但不得反過來成為權威資料。
-- 本 PR 不建立任何 Excel 檔。
+- 2-4A 只將可重建公版的程式、測試與文件提交 Git；實際產生的 Excel 及使用者填寫內容不得提交 GitHub。
 
 ## 18. 後續開發階段與獨立驗收條件
 
@@ -576,6 +577,14 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 ### 2-4：年度資料新增版本與啟用
 
 範圍：Excel 解析預覽、正式 JSON／CSV 產生、版本發布、年度 current revision、鎖定、衝突與 audit。
+
+本階段拆分如下，且 2-4 整體尚未完成：
+
+- 2-4A（已完成）：只建立可重複產生的空白年度資料 Excel 公版、暫存目錄自動化測試及使用說明。Excel 只供人工填寫與交換，不是正式權威資料。
+- 2-4B（未實作）：Excel 正式解析、完整 schema 驗證及差異預覽。
+- 2-4C（未實作）：正式 JSON／CSV 版本發布、current 啟用、SMB 寫入鎖、revision 衝突、audit、staging 及 quarantine。
+
+2-4A 不建立 `system.json`、`annual-data/current.json` 或任何看似已啟用的正式資料結構，也不開放正式共享根目錄寫入。
 
 驗收：
 
