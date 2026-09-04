@@ -26,6 +26,8 @@ SHARED_ROOT_SCHEMA = "liyutan-reservoir-estimator/shared-root"
 ANNUAL_VERSION_SCHEMA = "liyutan-reservoir-estimator/annual-data-version"
 RESERVOIR_PARAMETERS_SCHEMA = "liyutan-reservoir-estimator/reservoir-parameters"
 ANNUAL_CURRENT_SCHEMA = "liyutan-reservoir-estimator/annual-data-current"
+AUDIT_EVENT_SCHEMA = "liyutan-reservoir-estimator/audit-event"
+ANNUAL_ACTIVATION_EVENT_TYPE = "annual-data-activation"
 OFFICIAL_ESTIMATE_SCHEMA = "liyutan-reservoir-estimator/official-estimate-version"
 OFFICIAL_INPUTS_SCHEMA = "liyutan-reservoir-estimator/official-inputs"
 OFFICIAL_CURRENT_SCHEMA = "liyutan-reservoir-estimator/official-estimate-current"
@@ -616,6 +618,81 @@ def validate_annual_current(data: Any) -> dict:
 
 def validate_official_current(data: Any) -> dict:
     return _validate_current(data, OFFICIAL_CURRENT_SCHEMA, "official-estimates/current.json")
+
+
+def validate_software_metadata(data: Any, label: str = "software") -> dict:
+    """Validate caller-supplied software provenance without inspecting Git."""
+    software = _mapping(data, label)
+    _exact_fields(
+        software,
+        ("repository", "git_commit", "app_version", "source_tree_dirty"),
+        label,
+    )
+    _string(software["repository"], f"{label}.repository")
+    git_commit = _string(software["git_commit"], f"{label}.git_commit")
+    if not _GIT_SHA_RE.fullmatch(git_commit):
+        _fail(f"{label}.git_commit 必須是 40 字元小寫 commit SHA")
+    _string(software["app_version"], f"{label}.app_version")
+    if not isinstance(software["source_tree_dirty"], bool):
+        _fail(f"{label}.source_tree_dirty 必須是 boolean")
+    return copy.deepcopy(software)
+
+
+def validate_annual_activation_audit_event(data: Any) -> dict:
+    """Validate one successful annual-data current activation audit event."""
+    label = "annual activation audit event"
+    item = _schema(data, AUDIT_EVENT_SCHEMA, label)
+    fields = (
+        "schema",
+        "schema_version",
+        "event_id",
+        "event_type",
+        "occurred_at",
+        "annual_target_version_id",
+        "before_revision",
+        "before_current_version_id",
+        "after_revision",
+        "after_current_version_id",
+        "operator_display_name",
+        "note",
+        "result",
+        "software",
+        "diagnostics",
+    )
+    _exact_fields(item, fields, label)
+    validate_safe_id(item["event_id"], f"{label}.event_id")
+    if item["event_type"] != ANNUAL_ACTIVATION_EVENT_TYPE:
+        _fail(f"{label}.event_type 必須是 {ANNUAL_ACTIVATION_EVENT_TYPE}")
+    _timestamp(item["occurred_at"], f"{label}.occurred_at")
+    target = validate_safe_id(
+        item["annual_target_version_id"], f"{label}.annual_target_version_id"
+    )
+    before_revision = _integer(item["before_revision"], f"{label}.before_revision", 0)
+    before_id = _optional_safe_id(
+        item["before_current_version_id"], f"{label}.before_current_version_id"
+    )
+    after_revision = _integer(item["after_revision"], f"{label}.after_revision", 1)
+    after_id = validate_safe_id(
+        item["after_current_version_id"], f"{label}.after_current_version_id"
+    )
+    if (before_revision == 0) != (before_id is None):
+        _fail(f"{label} 的 before revision 與 current version 狀態不一致")
+    if after_revision != before_revision + 1:
+        _fail(f"{label}.after_revision 必須等於 before_revision + 1")
+    if after_id != target:
+        _fail(f"{label}.after_current_version_id 必須等於 annual_target_version_id")
+    if before_id == target:
+        _fail(f"{label} 不得把 already-current 記錄成成功啟用")
+    _string(item["operator_display_name"], f"{label}.operator_display_name")
+    _string(item["note"], f"{label}.note")
+    if item["result"] != "success":
+        _fail(f"{label}.result 必須是 success")
+    validate_software_metadata(item["software"], f"{label}.software")
+    diagnostics = _mapping(item["diagnostics"], f"{label}.diagnostics")
+    _exact_fields(diagnostics, ("hostname", "process_id"), f"{label}.diagnostics")
+    _string(diagnostics["hostname"], f"{label}.diagnostics.hostname")
+    _integer(diagnostics["process_id"], f"{label}.diagnostics.process_id", 1)
+    return copy.deepcopy(item)
 
 
 def validate_committed(
