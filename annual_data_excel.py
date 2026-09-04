@@ -49,6 +49,8 @@ from scripts.create_annual_data_template import (
 
 
 PREVIEW_NOTICE = "僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。"
+PARAMETER_METADATA_KEY = "parameter_metadata"
+OLD_VALUE_NOT_RECORDED = "舊版未記錄"
 
 VERSION_HEADERS = ("欄位代碼", "中文名稱", "值", "單位／格式", "填寫說明")
 VERSION_FIELDS = (
@@ -741,20 +743,40 @@ def parse_annual_data_excel(
         workbook.close()
 
 
-def _baseline_parts(current: Any) -> tuple[dict[str, Any], tuple[dict[str, Any], ...], tuple[dict[str, Any], ...], dict[str, Any]]:
+def _baseline_parts(
+    current: Any,
+) -> tuple[
+    dict[str, Any],
+    tuple[dict[str, Any], ...],
+    tuple[dict[str, Any], ...],
+    dict[str, Any],
+    dict[str, dict[str, Any]],
+]:
     if hasattr(current, "version"):
+        parameter_metadata = getattr(current, PARAMETER_METADATA_KEY, {})
         return (
             dict(current.version),
             tuple(dict(row) for row in current.hydrology),
             tuple(dict(row) for row in current.outflow_demand),
             dict(current.reservoir_parameters),
+            {
+                str(code): dict(metadata)
+                for code, metadata in dict(parameter_metadata or {}).items()
+                if isinstance(metadata, Mapping)
+            },
         )
     if isinstance(current, Mapping):
+        parameter_metadata = current.get(PARAMETER_METADATA_KEY, {})
         return (
             dict(current.get("version", {})),
             tuple(dict(row) for row in current.get("hydrology", ())),
             tuple(dict(row) for row in current.get("outflow_demand", ())),
             dict(current.get("reservoir_parameters", {})),
+            {
+                str(code): dict(metadata)
+                for code, metadata in dict(parameter_metadata or {}).items()
+                if isinstance(metadata, Mapping)
+            },
         )
     raise TypeError("目前年度版本必須是 AnnualDataSnapshot、mapping 或 None。")
 
@@ -769,10 +791,23 @@ def _number_or_original(value: Any) -> Any:
     return number if math.isfinite(number) else value
 
 
-def _difference_item(section: str, key: str, field: str, old: Any, new: Any, first: bool) -> DifferenceItem:
-    old_normalized = _number_or_original(old)
+def _difference_item(
+    section: str,
+    key: str,
+    field: str,
+    old: Any,
+    new: Any,
+    first: bool,
+    *,
+    old_recorded: bool = True,
+) -> DifferenceItem:
+    old_normalized = (
+        OLD_VALUE_NOT_RECORDED
+        if not first and not old_recorded
+        else _number_or_original(old)
+    )
     new_normalized = _number_or_original(new)
-    changed = True if first else old_normalized != new_normalized
+    changed = True if first or not old_recorded else old_normalized != new_normalized
     delta = None
     if isinstance(old_normalized, (int, float)) and isinstance(new_normalized, (int, float)):
         delta = float(new_normalized) - float(old_normalized)
@@ -787,8 +822,15 @@ def compare_annual_data(candidate: AnnualDataCandidate, current: Any | None) -> 
         old_hydrology: tuple[dict[str, Any], ...] = ()
         old_outflow: tuple[dict[str, Any], ...] = ()
         old_parameters: dict[str, Any] = {}
+        old_parameter_metadata: dict[str, dict[str, Any]] = {}
     else:
-        old_version, old_hydrology, old_outflow, old_parameters = _baseline_parts(current)
+        (
+            old_version,
+            old_hydrology,
+            old_outflow,
+            old_parameters,
+            old_parameter_metadata,
+        ) = _baseline_parts(current)
     items: list[DifferenceItem] = []
 
     metadata_fields = (
@@ -816,8 +858,36 @@ def compare_annual_data(candidate: AnnualDataCandidate, current: Any | None) -> 
         for field in OUTFLOW_COLUMNS[3:]:
             items.append(_difference_item("年度基準出流", row["period_key"], field, old_row.get(field), row[field], first))
 
-    for field, _, _ in PARAMETER_DEFINITIONS:
-        items.append(_difference_item("水庫參數", "水庫參數", field, old_parameters.get(field), candidate.reservoir_parameters[field], first))
+    for parameter_code, _, _ in PARAMETER_DEFINITIONS:
+        items.append(
+            _difference_item(
+                "水庫參數",
+                parameter_code,
+                "value",
+                old_parameters.get(parameter_code),
+                candidate.reservoir_parameters[parameter_code],
+                first,
+                old_recorded=parameter_code in old_parameters,
+            )
+        )
+        old_metadata = old_parameter_metadata.get(parameter_code, {})
+        new_metadata = candidate.parameter_metadata[parameter_code]
+        for metadata_field in (
+            "effective_start_date",
+            "source_reference",
+            "note",
+        ):
+            items.append(
+                _difference_item(
+                    "水庫參數",
+                    parameter_code,
+                    metadata_field,
+                    old_metadata.get(metadata_field),
+                    new_metadata.get(metadata_field),
+                    first,
+                    old_recorded=metadata_field in old_metadata,
+                )
+            )
 
     sections = ("基本資訊", "水文Q值", "年度基準出流", "水庫參數")
     totals = {section: sum(item.section == section for item in items) for section in sections}

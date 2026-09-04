@@ -9,6 +9,69 @@ from annual_data_excel import PREVIEW_NOTICE, compare_annual_data, parse_annual_
 from shared_storage_reader import StorageErrorCode
 
 
+def _baseline_context(result, *, shared_mode_enabled: bool):
+    if not shared_mode_enabled:
+        return (
+            "unverified",
+            None,
+            "共享模式未啟用，本次未讀取任何共享路徑；"
+            "無法確認正式環境是否存在舊版。下方只顯示候選內容完整預覽。",
+            "info",
+        )
+    if result is not None and result.ok:
+        return "available", result.annual, None, None
+    if result is None or result.error is None:
+        return (
+            "unverified",
+            None,
+            "正式資料讀取結果不可用，無法確認正式環境是否存在舊版。"
+            "下方只顯示候選內容完整預覽。",
+            "warning",
+        )
+    if result.error.code is StorageErrorCode.ANNUAL_CURRENT_MISSING:
+        # SharedStorageReader can only emit this after system.json has loaded
+        # and passed reservoir/schema validation.
+        return "confirmed_absent", None, None, None
+    if result.error.code is StorageErrorCode.SYSTEM_MISSING:
+        return (
+            "unverified",
+            None,
+            "設定的測試／共享資料根目錄尚未初始化（system.json 不存在）；"
+            "無法確認正式環境是否存在舊版。下方只顯示候選內容完整預覽。",
+            "warning",
+        )
+    return (
+        "unverified",
+        None,
+        f"正式資料來源無法完整讀取（{result.error.code.value}）："
+        f"{result.error.message} 無法確認正式環境是否存在舊版，"
+        "因此不產生新舊差異；下方只顯示候選內容完整預覽。",
+        "error",
+    )
+
+
+def _render_candidate_preview(candidate, *, heading: str) -> None:
+    preview = compare_annual_data(candidate, None)
+    st.subheader(heading)
+    counts = st.columns(4)
+    for column, section in zip(
+        counts,
+        ("基本資訊", "水文Q值", "年度基準出流", "水庫參數"),
+    ):
+        column.metric(section, f"{preview.section_totals[section]} 項")
+    for section in ("基本資訊", "水文Q值", "年度基準出流", "水庫參數"):
+        with st.expander(f"{section}候選內容", expanded=section == "基本資訊"):
+            rows = [
+                {
+                    "資料鍵": row["資料鍵"],
+                    "欄位": row["欄位"],
+                    "候選值": row["新值"],
+                }
+                for row in preview.rows(section, changed_only=False)
+            ]
+            st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
+
+
 def render_annual_data_maintenance(result, *, shared_mode_enabled: bool) -> None:
     """Render the isolated 2-4B preview without mutating estimation workspace data."""
     with st.expander("🧾 系統基準資料維護－Excel驗證與差異預覽", expanded=False):
@@ -93,33 +156,16 @@ def render_annual_data_maintenance(result, *, shared_mode_enabled: bool) -> None
         else:
             st.caption("warnings：0 項")
 
-        baseline = None
-        baseline_damaged = False
-        if shared_mode_enabled and result is not None:
-            if result.ok:
-                baseline = result.annual
-            elif result.error.code not in {
-                StorageErrorCode.ROOT_NOT_FOUND,
-                StorageErrorCode.SYSTEM_MISSING,
-                StorageErrorCode.ANNUAL_CURRENT_MISSING,
-            }:
-                baseline_damaged = True
-                st.error(
-                    "目前啟用的年度基準資料讀取失敗，可能為資料損壞或版本不一致；"
-                    f"無法產生可靠差異（{result.error.code.value}）：{result.error.message}"
-                )
-        elif not shared_mode_enabled:
-            st.info(
-                "共享模式未啟用，因此本區未讀取任何共享路徑；"
-                "下方以第一個候選版本方式完整預覽，但不代表已確認正式環境沒有舊版。"
-            )
+        baseline_state, baseline, message, message_kind = _baseline_context(
+            result,
+            shared_mode_enabled=shared_mode_enabled,
+        )
+        if message:
+            getattr(st, message_kind)(message)
 
-        if not baseline_damaged:
+        if baseline_state == "available":
             difference = compare_annual_data(candidate, baseline)
-            if difference.is_first_version:
-                st.info("這是第一個候選系統基準版本，目前沒有舊版可比較。")
-            else:
-                st.subheader(f"與目前啟用年度版本的差異：共 {difference.total_changes} 項")
+            st.subheader(f"與目前啟用年度版本的差異：共 {difference.total_changes} 項")
             difference_columns = st.columns(4)
             for column, section in zip(
                 difference_columns,
@@ -131,7 +177,7 @@ def render_annual_data_maintenance(result, *, shared_mode_enabled: bool) -> None
                 )
             show_all = st.checkbox(
                 "顯示完整資料（取消勾選時只顯示有變動項目）",
-                value=difference.is_first_version,
+                value=False,
                 key="annual_preview_show_all",
             )
             for section in ("基本資訊", "水文Q值", "年度基準出流", "水庫參數"):
@@ -141,17 +187,14 @@ def render_annual_data_maintenance(result, *, shared_mode_enabled: bool) -> None
                         st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
                     else:
                         st.caption("此區沒有變動。")
-            with st.expander("水庫參數補充 metadata（適用起日、來源與備註）"):
-                st.dataframe(
-                    pd.DataFrame(
-                        [
-                            {"參數代碼": code, **metadata}
-                            for code, metadata in candidate.parameter_metadata.items()
-                        ]
-                    ),
-                    hide_index=True,
-                    width="stretch",
-                )
+        elif baseline_state == "confirmed_absent":
+            st.info("這是第一個候選系統基準版本，目前沒有舊版可比較。")
+            _render_candidate_preview(candidate, heading="第一版候選內容完整預覽")
+        else:
+            _render_candidate_preview(
+                candidate,
+                heading="候選內容完整預覽（未與舊版比較）",
+            )
 
         st.button("建立版本（2-4C 尚未實作）", disabled=True, key="annual_create_valid")
         st.button("啟用版本（2-4C 尚未實作）", disabled=True, key="annual_activate_valid")

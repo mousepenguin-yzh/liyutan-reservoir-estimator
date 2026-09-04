@@ -17,7 +17,7 @@
 - 第二階段 2-3 已完成 `shared_storage_reader.py` 唯讀載入：明確設定 `LIYUTAN_ENABLE_SHARED_STORAGE=1` 後，透過 `LIYUTAN_SHARED_ROOT` 讀取並完整驗證目前年度版本及最近正式推估；不建立、修改、重新命名或刪除共享檔案。
 - 共享功能尚未啟用時，既有線上 Streamlit 網站維持內建年度資料的相容模式；共享功能啟用後若讀取失敗，則只有使用者明確選擇「內建備援資料」後才能進行非正式試算。
 - 第二階段 2-4A 已新增 `scripts/create_annual_data_template.py`，可用明確的 `--output` 產生四張工作表、固定36旬且所有業務數值留白的年度資料 Excel 公版；Excel 僅供人工填寫及交換，不是正式權威資料。
-- 第二階段 2-4B 已新增 `annual_data_excel.py` 純邏輯與 `annual_data_preview_ui.py` 呈現模組，可解析與完整驗證 2-4A.1 Excel、建立記憶體候選資料、計算穩定 fingerprint，並與目前啟用年度版本進行差異預覽；沒有舊版時顯示第一版完整預覽。
+- 第二階段 2-4B 已新增 `annual_data_excel.py` 純邏輯與 `annual_data_preview_ui.py` 呈現模組，可解析與完整驗證 2-4A.1 Excel、建立記憶體候選資料、計算穩定 fingerprint，並與目前啟用年度版本進行差異預覽；只有在 `system.json` 已驗證且 `annual-data/current.json` 確實不存在時，才會確認為第一版完整預覽。
 - 「系統基準資料維護－Excel驗證與差異預覽」只做驗證與預覽，不會把上傳內容套用到目前推估工作區，也不會建立或啟用正式版本。
 - 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非正式資料，不會永久更新共享正式資料。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
@@ -194,7 +194,9 @@ python scripts/create_annual_data_template.py --output "C:\明確指定位置\�
 
 Streamlit 頁面上方提供獨立的「系統基準資料維護－Excel驗證與差異預覽」。使用者必須手動上傳 `.xlsx`；系統不會掃描或自動載入公司資料夾。解析器拒絕未知範本版本、巨集、外部連結、公式、缺少或額外工作表、修改固定機器代碼或旬鍵、未知資料列／欄位，以及不完整、非有限、負值或語意順序錯誤的業務資料。
 
-驗證成功後只在記憶體中建立候選資料，顯示檔案 SHA-256、候選 fingerprint、完整性、warnings，以及與目前已啟用年度版本的舊值、新值與差值。沒有啟用版本時會顯示第一版完整預覽；若共享資料是損壞或版本不一致，則明確阻止不可靠的差異比較。所有畫面均標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」`formal_write_available` 與 `formal_operations_available` 仍為 `False`。
+驗證成功後只在記憶體中建立候選資料，顯示檔案 SHA-256、候選 fingerprint、完整性、warnings，以及與目前已啟用年度版本的舊值、新值與差值。水庫參數的數值、適用起日、來源及備註均納入主要差異筆數與明細；舊版未保存這些 metadata 時會標示「舊版未記錄」，不會誤報完全相同。只有在 `system.json` 已成功驗證且 `annual-data/current.json` 確實不存在時，介面才顯示可確認的第一版完整預覽。相容模式、未設定或無法存取根目錄、`system.json` 尚未初始化，以及權限、損壞或版本不一致等讀取失敗，仍可顯示候選內容，但會明確標示無法確認正式環境是否存在舊版，且不產生看似可靠的新舊差異。所有畫面均標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」`formal_write_available` 與 `formal_operations_available` 仍為 `False`。
+
+供後續 2-4C 使用的候選資料位置約定為 `AnnualDataCandidate.parameter_metadata[parameter_code]`，每項包含 `effective_start_date`、`source_reference` 與 `note`。若未來正式年度版本保存這些欄位，比較器接受同層的 `parameter_metadata` 映射；本階段不更動正式 schema，也不寫入任何版本。
 
 本階段不建立版本目錄，不寫入正式 JSON／CSV、`system.json`、`annual-data/current.json` 或 `COMMITTED.json`，也不實作建立／啟用按鈕。實際公司 Excel、正式業務數值與驗證輸出不得提交 GitHub；正式共享根目錄仍未開放寫入。
 
@@ -205,7 +207,7 @@ python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_st
 python -m pytest -q
 ```
 
-測試另涵蓋 Excel 公版重新載入、2-4B 四表解析、固定欄位與36旬完整性、Q5～Q95 映射與順序、出流與參數驗證、公式／巨集／未知結構拒絕、fingerprint、第一版與既有版本差異，以及共享資料完整載入、無正式推估、路徑與權限錯誤、manifest、checksum、current 競爭變更、Streamlit 工作區隔離與必須明確選擇的非正式備援模式。自動化測試只使用 pytest `tmp_path` 及合成資料，不存取 `U:`。
+測試另涵蓋 Excel 公版重新載入、2-4B 四表解析、固定欄位與36旬完整性、Q5～Q95 映射與順序、出流與參數驗證、公式／巨集／未知結構拒絕、fingerprint、參數 metadata、可確認第一版與既有版本差異，以及共享資料完整載入、未初始化／不可讀狀態、無正式推估、路徑與權限錯誤、manifest、checksum、current 競爭變更、Streamlit 工作區隔離與必須明確選擇的非正式備援模式。自動化測試只使用 pytest `tmp_path` 及合成資料，不存取 `U:`。
 
 Repository 亦包含 `.github/workflows/tests.yml`，每次 push 與 Pull Request 都會使用 Python 3.12 執行 compileall 與完整 pytest 測試。
 

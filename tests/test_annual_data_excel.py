@@ -7,6 +7,8 @@ import pytest
 from openpyxl import load_workbook
 
 from annual_data_excel import (
+    OLD_VALUE_NOT_RECORDED,
+    PARAMETER_METADATA_KEY,
     PREVIEW_NOTICE,
     IssueSeverity,
     candidate_artifacts,
@@ -83,6 +85,7 @@ def _current_from_candidate(candidate):
         "hydrology": copy.deepcopy(candidate.hydrology),
         "outflow_demand": copy.deepcopy(candidate.outflow_demand),
         "reservoir_parameters": copy.deepcopy(candidate.reservoir_parameters),
+        PARAMETER_METADATA_KEY: copy.deepcopy(candidate.parameter_metadata),
     }
 
 
@@ -354,6 +357,7 @@ def test_difference_is_zero_for_identical_content_and_detects_exact_changes():
     assert not same.is_first_version
     assert same.total_changes == 0
     assert same.rows("水文Q值") == []
+    assert same.rows("水庫參數") == []
 
     current["hydrology"][0]["q05_cms"] = float(candidate.hydrology[0]["q05_cms"]) - 1
     current["outflow_demand"][1]["upstream_irrigation_cms"] = 0
@@ -365,6 +369,51 @@ def test_difference_is_zero_for_identical_content_and_detects_exact_changes():
     assert changed.rows("水文Q值")[0]["差值"] == pytest.approx(1)
 
 
+@pytest.mark.parametrize(
+    ("metadata_field", "old_value"),
+    [
+        ("effective_start_date", "2026-12-31"),
+        ("source_reference", "另一份合成依據"),
+        ("note", "另一段合成備註"),
+    ],
+)
+def test_parameter_metadata_only_change_is_counted(metadata_field, old_value):
+    candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    current = _current_from_candidate(candidate)
+    parameter_code = "max_capacity_10k_ton"
+    current[PARAMETER_METADATA_KEY][parameter_code][metadata_field] = old_value
+
+    difference = compare_annual_data(candidate, current)
+
+    assert difference.total_changes == 1
+    assert difference.section_changes["水庫參數"] == 1
+    assert difference.rows("水庫參數") == [
+        {
+            "資料鍵": parameter_code,
+            "欄位": metadata_field,
+            "舊值": old_value,
+            "新值": candidate.parameter_metadata[parameter_code][metadata_field],
+            "差值": None,
+        }
+    ]
+
+
+def test_old_version_without_parameter_metadata_is_not_reported_as_identical():
+    candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    current = _current_from_candidate(candidate)
+    current.pop(PARAMETER_METADATA_KEY)
+
+    difference = compare_annual_data(candidate, current)
+    metadata_rows = [
+        row for row in difference.rows("水庫參數") if row["欄位"] != "value"
+    ]
+
+    assert difference.total_changes == 12
+    assert difference.section_changes["水庫參數"] == 12
+    assert len(metadata_rows) == 12
+    assert {row["舊值"] for row in metadata_rows} == {OLD_VALUE_NOT_RECORDED}
+
+
 def test_no_active_version_builds_first_complete_preview():
     candidate = parse_annual_data_excel(_workbook_bytes()).candidate
     preview = compare_annual_data(candidate, None)
@@ -373,6 +422,9 @@ def test_no_active_version_builds_first_complete_preview():
         "基本資訊": 5,
         "水文Q值": 36 * 19,
         "年度基準出流": 36 * 3,
-        "水庫參數": 4,
+        "水庫參數": 4 * 4,
     }
     assert preview.section_changes == preview.section_totals
+    assert {
+        row["欄位"] for row in preview.rows("水庫參數", changed_only=False)
+    } == {"value", "effective_start_date", "source_reference", "note"}
