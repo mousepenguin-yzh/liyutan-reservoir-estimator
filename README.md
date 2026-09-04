@@ -16,6 +16,7 @@
 - 第二階段 2-2 已完成 `shared_storage_schema.py` 純邏輯：正式 JSON／CSV schema、穩定序列化、SHA-256、設定指紋、年度資料與正式推估版本包驗證；合成測試位於 `tests/test_shared_storage_schema.py`。
 - 第二階段 2-3 已完成 `shared_storage_reader.py` 唯讀載入：明確設定 `LIYUTAN_ENABLE_SHARED_STORAGE=1` 後，透過 `LIYUTAN_SHARED_ROOT` 讀取並完整驗證目前年度版本及最近正式推估；不建立、修改、重新命名或刪除共享檔案。
 - 共享功能尚未啟用時，既有線上 Streamlit 網站維持內建年度資料的相容模式；共享功能啟用後若讀取失敗，則只有使用者明確選擇「內建備援資料」後才能進行非正式試算。
+- 第二階段 2-4A 已新增 `scripts/create_annual_data_template.py`，可用明確的 `--output` 產生四張工作表、固定36旬且所有業務數值留白的年度資料 Excel 公版；Excel 僅供人工填寫及交換，不是正式權威資料。
 - 使用者可在網頁上傳年度資料，但只會套用於當次 Streamlit 工作階段，並持續標示為非正式資料，不會永久更新共享正式資料。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
@@ -130,7 +131,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 正式推估將保存完整輸入、摘要、完整逐日結果、年度資料版本、程式與 schema 版本、操作人、備註、上一版本及 checksum；年度資料將涵蓋 Q5～Q95、出流需求、滿庫容量、生態流量及士林堰 33 cms 引水上限。兩者都採新增版本、不覆蓋舊版。
 
-資料 schema 與共享資料唯讀啟動已完成；後續將依序實作年度版本新增與啟用、正式推估保存、跨裝置接續、桌面捷徑，以及公司實際 SMB 環境的多人與中斷驗收。資料夾結構、寫入鎖、revision 衝突、斷線行為、保存期限、Excel 角色及每階段驗收條件詳見：
+資料 schema、共享資料唯讀啟動及 2-4A 空白 Excel 公版產生器已完成。2-4 整體仍未完成；Excel 正式解析、差異預覽、JSON／CSV 版本發布、啟用、鎖定及 audit 仍屬後續 2-4B／2-4C。之後才會依序實作正式推估保存、跨裝置接續、桌面捷徑，以及公司實際 SMB 環境的多人與中斷驗收。資料夾結構、寫入鎖、revision 衝突、斷線行為、保存期限、Excel 角色及每階段驗收條件詳見：
 
 - [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)
 
@@ -175,14 +176,24 @@ streamlit run app.py
 
 2-3 階段只提供正式資料讀取能力：完整驗證成功時 `shared_storage_readable=True`，但 `formal_write_available=False` 始終不變。此階段不驗證寫入權限、SMB 排他鎖、暫存檔、同目錄 rename／replace、revision 衝突或正式發布流程，不會修改共享根目錄，也沒有年度發布、正式推估保存或假的成功流程。正式共享資料內容不得加入 Git；開發及自動化測試一律使用 pytest 暫存資料夾與合成資料。
 
+### 產生 2-4A 空白年度資料 Excel 公版
+
+產生器必須由使用者明確指定輸出檔案，不會猜測或預設任何共享路徑；若檔案已存在，除非明確加上 `--overwrite`，否則會停止：
+
+```powershell
+python scripts/create_annual_data_template.py --output "C:\明確指定位置\鯉魚潭年度資料匯入範本.xlsx"
+```
+
+公版包含 `版本資訊`、`水文Q值`、`年度基準出流`、`水庫參數` 四張工作表。所有年度、Q 值、出流與參數業務數值均保持空白，只預填技術範本版本、水庫識別、水庫名稱、固定欄位、固定36旬、單位、填寫說明與資料驗證規則。Excel 是人工填寫與交換格式，不能直接當作正式資料來源；正式共享根目錄仍未開放寫入。
+
 ## 自動化測試
 
 ```bash
-python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_storage_reader.py tests
+python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_storage_reader.py scripts tests
 python -m pytest -q
 ```
 
-測試另涵蓋共享資料完整載入、無正式推估、路徑與權限錯誤、JSON／CSV、manifest、checksum、reservoir ID、安全版本路徑、current 競爭變更，以及 Streamlit 相容模式、共享模式與必須明確選擇的非正式備援模式。所有共享資料與 AppTest 測試只使用 pytest `tmp_path` 及合成資料。
+測試另涵蓋 Excel 公版重新載入、四表順序、36 旬、Q5～Q95、出流單位、空白值政策、資料驗證及不覆蓋行為，以及共享資料完整載入、無正式推估、路徑與權限錯誤、JSON／CSV、manifest、checksum、reservoir ID、安全版本路徑、current 競爭變更、Streamlit 相容模式與必須明確選擇的非正式備援模式。自動化測試只使用 pytest `tmp_path` 及合成資料，不存取 `U:`。
 
 Repository 亦包含 `.github/workflows/tests.yml`，每次 push 與 Pull Request 都會使用 Python 3.12 執行 compileall 與完整 pytest 測試。
 
