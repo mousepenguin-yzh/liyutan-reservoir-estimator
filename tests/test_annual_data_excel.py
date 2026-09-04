@@ -398,6 +398,74 @@ def test_parameter_metadata_only_change_is_counted(metadata_field, old_value):
     ]
 
 
+def test_numeric_text_parameter_source_is_compared_as_exact_text():
+    candidate = parse_annual_data_excel(
+        _mutated_bytes(lambda wb: setattr(wb["水庫參數"]["F6"], "value", "115"))
+    ).candidate
+    current = _current_from_candidate(candidate)
+    parameter_code = "max_capacity_10k_ton"
+    current[PARAMETER_METADATA_KEY][parameter_code]["source_reference"] = "0115"
+
+    difference = compare_annual_data(candidate, current)
+
+    assert difference.total_changes == 1
+    assert difference.rows("水庫參數")[0]["舊值"] == "0115"
+    assert difference.rows("水庫參數")[0]["新值"] == "115"
+
+
+def test_scientific_notation_parameter_note_is_compared_as_exact_text():
+    candidate = parse_annual_data_excel(
+        _mutated_bytes(lambda wb: setattr(wb["水庫參數"]["G6"], "value", "1000"))
+    ).candidate
+    current = _current_from_candidate(candidate)
+    parameter_code = "max_capacity_10k_ton"
+    current[PARAMETER_METADATA_KEY][parameter_code]["note"] = "1e3"
+
+    difference = compare_annual_data(candidate, current)
+
+    assert difference.total_changes == 1
+    assert difference.rows("水庫參數")[0]["舊值"] == "1e3"
+    assert difference.rows("水庫參數")[0]["新值"] == "1000"
+
+
+def test_numeric_text_in_basic_metadata_is_compared_as_exact_text():
+    candidate = parse_annual_data_excel(
+        _mutated_bytes(lambda wb: setattr(wb["版本資訊"]["C11"], "value", "115"))
+    ).candidate
+    current = _current_from_candidate(candidate)
+    current["version"]["annual_outflow_source"] = "0115"
+
+    difference = compare_annual_data(candidate, current)
+
+    assert difference.total_changes == 1
+    assert difference.rows("基本資訊") == [
+        {
+            "資料鍵": "年度基準",
+            "欄位": "年度基準出流來源",
+            "舊值": "0115",
+            "新值": "115",
+            "差值": None,
+        }
+    ]
+
+
+def test_csv_numeric_strings_equal_candidate_float_values_without_false_differences():
+    candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    current = _current_from_candidate(candidate)
+    hydrology_field = "q05_cms"
+    outflow_field = "upstream_irrigation_cms"
+    current["hydrology"][1][hydrology_field] = str(
+        candidate.hydrology[1][hydrology_field]
+    )
+    current["outflow_demand"][1][outflow_field] = str(
+        candidate.outflow_demand[1][outflow_field]
+    )
+
+    difference = compare_annual_data(candidate, current)
+
+    assert difference.total_changes == 0
+
+
 def test_old_version_without_parameter_metadata_is_not_reported_as_identical():
     candidate = parse_annual_data_excel(_workbook_bytes()).candidate
     current = _current_from_candidate(candidate)

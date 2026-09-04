@@ -781,7 +781,7 @@ def _baseline_parts(
     raise TypeError("目前年度版本必須是 AnnualDataSnapshot、mapping 或 None。")
 
 
-def _number_or_original(value: Any) -> Any:
+def _normalize_numeric_value(value: Any) -> Any:
     if isinstance(value, bool) or value is None:
         return value
     try:
@@ -800,16 +800,22 @@ def _difference_item(
     first: bool,
     *,
     old_recorded: bool = True,
+    numeric: bool = False,
 ) -> DifferenceItem:
-    old_normalized = (
-        OLD_VALUE_NOT_RECORDED
-        if not first and not old_recorded
-        else _number_or_original(old)
-    )
-    new_normalized = _number_or_original(new)
+    if not first and not old_recorded:
+        old_normalized = OLD_VALUE_NOT_RECORDED
+    elif numeric:
+        old_normalized = _normalize_numeric_value(old)
+    else:
+        old_normalized = old
+    new_normalized = _normalize_numeric_value(new) if numeric else new
     changed = True if first or not old_recorded else old_normalized != new_normalized
     delta = None
-    if isinstance(old_normalized, (int, float)) and isinstance(new_normalized, (int, float)):
+    if (
+        numeric
+        and isinstance(old_normalized, (int, float))
+        and isinstance(new_normalized, (int, float))
+    ):
         delta = float(new_normalized) - float(old_normalized)
     return DifferenceItem(section, key, field, old_normalized, new_normalized, delta, changed)
 
@@ -850,13 +856,33 @@ def compare_annual_data(candidate: AnnualDataCandidate, current: Any | None) -> 
     for row in candidate.hydrology:
         old_row = old_hydrology_by_key.get(row["period_key"], {})
         for field in Q_COLUMNS:
-            items.append(_difference_item("水文Q值", row["period_key"], field, old_row.get(field), row[field], first))
+            items.append(
+                _difference_item(
+                    "水文Q值",
+                    row["period_key"],
+                    field,
+                    old_row.get(field),
+                    row[field],
+                    first,
+                    numeric=True,
+                )
+            )
 
     old_outflow_by_key = {row.get("period_key"): row for row in old_outflow}
     for row in candidate.outflow_demand:
         old_row = old_outflow_by_key.get(row["period_key"], {})
         for field in OUTFLOW_COLUMNS[3:]:
-            items.append(_difference_item("年度基準出流", row["period_key"], field, old_row.get(field), row[field], first))
+            items.append(
+                _difference_item(
+                    "年度基準出流",
+                    row["period_key"],
+                    field,
+                    old_row.get(field),
+                    row[field],
+                    first,
+                    numeric=True,
+                )
+            )
 
     for parameter_code, _, _ in PARAMETER_DEFINITIONS:
         items.append(
@@ -868,6 +894,7 @@ def compare_annual_data(candidate: AnnualDataCandidate, current: Any | None) -> 
                 candidate.reservoir_parameters[parameter_code],
                 first,
                 old_recorded=parameter_code in old_parameters,
+                numeric=True,
             )
         )
         old_metadata = old_parameter_metadata.get(parameter_code, {})
