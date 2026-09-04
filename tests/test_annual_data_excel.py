@@ -95,6 +95,7 @@ def test_generated_template_with_synthetic_values_parses_all_four_sheets():
 
     assert result.ok
     assert result.source_sha256 == sha256_bytes(raw)
+    assert result.candidate.source_filename == "synthetic.xlsx"
     assert result.candidate.template_version == "2-4A.1"
     assert result.candidate.reservoir_id == "liyutan"
     assert result.candidate.applicable_year == 2027
@@ -125,6 +126,7 @@ def test_bytesio_position_is_restored_and_explicit_path_is_not_modified(tmp_path
     assert stream.tell() == 17
     assert stream_result.ok
     assert stream_result.source_sha256 == sha256_bytes(raw)
+    assert stream_result.candidate.source_filename is None
 
     path = tmp_path / "synthetic.xlsx"
     path.write_bytes(raw)
@@ -133,6 +135,18 @@ def test_bytesio_position_is_restored_and_explicit_path_is_not_modified(tmp_path
     after = sha256_bytes(path.read_bytes())
     assert result.ok
     assert before == after == result.source_sha256
+    assert result.candidate.source_filename == "synthetic.xlsx"
+
+
+def test_source_filename_is_provenance_but_not_business_fingerprint():
+    raw = _workbook_bytes()
+    unnamed = parse_annual_data_excel(raw)
+    named = parse_annual_data_excel(raw, filename="renamed-synthetic.xlsx")
+
+    assert unnamed.ok and named.ok
+    assert unnamed.candidate.source_filename is None
+    assert named.candidate.source_filename == "renamed-synthetic.xlsx"
+    assert unnamed.candidate.fingerprint == named.candidate.fingerprint
 
 
 @pytest.mark.parametrize("filename", ["input.xlsm", "input.xls", "input.csv"])

@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：第二階段 2-4B Excel 解析、驗證及差異預覽已實作；2-4C 正式寫入功能尚未實作
+狀態：第二階段 2-4B Excel 解析、驗證及差異預覽與 2-4C1 不可變年度版本 writer 已實作；2-4C2 尚未實作，2-4 整體仍未完成
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -187,6 +187,8 @@ U:\經管科\水庫庫容推估系統\鯉魚潭\
 ```
 
 `operator_display_name` 是使用者人工填報的文字，不代表已登入或已驗證身分。來源欄位不得放帳密、權杖或不應散布的敏感內容。`files` 必須恰好列出三個核心資料檔與固定 `source/original.xlsx`，不得加入未知檔名或路徑；所有四個內容檔都必須核對 SHA-256。原始 Excel bytes 必須與上傳內容完全一致，不得重新另存；原始檔名只保存於 `source_excel.original_filename`，不得用來組合路徑，且含 `..`、斜線、反斜線、磁碟機或絕對路徑形式的檔名一律拒絕。
+
+2-4B candidate 另保存解析當時使用的原始 filename，作為 provenance 而不納入業務內容 fingerprint；單純改名不改變 fingerprint。2-4C1 發布時仍必須核對呼叫端 filename 與 candidate 記錄完全一致，缺少記錄或名稱變更都要拒絕發布並要求重新預覽／確認；`version.json.source_excel.original_filename` 只能取自通過核對的 candidate provenance。
 
 `parameter_metadata` 必須恰好包含四個固定參數代碼，每項恰好保存 `effective_start_date`、`source_reference` 與 `note`；日期採 `YYYY-MM-DD`，後兩者為非空白文字或 `null`。`confirmed_warnings` 保存使用者已確認的完整 warning 結構，而非只有布林值；沒有 warning 時為空陣列。`source_references` 依水文來源、年度基準出流來源及各已填參數來源的順序穩定去重。
 
@@ -679,13 +681,9 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 - 資訊單位確認 ACL、備份、容量監控與災難復原責任。
 - 業務人員完成跨裝置接續、年度更新與正式保存人工驗收。
 
-## 19. 本文件 PR 的驗收界線
+## 19. 文件沿革說明
 
-- 只新增或修改 Markdown 文件。
-- 不修改 `app.py`、`v2_workflow.py`、`tests/`、requirements 或核心水量平衡公式。
-- 不建立 Excel。
-- 不建立、修改或刪除任何 `U:` 檔案或資料夾。
-- README 與既有 V2 文件保留第一階段歷史脈絡，但現行第二階段方向均指向本規格，不再把 Google Sheet 描述為目前採用方案。
+本文件最初由只修改 Markdown 的規格 PR 建立；該次 PR 的檔案範圍是歷史開發背景，不是後續實作 PR 的持續限制。現行實作狀態與各階段邊界以第 18 節及 repository 內通過的程式與測試為準。所有後續階段仍必須維持程式碼、合成測試與正式公司資料分離，未經對應階段明確人工驗收不得操作正式共享資料。
 
 ## 20. 實作前仍需人工確認
 

@@ -157,6 +157,32 @@ def test_confirmed_fingerprint_change_is_rejected(tmp_path):
     assert caught.value.code == "confirmed_fingerprint_changed"
 
 
+def test_changed_legal_source_filename_requires_new_preview_and_creates_nothing(tmp_path):
+    raw = _workbook_bytes()
+    candidate = _candidate(raw)
+    root = _root(tmp_path)
+
+    with pytest.raises(AnnualDataVersionPublishError, match="重新預覽") as caught:
+        _publish(root, raw, candidate=candidate, source_filename="another-synthetic.xlsx")
+
+    assert caught.value.code == "source_filename_changed"
+    assert not (root / "staging").exists()
+    assert not (root / "annual-data" / "versions").exists()
+
+
+def test_candidate_without_source_filename_cannot_be_published(tmp_path):
+    raw = _workbook_bytes()
+    candidate = dataclasses.replace(_candidate(raw), source_filename=None)
+    root = _root(tmp_path)
+
+    with pytest.raises(AnnualDataVersionPublishError, match="重新預覽") as caught:
+        _publish(root, raw, candidate=candidate)
+
+    assert caught.value.code == "source_filename_missing"
+    assert not (root / "staging").exists()
+    assert not (root / "annual-data" / "versions").exists()
+
+
 def test_warnings_require_confirmation_and_full_warning_records_are_saved(tmp_path):
     workbook = _filled_workbook()
     workbook["水庫參數"]["F6"] = None

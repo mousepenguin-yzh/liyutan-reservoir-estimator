@@ -187,6 +187,16 @@ def _validated_candidate(
         validate_original_filename(source_filename, "原始 Excel 檔名")
     except StorageValidationError as exc:
         raise AnnualDataVersionPublishError("unsafe_source_filename", str(exc)) from exc
+    if candidate.source_filename is None:
+        raise AnnualDataVersionPublishError(
+            "source_filename_missing",
+            "候選未保存原始 Excel 檔名，必須重新預覽與確認。",
+        )
+    if source_filename != candidate.source_filename:
+        raise AnnualDataVersionPublishError(
+            "source_filename_changed",
+            "原始 Excel 檔名已變更，必須重新預覽與確認。",
+        )
     if sha256_bytes(source_excel_bytes) != candidate.source_sha256:
         raise AnnualDataVersionPublishError(
             "source_sha256_changed", "原始 Excel 已變更，必須重新預覽與確認。"
@@ -321,7 +331,7 @@ def publish_annual_data_version(
         "overall_note": reparsed.overall_note,
         "candidate_fingerprint": reparsed.fingerprint,
         "source_excel": {
-            "original_filename": source_filename,
+            "original_filename": reparsed.source_filename,
             "sha256": reparsed.source_sha256,
         },
         "parameter_metadata": _parameter_metadata(reparsed),
