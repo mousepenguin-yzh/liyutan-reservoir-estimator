@@ -46,6 +46,25 @@ def synthetic_parameters():
     }
 
 
+def synthetic_parameter_metadata():
+    return {
+        code: {
+            "effective_start_date": "2027-01-01",
+            "source_reference": f"合成參數來源 {index}",
+            "note": f"合成參數備註 {index}",
+        }
+        for index, code in enumerate(
+            (
+                "max_capacity_10k_ton",
+                "shilin_ecological_flow_cms",
+                "liyutan_ecological_release_cms",
+                "shilin_diversion_limit_cms",
+            ),
+            1,
+        )
+    }
+
+
 def synthetic_hydrology_rows():
     rows = []
     for month in range(1, 13):
@@ -89,10 +108,12 @@ def _annual_bundle(
     hydrology_bytes = serialize_csv(hydrology_rows, hydrology_columns)
     outflow_bytes = serialize_csv(outflow_rows, OUTFLOW_COLUMNS)
     parameter_bytes = serialize_json(parameters)
+    source_bytes = b"synthetic xlsx fixture bytes"
     data_files = {
         "hydrology_q.csv": hydrology_bytes,
         "outflow_demand.csv": outflow_bytes,
         "reservoir_parameters.json": parameter_bytes,
+        "source/original.xlsx": source_bytes,
     }
     version = {
         "schema": ANNUAL_VERSION_SCHEMA,
@@ -102,7 +123,25 @@ def _annual_bundle(
         "created_at": "2026-12-15T02:30:00Z",
         "operator_display_name": "測試操作人",
         "note": "純合成年度資料",
-        "source_references": ["synthetic-fixture"],
+        "template_version": "2-4A.1",
+        "reservoir_id": "liyutan",
+        "reservoir_name": "鯉魚潭水庫",
+        "actual_data_cutoff_period": "06-中旬",
+        "hydrology_source_period": "合成水文來源與統計期間",
+        "annual_outflow_source": "合成年度基準出流來源",
+        "overall_note": "純合成測試資料",
+        "candidate_fingerprint": "1" * 64,
+        "source_excel": {
+            "original_filename": "synthetic.xlsx",
+            "sha256": sha256_bytes(source_bytes),
+        },
+        "parameter_metadata": synthetic_parameter_metadata(),
+        "confirmed_warnings": [],
+        "source_references": [
+            "合成水文來源與統計期間",
+            "合成年度基準出流來源",
+            *(item["source_reference"] for item in synthetic_parameter_metadata().values()),
+        ],
         "files": {name: {"sha256": sha256_bytes(data)} for name, data in data_files.items()},
     }
     if version_mutator:
@@ -305,6 +344,8 @@ def _repack_annual_data_file(bundle, filename, content):
     changed[filename] = content
     version = deserialize_json(changed["version.json"])
     version["files"][filename]["sha256"] = sha256_bytes(content)
+    if filename == "source/original.xlsx":
+        version["source_excel"]["sha256"] = sha256_bytes(content)
     changed["version.json"] = serialize_json(version)
     committed = deserialize_json(changed["COMMITTED.json"])
     committed["manifest_sha256"] = sha256_bytes(changed["version.json"])
@@ -398,6 +439,9 @@ def test_valid_annual_bundle_round_trip(tmp_path):
     assert len(parsed["hydrology"]) == 36
     assert len(parsed["outflow_demand"]) == 36
     assert parsed["reservoir_parameters"]["shilin_diversion_limit_cms"] == 33.0
+    assert parsed["parameter_metadata"] == synthetic_parameter_metadata()
+    assert parsed["source_excel"]["original_filename"] == "synthetic.xlsx"
+    assert bundle["source/original.xlsx"] == b"synthetic xlsx fixture bytes"
     assert serialize_json(parsed["version"]) == bundle["version.json"]
     assert serialize_csv(parsed["hydrology"], HYDROLOGY_COLUMNS) == bundle["hydrology_q.csv"]
     target = tmp_path / "synthetic-version.json"
@@ -488,6 +532,62 @@ def test_annual_missing_file_and_checksum_mismatch_are_rejected():
     corrupt["hydrology_q.csv"] += b"\n"
     with pytest.raises(StorageValidationError, match="checksum"):
         validate_annual_bundle(corrupt)
+
+    missing_source = _annual_bundle()
+    missing_source.pop("source/original.xlsx")
+    with pytest.raises(StorageValidationError, match="source/original.xlsx"):
+        validate_annual_bundle(missing_source)
+
+
+def test_annual_source_checksum_must_match_file_and_metadata():
+    corrupt = _annual_bundle()
+    corrupt["source/original.xlsx"] += b"changed"
+    with pytest.raises(StorageValidationError, match="checksum"):
+        validate_annual_bundle(corrupt)
+
+    def mismatch_source_metadata(version):
+        version["source_excel"]["sha256"] = "0" * 64
+
+    with pytest.raises(StorageValidationError, match="原始 Excel checksum"):
+        validate_annual_bundle(_annual_bundle(version_mutator=mismatch_source_metadata))
+
+
+@pytest.mark.parametrize(
+    "mutator",
+    [
+        lambda version: version.update(candidate_fingerprint="not-a-sha"),
+        lambda version: version["source_excel"].update(original_filename="../escape.xlsx"),
+        lambda version: version["parameter_metadata"].pop("shilin_diversion_limit_cms"),
+        lambda version: version["parameter_metadata"]["max_capacity_10k_ton"].update(
+            effective_start_date="2027/01/01"
+        ),
+        lambda version: version["parameter_metadata"]["max_capacity_10k_ton"].update(
+            source_reference=123
+        ),
+        lambda version: version["confirmed_warnings"].append(
+            {"severity": "error", "code": "x", "message": "x", "sheet": None, "cell": None}
+        ),
+        lambda version: version["confirmed_warnings"].append(
+            {"severity": "warning", "code": "x", "message": "x", "sheet": None}
+        ),
+    ],
+)
+def test_annual_formal_metadata_contract_rejects_invalid_values(mutator):
+    with pytest.raises(StorageValidationError):
+        validate_annual_bundle(_annual_bundle(version_mutator=mutator))
+
+
+@pytest.mark.parametrize(
+    "unsafe_path",
+    ["../escape.xlsx", "/absolute.xlsx", r"C:\\escape.xlsx", r"source\\escape.xlsx"],
+)
+def test_annual_manifest_rejects_unsafe_or_unknown_relative_paths(unsafe_path):
+    def replace_source(version):
+        source = version["files"].pop("source/original.xlsx")
+        version["files"][unsafe_path] = source
+
+    with pytest.raises(StorageValidationError, match="未知檔名"):
+        validate_annual_bundle(_annual_bundle(version_mutator=replace_source))
 
 
 def test_annual_manifest_rejects_unknown_filename():

@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：第二階段 2-4B Excel 解析、驗證及差異預覽已實作；2-4C 正式寫入功能尚未實作
+狀態：第二階段 2-4B Excel 解析、驗證及差異預覽與 2-4C1 不可變年度版本 writer 已實作；2-4C2 尚未實作，2-4 整體仍未完成
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -77,7 +77,8 @@ U:\經管科\水庫庫容推估系統\鯉魚潭\
 │        ├─ hydrology_q.csv
 │        ├─ outflow_demand.csv
 │        ├─ reservoir_parameters.json
-│        ├─ source\                 # 選用；原始交換檔或來源說明
+│        ├─ source\
+│        │  └─ original.xlsx        # 必要；上傳 bytes 原樣保存
 │        └─ COMMITTED.json
 ├─ official-estimates\
 │  ├─ current.json
@@ -154,16 +155,42 @@ U:\經管科\水庫庫容推估系統\鯉魚潭\
   "created_at": "2026-12-15T02:30:00Z",
   "operator_display_name": "人工填報名稱",
   "note": "年度資料更新原因與範圍",
-  "source_references": ["來源文件名稱或可交接的內部索引"],
+  "template_version": "2-4A.1",
+  "reservoir_id": "liyutan",
+  "reservoir_name": "鯉魚潭水庫",
+  "actual_data_cutoff_period": "<固定旬鍵>",
+  "hydrology_source_period": "<水文來源與統計期間>",
+  "annual_outflow_source": "<年度基準出流來源>",
+  "overall_note": "<Excel 整體備註或 null>",
+  "candidate_fingerprint": "<64 字元 SHA-256>",
+  "source_excel": {
+    "original_filename": "<只作 metadata 的原始單一檔名>",
+    "sha256": "<原始 Excel SHA-256>"
+  },
+  "parameter_metadata": {
+    "max_capacity_10k_ton": {"effective_start_date": "<YYYY-MM-DD>", "source_reference": "<來源或 null>", "note": "<備註或 null>"},
+    "shilin_ecological_flow_cms": {"effective_start_date": "<YYYY-MM-DD>", "source_reference": "<來源或 null>", "note": "<備註或 null>"},
+    "liyutan_ecological_release_cms": {"effective_start_date": "<YYYY-MM-DD>", "source_reference": "<來源或 null>", "note": "<備註或 null>"},
+    "shilin_diversion_limit_cms": {"effective_start_date": "<YYYY-MM-DD>", "source_reference": "<來源或 null>", "note": "<備註或 null>"}
+  },
+  "confirmed_warnings": [
+    {"severity": "warning", "code": "<code>", "message": "<完整訊息>", "sheet": "<工作表或 null>", "cell": "<儲存格或 null>"}
+  ],
+  "source_references": ["<穩定去重的水文、出流與參數來源>"],
   "files": {
     "hydrology_q.csv": {"sha256": "..."},
     "outflow_demand.csv": {"sha256": "..."},
-    "reservoir_parameters.json": {"sha256": "..."}
+    "reservoir_parameters.json": {"sha256": "..."},
+    "source/original.xlsx": {"sha256": "..."}
   }
 }
 ```
 
-`operator_display_name` 是使用者人工填報的文字，不代表已登入或已驗證身分。來源欄位不得放帳密、權杖或不應散布的敏感內容。`files` 必須恰好列出上述三個正式資料檔，不得加入未知檔名或路徑。選用的 `source` 資料夾只保存原始交換檔或來源說明，不屬於 manifest 的正式檔案集合，也不得由 `version.json.files` 引用。
+`operator_display_name` 是使用者人工填報的文字，不代表已登入或已驗證身分。來源欄位不得放帳密、權杖或不應散布的敏感內容。`files` 必須恰好列出三個核心資料檔與固定 `source/original.xlsx`，不得加入未知檔名或路徑；所有四個內容檔都必須核對 SHA-256。原始 Excel bytes 必須與上傳內容完全一致，不得重新另存；原始檔名只保存於 `source_excel.original_filename`，不得用來組合路徑，且含 `..`、斜線、反斜線、磁碟機或絕對路徑形式的檔名一律拒絕。
+
+2-4B candidate 另保存解析當時使用的原始 filename，作為 provenance 而不納入業務內容 fingerprint；單純改名不改變 fingerprint。2-4C1 發布時仍必須核對呼叫端 filename 與 candidate 記錄完全一致，缺少記錄或名稱變更都要拒絕發布並要求重新預覽／確認；`version.json.source_excel.original_filename` 只能取自通過核對的 candidate provenance。
+
+`parameter_metadata` 必須恰好包含四個固定參數代碼，每項恰好保存 `effective_start_date`、`source_reference` 與 `note`；日期採 `YYYY-MM-DD`，後兩者為非空白文字或 `null`。`confirmed_warnings` 保存使用者已確認的完整 warning 結構，而非只有布林值；沒有 warning 時為空陣列。`source_references` 依水文來源、年度基準出流來源及各已填參數來源的順序穩定去重。
 
 ### 5.3 `hydrology_q.csv`
 
@@ -391,11 +418,12 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 2. 程式解析成正式 JSON／CSV 候選資料，不把 Excel 本身當權威資料。
 3. 執行欄名、單位、數值、36 旬、Q5～Q95、適用年度、來源、操作人及備註驗證。
 4. 顯示候選版本與目前啟用版本的差異。
-5. 使用者人工確認後，依暫存、checksum、`COMMITTED.json` 與原子發布流程新增年度版本。
-6. 新增版本不代表自動啟用；啟用前再次顯示版本 ID、差異、操作人及備註。
-7. 取得 `annual-current.lock`，重新核對 `annual-data/current.json` revision；有衝突就停止並要求重新載入。
-8. 以 revision 加一的方式切換 `annual-data/current.json`，並新增 audit event。
-9. 切換後的新工作區使用新版本；已開啟的工作區必須顯示資料版本已變更，要求使用者選擇重新載入。不得在背景靜默換掉其演算基準。
+5. 使用者人工確認後，重新解析同一份原始 Excel，核對來源 SHA-256、確認 fingerprint、完整候選內容與 warnings；任一項變動都要求重新預覽與確認。
+6. 依同根目錄 staging、逐檔 checksum、最後寫入 `COMMITTED.json`、完整重讀驗證與原子 rename 流程新增年度版本。
+7. 新增版本不代表自動啟用；啟用前再次顯示版本 ID、差異、操作人及備註。
+8. 取得 `annual-current.lock`，重新核對 `annual-data/current.json` revision；有衝突就停止並要求重新載入。
+9. 以 revision 加一的方式切換 `annual-data/current.json`，並新增 audit event。
+10. 切換後的新工作區使用新版本；已開啟的工作區必須顯示資料版本已變更，要求使用者選擇重新載入。不得在背景靜默換掉其演算基準。
 
 切回舊版本使用相同的啟用流程。舊版本內容不改名、不搬移、不覆蓋。
 
@@ -543,6 +571,7 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 - 2-4B 已提供獨立、無 Streamlit 相依的 Excel 解析器，以及「系統基準資料維護－Excel驗證與差異預覽」介面。解析成功只建立記憶體候選資料及標準 JSON／CSV bytes；上傳內容不套用至目前推估工作區。
 - 2-4B 預覽固定標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」；只有 `system.json` 已完整驗證且 `annual-data/current.json` 確實不存在時，才能確認沒有啟用年度版本並顯示第一版完整預覽。相容模式、根目錄未設定／不存在／無權限、`system.json` 尚未初始化、讀取失敗、資料損壞或版本不一致時，只能顯示候選內容並說明無法確認正式環境是否存在舊版，不得產生不可靠的新舊差異。
 - 水庫參數的數值、適用起日、來源及備註都屬主要差異比較內容。候選位置固定為 `AnnualDataCandidate.parameter_metadata[parameter_code]`，其中包含 `effective_start_date`、`source_reference` 與 `note`；供後續正式版本比較的相容位置為年度版本物件同層的 `parameter_metadata`。舊版未提供 metadata 時，預覽顯示「舊版未記錄」並計入變更。本約定不代表 2-4B 已修改正式 schema 或實作寫入。
+- 2-4C1 已將上述 parameter metadata 納入正式 `version.json` 與 reader round-trip；writer 重新解析原始 Excel 後才建立完整 bundle，並將原始 bytes 固定保存為 `source/original.xlsx`。
 - 下載的 Excel 是正式 JSON／CSV 資料或演算結果的衍生產品，必須標示來源版本 ID，但不得反過來成為權威資料。
 - 2-4A／2-4B 只將程式、合成測試與文件提交 Git；實際產生的 Excel、使用者填寫內容、正式業務數值、畫面截圖及驗證輸出不得提交 GitHub。
 
@@ -571,7 +600,7 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 共享模式一旦啟用，讀取失敗時不得無提示退回內建資料；只有使用者明確點選備援後才能開放非正式工作區。reader 僅執行讀取，不建立、修改、重新命名或刪除共享資料。開發與自動化測試只可使用 pytest 暫存目錄及合成資料。
 
-狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`；2-4B 仍未實作或驗證任何正式寫入流程，因此所有資料來源的 `formal_write_available=False`，相容用的 `formal_operations_available` 亦固定為 `False`。只有後續 2-4C／2-5 完成寫入權限、SMB 鎖定、原子取代、revision 衝突與正式發布驗證後，才能定義正式寫入可用條件。
+狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`；2-4C1 雖已完成不可變版本 writer 的純檔案系統實作與合成測試，但尚未接上 Streamlit、公司 SMB 寫入權限與啟用流程，因此所有資料來源的 `formal_write_available=False`，相容用的 `formal_operations_available` 亦固定為 `False`。只有後續 2-4C2／2-5 完成寫入權限、SMB 鎖定、原子取代、revision 衝突及正式操作驗證後，才能定義正式寫入可用條件。
 
 驗收：
 
@@ -589,9 +618,10 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 - 2-4A（已完成）：只建立可重複產生的空白年度資料 Excel 公版、暫存目錄自動化測試及使用說明。Excel 只供人工填寫與交換，不是正式權威資料。
 - 2-4B（已完成）：Excel 解析、完整內容驗證、記憶體候選資料、穩定 fingerprint、目前啟用年度版本差異預覽，以及在系統資料已驗證且 annual current 確實缺少時的第一版完整預覽。無法讀取或尚未初始化共享資料時只顯示候選內容，不宣稱沒有舊版。這不等同正式發布或啟用。
-- 2-4C（未實作）：正式 JSON／CSV 版本發布、current 啟用、SMB 寫入鎖、revision 衝突、audit、staging 及 quarantine。
+- 2-4C1（已完成）：將已確認的 2-4B candidate 與原始 Excel 重新驗證後，於指定且已初始化的根目錄完成 staging、逐檔 checksum、`COMMITTED.json` 最後寫入、完整 schema／36旬驗證、quarantine 及同磁碟 rename，發布不可變但未啟用的年度版本。自動化測試只使用 pytest `tmp_path` 與合成 Excel。
+- 2-4C2（未實作）：SMB 排他鎖、revision 衝突、`annual-data/current.json` 原子切換、audit、復原及 Streamlit 人工確認／建立／啟用介面。
 
-2-4A／2-4B 不建立 `system.json`、`annual-data/current.json`、`COMMITTED.json` 或任何看似已啟用的正式資料結構，也不開放正式共享根目錄寫入；`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
+2-4C 整體仍未完成。2-4C1 不建立或修改 `system.json`、`annual-data/current.json` 與 audit；建立成功只代表不可變版本已發布，仍未成為 current。尚未在公司實際 SMB 環境驗證，本 PR 未存取正式共享根目錄或受控測試共享根目錄；`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
 
 驗收：
 
@@ -651,13 +681,9 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 - 資訊單位確認 ACL、備份、容量監控與災難復原責任。
 - 業務人員完成跨裝置接續、年度更新與正式保存人工驗收。
 
-## 19. 本文件 PR 的驗收界線
+## 19. 文件沿革說明
 
-- 只新增或修改 Markdown 文件。
-- 不修改 `app.py`、`v2_workflow.py`、`tests/`、requirements 或核心水量平衡公式。
-- 不建立 Excel。
-- 不建立、修改或刪除任何 `U:` 檔案或資料夾。
-- README 與既有 V2 文件保留第一階段歷史脈絡，但現行第二階段方向均指向本規格，不再把 Google Sheet 描述為目前採用方案。
+本文件最初由只修改 Markdown 的規格 PR 建立；該次 PR 的檔案範圍是歷史開發背景，不是後續實作 PR 的持續限制。現行實作狀態與各階段邊界以第 18 節及 repository 內通過的程式與測試為準。所有後續階段仍必須維持程式碼、合成測試與正式公司資料分離，未經對應階段明確人工驗收不得操作正式共享資料。
 
 ## 20. 實作前仍需人工確認
 

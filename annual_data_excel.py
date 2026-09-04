@@ -139,6 +139,7 @@ class AnnualDataCandidate:
     outflow_demand: tuple[dict[str, Any], ...]
     reservoir_parameters: dict[str, float]
     parameter_metadata: dict[str, dict[str, Any]]
+    source_filename: str | None
     source_sha256: str
     fingerprint: str
     warnings: tuple[AnnualDataIssue, ...]
@@ -729,6 +730,7 @@ def parse_annual_data_excel(
             outflow_demand=outflow,
             reservoir_parameters=parameters,
             parameter_metadata=parameter_metadata,
+            source_filename=filename,
             source_sha256=source_sha256,
             fingerprint=fingerprint,
             warnings=warnings,
