@@ -69,6 +69,7 @@ class AnnualDataSnapshot:
     hydrology: tuple[dict, ...]
     outflow_demand: tuple[dict, ...]
     reservoir_parameters: dict
+    parameter_metadata: dict[str, dict]
 
 
 @dataclass(frozen=True)
@@ -116,7 +117,7 @@ class DataSourceDecision:
 
     @property
     def formal_operations_available(self) -> bool:
-        """Legacy compatibility flag; formal writes do not exist in stage 2-3."""
+        """Legacy flag; 2-4C1 is not an enabled end-user write workflow."""
         return False
 
 
@@ -378,6 +379,7 @@ class SharedStorageReader:
             hydrology=tuple(annual_data["hydrology"]),
             outflow_demand=tuple(annual_data["outflow_demand"]),
             reservoir_parameters=annual_data["reservoir_parameters"],
+            parameter_metadata=annual_data["parameter_metadata"],
         )
         return SharedStorageResult(
             True,
@@ -430,12 +432,31 @@ class SharedStorageReader:
                 )
             ) from exc
         bundle = {}
-        for filename in required_files:
+        try:
+            paths = tuple(path for path in version_dir.rglob("*") if path.is_file())
+        except PermissionError as exc:
+            raise _ReadFailure(
+                StorageError(
+                    StorageErrorCode.PERMISSION_DENIED,
+                    "沒有讀取版本資料夾的權限。請聯絡系統維護人員或資訊單位確認權限。",
+                )
+            ) from exc
+        for path in paths:
+            self._assert_contained(version_dir, path)
+            filename = path.relative_to(version_dir).as_posix()
             bundle[filename] = self._read_file(
-                version_dir / filename,
+                path,
                 StorageErrorCode.REQUIRED_FILE_MISSING,
                 f"版本 {safe_id} 缺少必要檔案：{filename}",
             )
+        for filename in required_files:
+            if filename not in bundle:
+                raise _ReadFailure(
+                    StorageError(
+                        StorageErrorCode.REQUIRED_FILE_MISSING,
+                        f"版本 {safe_id} 缺少必要檔案：{filename}",
+                    )
+                )
         return bundle
 
     def _assert_contained(self, base: Path, candidate: Path) -> None:
@@ -458,10 +479,10 @@ class SharedStorageReader:
             return validate_annual_bundle(bundle) if annual else validate_official_bundle(bundle)
         except StorageValidationError as exc:
             detail = str(exc)
-            if "checksum" in detail:
-                code = StorageErrorCode.CHECKSUM_MISMATCH
-            elif "檔案集合" in detail or "未知檔名" in detail or "恰好包含正式資料檔" in detail:
+            if "檔案集合" in detail or "未知檔名" in detail or "恰好包含正式資料檔" in detail:
                 code = StorageErrorCode.MANIFEST_FILE_LIST_INVALID
+            elif "checksum" in detail:
+                code = StorageErrorCode.CHECKSUM_MISMATCH
             elif "CSV" in detail or ".csv" in detail:
                 code = StorageErrorCode.CSV_INVALID
             elif "JSON 格式" in detail or "JSON 必須使用 UTF-8" in detail:

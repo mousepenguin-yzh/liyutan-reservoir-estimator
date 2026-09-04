@@ -40,7 +40,9 @@ OFFICIAL_ID = "estimate-synthetic-1"
 def _write_bundle(directory: Path, bundle: dict[str, bytes]) -> None:
     directory.mkdir(parents=True)
     for name, data in bundle.items():
-        (directory / name).write_bytes(data)
+        path = directory / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
 
 
 def _build_root(tmp_path: Path, *, official: bool = False, annual_bundle=None) -> Path:
@@ -111,6 +113,17 @@ def test_valid_annual_version_loads_complete_snapshot(tmp_path):
     assert len(result.annual.hydrology) == 36
     assert len(result.annual.outflow_demand) == 36
     assert result.annual.reservoir_parameters["shilin_diversion_limit_cms"] == 33.0
+    assert result.annual.parameter_metadata["shilin_diversion_limit_cms"]["effective_start_date"] == "2027-01-01"
+    assert result.annual.version["candidate_fingerprint"] == "1" * 64
+
+
+def test_annual_version_directory_with_unknown_file_is_rejected(tmp_path):
+    root = _build_root(tmp_path)
+    version_dir = root / "annual-data" / "versions" / ANNUAL_ID
+    (version_dir / "unknown.bin").write_bytes(b"not in manifest")
+    result = load_shared_storage(root)
+    assert not result.ok
+    assert result.error.code is StorageErrorCode.MANIFEST_FILE_LIST_INVALID
 
 
 def test_environment_variable_configures_shared_root(tmp_path):

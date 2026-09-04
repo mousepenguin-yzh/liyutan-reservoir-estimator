@@ -86,6 +86,7 @@ ANNUAL_DATA_FILES = (
     "hydrology_q.csv",
     "outflow_demand.csv",
     "reservoir_parameters.json",
+    "source/original.xlsx",
 )
 ANNUAL_REQUIRED_FILES = ("version.json", *ANNUAL_DATA_FILES, "COMMITTED.json")
 OFFICIAL_DATA_FILES = ("inputs.json", "scenario_summaries.csv", "daily_results.csv")
@@ -95,6 +96,20 @@ _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
 _CSV_INTEGER_RE = re.compile(r"^(0|[1-9][0-9]*)$")
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+_PERIOD_KEY_RE = re.compile(r"^(0[1-9]|1[0-2])-(上旬|中旬|下旬)$")
+_SAFE_ORIGINAL_FILENAME_RE = re.compile(r"^[^/\\:\x00]+$")
+ANNUAL_PARAMETER_CODES = (
+    "max_capacity_10k_ton",
+    "shilin_ecological_flow_cms",
+    "liyutan_ecological_release_cms",
+    "shilin_diversion_limit_cms",
+)
+ANNUAL_PARAMETER_METADATA_FIELDS = (
+    "effective_start_date",
+    "source_reference",
+    "note",
+)
+ANNUAL_WARNING_FIELDS = ("severity", "code", "message", "sheet", "cell")
 _WINDOWS_RESERVED_DEVICE_NAMES = frozenset(
     {"CON", "PRN", "AUX", "NUL"}
     | {f"COM{number}" for number in range(1, 10)}
@@ -379,9 +394,68 @@ def _file_manifest(value: Any, required_files: Sequence[str], label: str) -> dic
     for filename, metadata in files.items():
         _string(filename, f"{label}.files filename")
         item = _mapping(metadata, f"{label}.files.{filename}")
-        _required(item, ("sha256",), f"{label}.files.{filename}")
+        if set(item) != {"sha256"}:
+            _fail(f"{label}.files.{filename} 只能包含 sha256")
         _sha256(item["sha256"], f"{label}.files.{filename}.sha256")
     return files
+
+
+def _exact_fields(data: Mapping[str, Any], expected: Sequence[str], label: str) -> None:
+    expected_set = set(expected)
+    actual = set(data)
+    if actual != expected_set:
+        missing = sorted(expected_set - actual)
+        unknown = sorted(actual - expected_set)
+        details = []
+        if missing:
+            details.append("缺少 " + ", ".join(missing))
+        if unknown:
+            details.append("包含未知欄位 " + ", ".join(unknown))
+        _fail(f"{label} 欄位必須固定：{'；'.join(details)}")
+
+
+def validate_original_filename(value: Any, label: str = "original_filename") -> str:
+    """Validate an uploaded display filename without ever using it as a path."""
+    text = _string(value, label)
+    if (
+        text in {".", ".."}
+        or len(text) > 255
+        or not _SAFE_ORIGINAL_FILENAME_RE.fullmatch(text)
+        or text[-1] in {" ", "."}
+    ):
+        _fail(f"{label} 必須是安全的單一檔名，不得包含路徑、磁碟機或路徑分隔符號")
+    return text
+
+
+def _validate_parameter_metadata(value: Any, label: str) -> dict:
+    metadata = _mapping(value, label)
+    _exact_fields(metadata, ANNUAL_PARAMETER_CODES, label)
+    for code in ANNUAL_PARAMETER_CODES:
+        item_label = f"{label}.{code}"
+        item = _mapping(metadata[code], item_label)
+        _exact_fields(item, ANNUAL_PARAMETER_METADATA_FIELDS, item_label)
+        _date(item["effective_start_date"], f"{item_label}.effective_start_date")
+        _optional_string(item["source_reference"], f"{item_label}.source_reference")
+        _optional_string(item["note"], f"{item_label}.note")
+    return copy.deepcopy(metadata)
+
+
+def _validate_confirmed_warnings(value: Any, label: str) -> list[dict]:
+    if not isinstance(value, list):
+        _fail(f"{label} 必須是陣列")
+    warnings: list[dict] = []
+    for index, warning in enumerate(value):
+        item_label = f"{label}[{index}]"
+        item = _mapping(warning, item_label)
+        _exact_fields(item, ANNUAL_WARNING_FIELDS, item_label)
+        if item["severity"] != "warning":
+            _fail(f"{item_label}.severity 必須是 warning")
+        _string(item["code"], f"{item_label}.code")
+        _string(item["message"], f"{item_label}.message")
+        _optional_string(item["sheet"], f"{item_label}.sheet")
+        _optional_string(item["cell"], f"{item_label}.cell")
+        warnings.append(copy.deepcopy(item))
+    return warnings
 
 
 def validate_system(data: Any) -> dict:
@@ -395,13 +469,8 @@ def validate_system(data: Any) -> dict:
 
 def validate_reservoir_parameters(data: Any) -> dict:
     item = _schema(data, RESERVOIR_PARAMETERS_SCHEMA, "reservoir_parameters.json")
-    fields = (
-        "max_capacity_10k_ton",
-        "shilin_ecological_flow_cms",
-        "liyutan_ecological_release_cms",
-        "shilin_diversion_limit_cms",
-    )
-    _required(item, fields, "reservoir_parameters.json")
+    fields = ANNUAL_PARAMETER_CODES
+    _exact_fields(item, ("schema", "schema_version", *fields), "reservoir_parameters.json")
     for field in fields:
         _number(item[field], f"reservoir_parameters.json.{field}")
     return copy.deepcopy(item)
@@ -473,6 +542,17 @@ def validate_annual_version(data: Any) -> dict:
             "created_at",
             "operator_display_name",
             "note",
+            "template_version",
+            "reservoir_id",
+            "reservoir_name",
+            "actual_data_cutoff_period",
+            "hydrology_source_period",
+            "annual_outflow_source",
+            "overall_note",
+            "candidate_fingerprint",
+            "source_excel",
+            "parameter_metadata",
+            "confirmed_warnings",
             "source_references",
             "files",
         ),
@@ -483,8 +563,29 @@ def validate_annual_version(data: Any) -> dict:
     _timestamp(item["created_at"], "version.json.created_at")
     _string(item["operator_display_name"], "version.json.operator_display_name")
     _string(item["note"], "version.json.note")
+    _string(item["template_version"], "version.json.template_version")
+    if item["reservoir_id"] != "liyutan":
+        _fail("version.json.reservoir_id 必須是 liyutan")
+    _string(item["reservoir_name"], "version.json.reservoir_name")
+    cutoff = _string(item["actual_data_cutoff_period"], "version.json.actual_data_cutoff_period")
+    if not _PERIOD_KEY_RE.fullmatch(cutoff):
+        _fail("version.json.actual_data_cutoff_period 必須是 01-上旬 至 12-下旬")
+    _string(item["hydrology_source_period"], "version.json.hydrology_source_period")
+    _string(item["annual_outflow_source"], "version.json.annual_outflow_source")
+    _optional_string(item["overall_note"], "version.json.overall_note")
+    _sha256(item["candidate_fingerprint"], "version.json.candidate_fingerprint")
+    source_excel = _mapping(item["source_excel"], "version.json.source_excel")
+    _exact_fields(source_excel, ("original_filename", "sha256"), "version.json.source_excel")
+    validate_original_filename(
+        source_excel["original_filename"], "version.json.source_excel.original_filename"
+    )
+    _sha256(source_excel["sha256"], "version.json.source_excel.sha256")
+    _validate_parameter_metadata(item["parameter_metadata"], "version.json.parameter_metadata")
+    _validate_confirmed_warnings(item["confirmed_warnings"], "version.json.confirmed_warnings")
     _unique_strings(item["source_references"], "version.json.source_references")
-    _file_manifest(item["files"], ANNUAL_DATA_FILES, "version.json")
+    files = _file_manifest(item["files"], ANNUAL_DATA_FILES, "version.json")
+    if files["source/original.xlsx"]["sha256"] != source_excel["sha256"]:
+        _fail("version.json 原始 Excel checksum 與 files 清單不一致")
     return copy.deepcopy(item)
 
 
@@ -593,6 +694,9 @@ def validate_annual_bundle(files: Mapping[str, bytes]) -> dict:
         "hydrology": hydrology,
         "outflow_demand": demands,
         "reservoir_parameters": copy.deepcopy(parameters),
+        "parameter_metadata": copy.deepcopy(version["parameter_metadata"]),
+        "source_excel": copy.deepcopy(version["source_excel"]),
+        "confirmed_warnings": copy.deepcopy(version["confirmed_warnings"]),
         "committed": committed,
     }
 

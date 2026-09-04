@@ -18,11 +18,12 @@
 - 共享功能尚未啟用時，既有線上 Streamlit 網站維持內建年度資料的相容模式；共享功能啟用後若讀取失敗，則只有使用者明確選擇「內建備援資料」後才能進行非正式試算。
 - 第二階段 2-4A 已新增 `scripts/create_annual_data_template.py`，可用明確的 `--output` 產生四張工作表、固定36旬且所有業務數值留白的年度資料 Excel 公版；Excel 僅供人工填寫及交換，不是正式權威資料。
 - 第二階段 2-4B 已新增 `annual_data_excel.py` 純邏輯與 `annual_data_preview_ui.py` 呈現模組，可解析與完整驗證 2-4A.1 Excel、建立記憶體候選資料、計算穩定 fingerprint，並與目前啟用年度版本進行差異預覽；只有在 `system.json` 已驗證且 `annual-data/current.json` 確實不存在時，才會確認為第一版完整預覽。
+- 第二階段 2-4C1 已新增 `annual_data_version_writer.py`：對已確認候選重新解析原始 Excel 並核對 SHA-256、fingerprint、完整內容及 warnings，將固定 JSON／CSV 與原始 Excel 寫入同根目錄 staging，逐檔驗證後以 rename 發布為不可變年度版本；發布成功仍未啟用為 current。
 - 「系統基準資料維護－Excel驗證與差異預覽」只做驗證與預覽，不會把上傳內容套用到目前推估工作區，也不會建立或啟用正式版本。
 - 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非正式資料，不會永久更新共享正式資料。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
-- 尚未建立外部永久資料來源與完整參數來源紀錄；自動化測試與 GitHub Actions 已建立。
+- 尚未把年度版本建立／啟用接上 Streamlit，也尚未完成 SMB 鎖、revision、current 切換及 audit；自動化測試與 GitHub Actions 已建立。
 
 
 ## V2 多情境工作流程（第一階段已完成）
@@ -33,7 +34,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 本階段完成 1～N 個入流情境、共用 0 旬至全部推估旬、共用出流、批次演算、步驟四單一情境詳情，以及步驟五跨批次比較相容；核心水量平衡公式未改動。
 
-第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。正式版本保存、重開系統載入、跨電腦接續、衝突處理及桌面捷徑仍尚未實作；完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
+第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。年度不可變版本的純檔案系統發布已完成，但版本啟用、正式推估保存、跨電腦接續、衝突處理及桌面捷徑仍尚未實作；完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
 
 ## 技術與單位
 
@@ -119,7 +120,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 | --- | --- | --- |
 | Streamlit `session_state` | 同一次工作階段內保留輸入、情境及演算結果 | 關閉／逾時／重啟後仍保留；跨瀏覽器或跨電腦同步 |
 | JSON 設定檔 | 手動下載後，可在同一台或另一台電腦載入並重新演算 | 自動保存、自動載入、多人共用最新版 |
-| 公司內網共享資料夾唯讀載入 | 讀取目前年度版本與最近正式推估摘要；完整驗證後提供正式年度資料試算 | 尚無年度發布、正式推估保存、跨裝置載入正式推估工作區或寫入能力 |
+| 公司內網共享資料夾唯讀載入 | 讀取目前年度版本與最近正式推估摘要；完整驗證後提供正式年度資料試算 | 2-4C1 writer 尚未接上介面且未開放正式操作；仍無版本啟用、正式推估保存或跨裝置載入正式推估工作區 |
 
 因此，目前若要換電腦接續工作，必須先下載 JSON，再於另一台電腦手動載入。網站不會自動記得上一次推估條件，也不會辨識使用者或裝置。
 
@@ -133,7 +134,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 正式推估將保存完整輸入、摘要、完整逐日結果、年度資料版本、程式與 schema 版本、操作人、備註、上一版本及 checksum；年度資料將涵蓋 Q5～Q95、出流需求、滿庫容量、生態流量及士林堰 33 cms 引水上限。兩者都採新增版本、不覆蓋舊版。
 
-資料 schema、共享資料唯讀啟動、2-4A 空白 Excel 公版產生器，以及 2-4B Excel 解析、驗證與差異預覽已完成。2-4 整體仍未完成；正式 JSON／CSV 版本發布、啟用、鎖定、revision、audit、staging 與 quarantine 仍屬 2-4C。之後才會依序實作正式推估保存、跨裝置接續、桌面捷徑，以及公司實際 SMB 環境的多人與中斷驗收。資料夾結構、寫入鎖、revision 衝突、斷線行為、保存期限、Excel 角色及每階段驗收條件詳見：
+資料 schema、共享資料唯讀啟動、2-4A 空白 Excel 公版產生器、2-4B Excel 解析／驗證／差異預覽，以及 2-4C1 不可變年度版本安全建立已完成。2-4 整體仍未完成；2-4C2 尚包含 SMB 排他鎖、revision 衝突、`current.json` 原子切換、audit、復原及 Streamlit 人工確認介面。之後才會依序實作正式推估保存、跨裝置接續、桌面捷徑，以及公司實際 SMB 環境的多人與中斷驗收。資料夾結構、寫入鎖、revision 衝突、斷線行為、保存期限、Excel 角色及每階段驗收條件詳見：
 
 - [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)
 
@@ -200,14 +201,22 @@ Streamlit 頁面上方提供獨立的「系統基準資料維護－Excel驗證�
 
 本階段不建立版本目錄，不寫入正式 JSON／CSV、`system.json`、`annual-data/current.json` 或 `COMMITTED.json`，也不實作建立／啟用按鈕。實際公司 Excel、正式業務數值與驗證輸出不得提交 GitHub；正式共享根目錄仍未開放寫入。
 
+### 2-4C1 年度不可變版本安全建立
+
+`annual_data_version_writer.py` 接受 2-4B 已驗證且由使用者確認 fingerprint 的 `AnnualDataCandidate`、完全相同的原始 Excel bytes／原始檔名、人工宣告的操作人與建立備註。建立前會重新解析 Excel，核對來源 SHA-256、candidate fingerprint、候選完整內容及 warnings；有 warnings 時必須由呼叫端明確確認，確認後的完整 warning 紀錄會保存於 `version.json`。操作人名稱只是人工宣告，不代表系統已驗證真實身分。
+
+完整版本固定包含三個核心資料檔、`source/original.xlsx`、`version.json` 及最後寫入的 `COMMITTED.json`。原始 Excel bytes 不經另存，原始檔名只作 metadata，所有正式內容均列入 checksum。writer 只接受已存在且 `system.json` 通過 schema 與 `reservoir_id=liyutan` 驗證的指定根目錄；它在同一根目錄 staging 寫入、逐檔 flush／關閉／重讀核對、完整 schema 與 36 旬驗證後才 rename 到 `annual-data/versions/<version_id>`，並在發布後再次讀回驗證。驗證失敗資料移至 quarantine；中斷證據保留；既有版本永不覆蓋或合併。
+
+「建立版本」與「啟用版本」是兩個不同動作。2-4C1 成功只表示不可變版本已發布且仍未啟用；本模組不建立、不修改、不切換 `annual-data/current.json`，不寫 audit，也不實作 SMB 寫入鎖、revision 或 Streamlit 建立／啟用按鈕。這些仍屬 2-4C2，因此 `formal_write_available` 與 `formal_operations_available` 繼續固定為 `False`。本 PR 的開發與測試只使用合成 Excel 及 pytest `tmp_path`，尚未在公司實際 SMB 環境驗證，正式共享根目錄與受控測試共享根目錄均未存取。
+
 ## 自動化測試
 
 ```bash
-python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_storage_reader.py annual_data_excel.py annual_data_preview_ui.py scripts tests
+python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_storage_reader.py annual_data_excel.py annual_data_preview_ui.py annual_data_version_writer.py scripts tests
 python -m pytest -q
 ```
 
-測試另涵蓋 Excel 公版重新載入、2-4B 四表解析、固定欄位與36旬完整性、Q5～Q95 映射與順序、出流與參數驗證、公式／巨集／未知結構拒絕、fingerprint、參數 metadata、可確認第一版與既有版本差異，以及共享資料完整載入、未初始化／不可讀狀態、無正式推估、路徑與權限錯誤、manifest、checksum、current 競爭變更、Streamlit 工作區隔離與必須明確選擇的非正式備援模式。自動化測試只使用 pytest `tmp_path` 及合成資料，不存取 `U:`。
+測試另涵蓋 Excel 公版重新載入、2-4B 四表解析、固定欄位與36旬完整性、Q5～Q95 映射與順序、出流與參數驗證、公式／巨集／未知結構拒絕、fingerprint、參數 metadata、可確認第一版與既有版本差異，以及 2-4C1 原始 Excel 重驗、warnings 確認、完整 bundle、逐檔 checksum、staging／quarantine／rename、中斷注入、不可覆蓋及未啟用保證。共享資料測試另涵蓋完整載入、未初始化／不可讀狀態、無正式推估、路徑與權限錯誤、manifest、checksum、current 競爭變更、Streamlit 工作區隔離與必須明確選擇的非正式備援模式。自動化測試只使用 pytest `tmp_path` 及合成資料，不存取 `U:`。
 
 Repository 亦包含 `.github/workflows/tests.yml`，每次 push 與 Pull Request 都會使用 Python 3.12 執行 compileall 與完整 pytest 測試。
 
