@@ -15,6 +15,7 @@ import calendar
 import io
 import plotly.graph_objects as go
 import json
+from annual_data_preview_ui import render_annual_data_maintenance
 from shared_storage_reader import (
     DataSourceMode,
     compatibility_data_source,
@@ -771,6 +772,11 @@ if "scenarios" not in st.session_state:
 # ==========================================
 
 st.title("💧 鯉魚潭水庫庫容推估系統")
+
+render_annual_data_maintenance(
+    shared_storage_result,
+    shared_mode_enabled=shared_storage_mode_enabled,
+)
 
 if not shared_storage_mode_enabled:
     st.info(
