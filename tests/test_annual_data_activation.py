@@ -339,6 +339,87 @@ def test_corrupt_existing_current_blocks_activation_without_guessing(tmp_path):
     assert not _audit_files(root)
 
 
+@pytest.mark.parametrize(
+    "damage",
+    ["missing_directory", "missing_committed", "checksum", "schema"],
+)
+def test_invalid_current_version_is_rejected_inside_locked_critical_section(tmp_path, damage):
+    root = _root(tmp_path)
+    current_version_path = _write_version(root, VERSION_A)
+    target_path = _write_version(root, VERSION_B)
+    current_before = _write_current(root, 1, VERSION_A)
+    target_before = _checksums(target_path)
+    lock_entered = False
+
+    def damage_current_on_lock(_path):
+        @contextlib.contextmanager
+        def held():
+            nonlocal lock_entered
+            lock_entered = True
+            if damage == "missing_directory":
+                current_version_path.rename(root / "detached-current-version")
+            elif damage == "missing_committed":
+                (current_version_path / "COMMITTED.json").rename(
+                    current_version_path / "COMMITTED.missing"
+                )
+            elif damage == "checksum":
+                (current_version_path / "hydrology_q.csv").write_bytes(b"corrupt current data")
+            elif damage == "schema":
+                version_path = current_version_path / "version.json"
+                version = deserialize_json(version_path.read_bytes())
+                version["schema"] = "wrong/schema"
+                version_bytes = serialize_json(version)
+                version_path.write_bytes(version_bytes)
+                committed_path = current_version_path / "COMMITTED.json"
+                committed = deserialize_json(committed_path.read_bytes())
+                committed["manifest_sha256"] = sha256_bytes(version_bytes)
+                committed_path.write_bytes(serialize_json(committed))
+            yield
+
+        return held()
+
+    with pytest.raises(AnnualDataActivationError) as caught:
+        _activate(
+            root,
+            VERSION_B,
+            1,
+            VERSION_A,
+            lock_factory=damage_current_on_lock,
+        )
+
+    assert lock_entered is True
+    assert caught.value.code == "current_version_invalid"
+    assert "recovery" in str(caught.value)
+    assert (root / "annual-data" / "current.json").read_bytes() == current_before
+    current = validate_annual_current(deserialize_json(current_before))
+    assert current["revision"] == 1
+    assert current["current_version_id"] == VERSION_A
+    assert _checksums(target_path) == target_before
+    assert not _audit_files(root)
+    assert not list((root / "annual-data").glob(".current.json.*.tmp"))
+
+
+def test_valid_locked_current_version_and_valid_target_still_switch_normally(tmp_path):
+    root = _root(tmp_path)
+    current_version_path = _write_version(root, VERSION_A)
+    target_path = _write_version(root, VERSION_B)
+    immutable_before = {
+        VERSION_A: _checksums(current_version_path),
+        VERSION_B: _checksums(target_path),
+    }
+    _write_current(root, 1, VERSION_A)
+
+    result = _activate(root, VERSION_B, 1, VERSION_A)
+
+    assert result.before_revision == 1
+    assert result.after_revision == 2
+    assert result.current["current_version_id"] == VERSION_B
+    assert result.current["previous_version_id"] == VERSION_A
+    assert _checksums(current_version_path) == immutable_before[VERSION_A]
+    assert _checksums(target_path) == immutable_before[VERSION_B]
+    assert len(_audit_files(root)) == 1
+
+
 def test_lock_timeout_does_not_change_current_or_create_local_fallback(tmp_path):
     root = _root(tmp_path)
     _write_version(root, VERSION_A)

@@ -437,7 +437,9 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 年度鎖固定為 `locks/annual-current.lock`。Windows production implementation 使用 `CreateFileW` 取得並持有 share mode 為 0 的開啟中 file handle，以 Windows/SMB 檔案分享語意排除其他程序；不得以 lock 檔是否存在判斷。分享衝突採 200～500 ms jitter retry，預設 15 秒 timeout，逾時明確失敗且不得改存本機。Windows API 位於 platform guard 後，非 Windows CI 可 import；自動化核心測試注入 fake lock、monotonic clock、sleep 與 random，不依賴磁碟代號或實際 SMB。
 
-鎖只涵蓋重讀 current、雙欄位 conflict check、target 最終確認、current 原子切換與 audit。current 不存在時是 `(revision=0, current_version_id=null)`；存在時必須完整通過 `validate_annual_current()`。實際 revision 或 current ID 任一項與 observed state 不同（包含 current 出現或消失）均回報 `revision_conflict`，不得更新 observed 後繼續或採 last-write-wins。target 已是 current 時回報 `already_current`，不重寫 current、不增加 revision、不製造 audit success。
+鎖只涵蓋重讀 current、雙欄位 conflict check、目前 current version 完整驗證、target 最終確認、current 原子切換與 audit。current 不存在時是 `(revision=0, current_version_id=null)`；存在時必須完整通過 `validate_annual_current()`。實際 revision 或 current ID 任一項與 observed state 不同（包含 current 出現或消失）均回報 `revision_conflict`，不得更新 observed 後繼續或採 last-write-wins。
+
+observed conflict check 通過後，只要 `before_current_version_id` 非 null，就必須在同一把鎖內以 target 共用的 immutable annual bundle helper 完整重驗 `annual-data/versions/<before_current_version_id>`，包含安全路徑與 symlink、版本目錄、`COMMITTED.json`、manifest/version schema、manifest 與正式檔案 checksum、36 旬完整性，以及 version ID 與目錄名一致性。任何失敗均回報 `current_version_invalid`，不得切換 target、增加 revision、重寫 current、建立 success audit、猜測其他版本或自動修復；正常 activation 不可用 A → B 掩蓋損壞的 A，真正 recovery 留待 2-4C2b。只有目前 current version 與 target 都完整合法時才能繼續。target 已是 current 時回報 `already_current`，不重寫 current、不增加 revision、不製造 audit success。
 
 新 current 以同一 `annual-data` 目錄的唯一 temp file 寫入完整 bytes，flush/fsync、關閉、重讀驗證且與預期完全相同後，才 `os.replace` 原子取代 `current.json`，並於 replace 後再次重讀驗證。成功 revision 固定加一，`previous_version_id` 指向舊 current，因此 A → B → A 合法形成 1 → 2 → 3，而 A/B 版本本體不變。
 

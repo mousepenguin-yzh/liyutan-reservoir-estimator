@@ -298,7 +298,7 @@ def _assert_contained(base: Path, candidate: Path) -> None:
         ) from exc
 
 
-def _read_target_bundle(root: Path, version_id: str) -> tuple[dict, dict[str, bytes]]:
+def _read_immutable_annual_bundle(root: Path, version_id: str) -> tuple[dict, dict[str, bytes]]:
     versions_root = root / "annual-data" / "versions"
     target = versions_root / version_id
     _assert_contained(versions_root, target)
@@ -338,6 +338,19 @@ def _read_target_bundle(root: Path, version_id: str) -> tuple[dict, dict[str, by
             evidence_path=target,
         )
     return validated, bundle
+
+
+def _validate_current_version_bundle(root: Path, version_id: str) -> None:
+    """Require the locked current pointer to reference one complete bundle."""
+    try:
+        _read_immutable_annual_bundle(root, version_id)
+    except AnnualDataActivationError as exc:
+        raise AnnualDataActivationError(
+            "current_version_invalid",
+            "正式 current 所指年度版本已不存在、不完整或損壞；"
+            "正常啟用已停止，必須由 recovery 流程處理。",
+            evidence_path=root / "annual-data" / "versions" / version_id,
+        ) from exc
 
 
 def _read_current(path: Path) -> tuple[int, str | None, dict | None]:
@@ -476,7 +489,7 @@ def activate_annual_data_version(
 
     shared_root = Path(root)
     _validate_root_and_system(shared_root)
-    _, initial_target_bytes = _read_target_bundle(shared_root, safe_target)
+    _, initial_target_bytes = _read_immutable_annual_bundle(shared_root, safe_target)
 
     annual_root = shared_root / "annual-data"
     current_path = annual_root / "current.json"
@@ -512,7 +525,9 @@ def activate_annual_data_version(
                     "另一位使用者已先更新系統基準資料，請重新載入及比較。",
                     evidence_path=current_path,
                 )
-            _, final_target_bytes = _read_target_bundle(shared_root, safe_target)
+            if before_id is not None:
+                _validate_current_version_bundle(shared_root, before_id)
+            _, final_target_bytes = _read_immutable_annual_bundle(shared_root, safe_target)
             if final_target_bytes != initial_target_bytes:
                 raise AnnualDataActivationError(
                     "target_changed",
