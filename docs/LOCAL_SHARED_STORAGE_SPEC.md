@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：第二階段 2-4B Excel 解析、驗證及差異預覽、2-4C1 不可變年度版本 writer，以及 2-4C2a 年度啟用安全核心已實作；2-4C2b Streamlit／復原整合尚未實作，2-4 整體仍未完成
+狀態：第二階段 2-4B Excel 解析／驗證／差異預覽、2-4C1 不可變年度版本 writer、2-4C2a 年度啟用安全核心，以及 2-4C2b1 Streamlit 建立／啟用與 current-changed 工作區保護已實作；2-4C2b2 recovery／diagnostics 尚未完成，2-4 整體仍未完成
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -439,11 +439,11 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 鎖只涵蓋重讀 current、雙欄位 conflict check、目前 current version 完整驗證、target 最終確認、current 原子切換與 audit。current 不存在時是 `(revision=0, current_version_id=null)`；存在時必須完整通過 `validate_annual_current()`。實際 revision 或 current ID 任一項與 observed state 不同（包含 current 出現或消失）均回報 `revision_conflict`，不得更新 observed 後繼續或採 last-write-wins。
 
-observed conflict check 通過後，只要 `before_current_version_id` 非 null，就必須在同一把鎖內以 target 共用的 immutable annual bundle helper 完整重驗 `annual-data/versions/<before_current_version_id>`，包含安全路徑與 symlink、版本目錄、`COMMITTED.json`、manifest/version schema、manifest 與正式檔案 checksum、36 旬完整性，以及 version ID 與目錄名一致性。任何失敗均回報 `current_version_invalid`，不得切換 target、增加 revision、重寫 current、建立 success audit、猜測其他版本或自動修復；正常 activation 不可用 A → B 掩蓋損壞的 A，真正 recovery 留待 2-4C2b。只有目前 current version 與 target 都完整合法時才能繼續。target 已是 current 時回報 `already_current`，不重寫 current、不增加 revision、不製造 audit success。
+observed conflict check 通過後，只要 `before_current_version_id` 非 null，就必須在同一把鎖內以 target 共用的 immutable annual bundle helper 完整重驗 `annual-data/versions/<before_current_version_id>`，包含安全路徑與 symlink、版本目錄、`COMMITTED.json`、manifest/version schema、manifest 與正式檔案 checksum、36 旬完整性，以及 version ID 與目錄名一致性。任何失敗均回報 `current_version_invalid`，不得切換 target、增加 revision、重寫 current、建立 success audit、猜測其他版本或自動修復；正常 activation 不可用 A → B 掩蓋損壞的 A，真正 recovery 留待 2-4C2b2。只有目前 current version 與 target 都完整合法時才能繼續。target 已是 current 時回報 `already_current`，不重寫 current、不增加 revision、不製造 audit success。
 
 新 current 以同一 `annual-data` 目錄的唯一 temp file 寫入完整 bytes，flush/fsync、關閉、重讀驗證且與預期完全相同後，才 `os.replace` 原子取代 `current.json`，並於 replace 後再次重讀驗證。成功 revision 固定加一，`previous_version_id` 指向舊 current，因此 A → B → A 合法形成 1 → 2 → 3，而 A/B 版本本體不變。
 
-為降低 current 已切換但 audit 失敗的窗口，audit temp 會先準備並驗證，再切換 current，最後才發布正式 event。若 current atomic replace 已成功，但 audit rename、重讀或驗證仍失敗，絕不 rollback current；API 回報 `current_switched_audit_incomplete` recovery-required 狀態，也不宣稱完整成功。audit 補建／人工 recovery 與 current changed UI 留待 2-4C2b。
+為降低 current 已切換但 audit 失敗的窗口，audit temp 會先準備並驗證，再切換 current，最後才發布正式 event。若 current atomic replace 已成功，但 audit rename、重讀或驗證仍失敗，絕不 rollback current；API 回報 `current_switched_audit_incomplete` recovery-required 狀態，也不宣稱完整成功。2-4C2b1 會保留 persistent recovery-required banner 並禁止重送；audit 補建與人工 recovery 留待 2-4C2b2。
 
 ## 10. 初始化與跨裝置接續
 
@@ -618,7 +618,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 
 共享模式一旦啟用，讀取失敗時不得無提示退回內建資料；只有使用者明確點選備援後才能開放非正式工作區。reader 僅執行讀取，不建立、修改、重新命名或刪除共享資料。開發與自動化測試只可使用 pytest 暫存目錄及合成資料。
 
-狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`；2-4C1 已完成不可變版本 writer，2-4C2a 也已完成 Windows/SMB 排他鎖、雙欄位 revision conflict、current 原子取代與 audit 的後端安全核心，但兩者都尚未接上 Streamlit，也未完成公司 SMB 寫入權限與實機人工驗收。因此所有資料來源的 `formal_write_available=False`，相容用的 `formal_operations_available` 亦固定為 `False`。只有後續 2-4C2b／2-5 完成 UI、recovery、正式寫入權限及操作驗證後，才能定義正式寫入可用條件。
+狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`。2-4C2b1 新增年度專用 `annual_data_write_available`：只有 `LIYUTAN_ENABLE_SHARED_STORAGE=1`、`LIYUTAN_ENABLE_ANNUAL_DATA_WRITES=1`，且 reader 得到完整健康 current，或在 root／合法 `system.json` 後明確回報 `ANNUAL_CURRENT_MISSING` 時才為 True。compatibility、fallback、未設定或不存在的 root、system 缺少／錯誤、wrong reservoir、current／bundle 損壞、權限／讀取錯誤與 `CURRENT_CHANGED` 均為 False。production activation 另限 Windows/SMB。公司 SMB 寫入權限與實機人工驗收仍未完成；generic `formal_write_available=False` 與 `formal_operations_available=False` 仍固定不變，供尚未完成的正式推估流程使用。
 
 驗收：
 
@@ -638,9 +638,10 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 - 2-4B（已完成）：Excel 解析、完整內容驗證、記憶體候選資料、穩定 fingerprint、目前啟用年度版本差異預覽，以及在系統資料已驗證且 annual current 確實缺少時的第一版完整預覽。無法讀取或尚未初始化共享資料時只顯示候選內容，不宣稱沒有舊版。這不等同正式發布或啟用。
 - 2-4C1（已完成）：將已確認的 2-4B candidate 與原始 Excel 重新驗證後，於指定且已初始化的根目錄完成 staging、逐檔 checksum、`COMMITTED.json` 最後寫入、完整 schema／36旬驗證、quarantine 及同磁碟 rename，發布不可變但未啟用的年度版本。自動化測試只使用 pytest `tmp_path` 與合成 Excel。
 - 2-4C2a（已完成）：對既有完整年度版本實作 Windows/SMB OS-level 排他鎖、鎖內 revision/current ID conflict、first-current 與 already-current 語意、`annual-data/current.json` 同目錄原子切換、一事件一檔 audit，以及 current 已切換但 audit 不完整時不 rollback 的 recovery-required 狀態。自動化測試只使用 pytest `tmp_path`、synthetic bundles、fake locks 與 fault injection。
-- 2-4C2b（未實作）：Streamlit 人工確認／建立／啟用介面、current changed 提示，以及 audit recovery／補建整合。
+- 2-4C2b1（已完成）：Streamlit 保留 2-4B preview，在年度專用預設關閉旗標與安全 capability 下，以操作人、獨立備註、warnings／內容兩層確認建立 immutable version；建立不自動啟用。啟用是第二次人工動作，使用當次畫面的 exact observed revision/current、software provenance 與 Windows/SMB production lock；conflict 不重試。已開啟工作區遇 current A→B 只顯示 persistent stale 提示，使用者明確 reload 前不修改 hydrology、demand、水庫參數、session overrides 或結果。
+- 2-4C2b2（未實作）：historical／orphan／staging／quarantine inventory、audit missing 補建、current repair、rollback 選擇及完整 recovery diagnostics。
 
-2-4 整體仍未完成。2-4C1 建立成功只代表不可變版本已發布，2-4C2a 則提供尚未接 UI 的獨立啟用 primitive；未來 UI 必須明確呼叫啟用，不會由 writer 自動切換。尚未在公司實際 SMB 環境驗證，本 PR 未存取正式共享根目錄或受控測試共享根目錄；`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
+2-4 整體仍未完成。2-4C1 建立成功只代表不可變版本已發布；2-4C2b1 UI 必須再經獨立確認才呼叫 2-4C2a activation，writer 永不自動切換。activation 成功也不直接覆蓋已開啟工作區，下一次 reader 看見 A→B 後仍需使用者明確 reload。若 `current_switched_audit_incomplete`，UI 不宣稱成功、不 rollback、不重送，並持續顯示 recovery-required。尚未在公司實際 SMB 環境驗證，本 PR 未存取正式共享根目錄或受控測試共享根目錄；`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
 
 驗收：
 

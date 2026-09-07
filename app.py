@@ -16,6 +16,7 @@ import io
 import plotly.graph_objects as go
 import json
 from annual_data_preview_ui import render_annual_data_maintenance
+from annual_data_maintenance import annual_data_write_capability
 from shared_storage_reader import (
     DataSourceMode,
     compatibility_data_source,
@@ -178,6 +179,57 @@ def apply_shared_annual_data(
     st.session_state.shilin_eco_flow = float(parameters["shilin_ecological_flow_cms"])
     st.session_state.liyutan_eco_flow = float(parameters["liyutan_ecological_release_cms"])
     st.session_state.shilin_diversion_limit = float(parameters["shilin_diversion_limit_cms"])
+
+
+def reload_shared_annual_workspace(result) -> None:
+    """Explicitly replace every annual baseline component with one validated snapshot."""
+    apply_shared_annual_data(result)
+    st.session_state.hydrology_session_upload = False
+    st.session_state.demand_session_upload = False
+    st.session_state.loaded_shared_annual_version_id = result.annual.version["version_id"]
+    st.session_state.shared_snapshot_valid = True
+    st.session_state.workspace_annual_stale = False
+    st.session_state.pop("pending_shared_annual_version_id", None)
+    st.session_state.pop("workspace_annual_retain_acknowledged", None)
+    invalidate_session_results(st.session_state)
+
+
+def render_shared_annual_workspace_interlock(result) -> None:
+    """Keep a loaded workspace stable until the user explicitly accepts new current."""
+    loaded_id = st.session_state.get("loaded_shared_annual_version_id")
+    pending_id = st.session_state.get("pending_shared_annual_version_id")
+    if not st.session_state.get("workspace_annual_stale") or not loaded_id or not pending_id:
+        return
+    st.error(
+        f"目前工作區仍使用年度版本 {loaded_id}；共享正式 current 已更新為 {pending_id}。"
+    )
+    st.warning(
+        "目前工作區不是最新 current；可繼續查看或進行非正式試算，但後續正式推估保存"
+        "必須禁止。正式推估保存（2-5）尚未實作。"
+    )
+    if st.session_state.hydrology_session_upload or st.session_state.demand_session_upload:
+        st.warning(
+            "重新載入新版會清除目前的水文／出流年度資料工作階段上傳，"
+            "並完整套用新版水文、出流需求與水庫參數。"
+        )
+    controls = st.columns(2)
+    if controls[0].button(
+        f"重新載入新版系統基準資料 {pending_id}",
+        type="primary",
+        key=f"reload_shared_annual_{pending_id}",
+    ):
+        if result is not None and result.ok and result.annual.version["version_id"] == pending_id:
+            reload_shared_annual_workspace(result)
+            st.rerun()
+        else:
+            st.error("共享 current 已再次變更或目前無法完整讀取，請先重新整理後再操作。")
+    if controls[1].button(
+        "暫時保留目前工作區",
+        key=f"retain_shared_annual_{loaded_id}_{pending_id}",
+    ):
+        st.session_state.workspace_annual_retain_acknowledged = True
+    if st.session_state.get("workspace_annual_retain_acknowledged"):
+        st.info(f"已暫時保留工作區版本 {loaded_id}；A → B 不一致警示會持續顯示。")
 
 
 # ==========================================
@@ -667,9 +719,26 @@ if shared_storage_mode_enabled:
     if shared_storage_result.ok:
         st.session_state.shared_builtin_fallback_confirmed = False
         annual_version_id = shared_storage_result.annual.version["version_id"]
-        if (
-            st.session_state.get("loaded_shared_annual_version_id") != annual_version_id
-            or not previous_shared_snapshot_valid
+        loaded_annual_version_id = st.session_state.get("loaded_shared_annual_version_id")
+        if loaded_annual_version_id is None:
+            apply_shared_annual_data(
+                shared_storage_result,
+                preserve_hydrology=bool(st.session_state.hydrology_session_upload),
+                preserve_demand=bool(st.session_state.demand_session_upload),
+            )
+            st.session_state.loaded_shared_annual_version_id = annual_version_id
+            st.session_state.workspace_annual_stale = False
+            st.session_state.pop("pending_shared_annual_version_id", None)
+            st.session_state.pop("workspace_annual_retain_acknowledged", None)
+            if st.session_state.get("v2_batch_results"):
+                invalidate_session_results(st.session_state)
+        elif loaded_annual_version_id != annual_version_id:
+            # Never replace an already-open workspace merely because another
+            # computer activated a new current during this Streamlit session.
+            st.session_state.workspace_annual_stale = True
+            st.session_state.pending_shared_annual_version_id = annual_version_id
+        elif (
+            not previous_shared_snapshot_valid
             or "hydrology_df" not in st.session_state
             or "demand_df" not in st.session_state
         ):
@@ -678,9 +747,15 @@ if shared_storage_mode_enabled:
                 preserve_hydrology=bool(st.session_state.hydrology_session_upload),
                 preserve_demand=bool(st.session_state.demand_session_upload),
             )
-            st.session_state.loaded_shared_annual_version_id = annual_version_id
             if st.session_state.get("v2_batch_results"):
                 invalidate_session_results(st.session_state)
+            st.session_state.workspace_annual_stale = False
+            st.session_state.pop("pending_shared_annual_version_id", None)
+            st.session_state.pop("workspace_annual_retain_acknowledged", None)
+        else:
+            st.session_state.workspace_annual_stale = False
+            st.session_state.pop("pending_shared_annual_version_id", None)
+            st.session_state.pop("workspace_annual_retain_acknowledged", None)
         st.session_state.shared_snapshot_valid = True
     elif source_decision.mode is DataSourceMode.BUILTIN_FALLBACK:
         if st.session_state.get("active_data_source_mode") != DataSourceMode.BUILTIN_FALLBACK.value:
@@ -730,8 +805,14 @@ st.session_state.active_data_source_mode = source_decision.mode.value
 st.session_state.shared_storage_mode_enabled = shared_storage_mode_enabled
 st.session_state.shared_storage_readable = source_decision.shared_storage_readable
 st.session_state.formal_write_available = source_decision.formal_write_available
-# Legacy key retained for later stages; stage 2-3 never provides formal writes.
+# Generic formal-write keys remain closed until the later official-estimate workflow.
 st.session_state.formal_operations_available = False
+annual_write_capability = annual_data_write_capability(
+    shared_storage_result,
+    shared_mode_enabled=shared_storage_mode_enabled,
+)
+st.session_state.annual_data_write_available = annual_write_capability.available
+st.session_state.annual_data_activation_available = annual_write_capability.activation_available
 
 # 時間區間初始化
 if "display_start_date" not in st.session_state:
@@ -773,9 +854,12 @@ if "scenarios" not in st.session_state:
 
 st.title("💧 鯉魚潭水庫庫容推估系統")
 
+render_shared_annual_workspace_interlock(shared_storage_result)
+
 render_annual_data_maintenance(
     shared_storage_result,
     shared_mode_enabled=shared_storage_mode_enabled,
+    capability=annual_write_capability,
 )
 
 if not shared_storage_mode_enabled:
@@ -791,7 +875,12 @@ if not shared_storage_mode_enabled:
 elif shared_storage_result.ok:
     annual = shared_storage_result.annual
     st.success("✅ 已連線到共享正式資料，年度資料完整驗證成功。")
-    st.caption("共享資料狀態：可讀（完整驗證成功）｜正式寫入：不可用（2-3 僅提供唯讀載入）")
+    annual_write_label = "受控開放" if annual_write_capability.available else "關閉"
+    st.caption(
+        "共享資料狀態：可讀（完整驗證成功）｜"
+        f"年度資料正式寫入：{annual_write_label}｜"
+        "generic 正式寫入：不可用｜正式推估保存：不可用"
+    )
     st.caption(f"共享資料讀取時間：{shared_storage_result.read_at}")
     source_cols = st.columns(4)
     source_cols[0].metric("水庫", shared_storage_result.system["display_name"])
@@ -811,7 +900,14 @@ elif shared_storage_result.ok:
             "不可冒充共享正式版本，後續正式功能必須維持停用。"
         )
     else:
-        st.info(f"本次試算目前使用的資料來源：{source_decision.label}")
+        loaded_workspace_id = st.session_state.get("loaded_shared_annual_version_id")
+        if st.session_state.get("workspace_annual_stale"):
+            st.warning(
+                f"本次試算工作區仍使用共享正式年度版本 {loaded_workspace_id}，"
+                f"不是目前 current {annual.version['version_id']}。"
+            )
+        else:
+            st.info(f"本次試算目前使用的資料來源：{source_decision.label}")
 else:
     storage_error = shared_storage_result.error
     st.error(
@@ -834,7 +930,14 @@ else:
             st.rerun()
         st.stop()
 
-st.caption(f"本次試算目前使用的資料來源：{source_decision.label}")
+if st.session_state.get("workspace_annual_stale"):
+    st.caption(
+        "本次試算目前使用的資料來源："
+        f"共享正式年度版本 {st.session_state.loaded_shared_annual_version_id}"
+        "（不是目前 current）"
+    )
+else:
+    st.caption(f"本次試算目前使用的資料來源：{source_decision.label}")
 
 tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
     "⚙️ 第一階段：推估需求基礎資料設定", 
@@ -1336,7 +1439,14 @@ with tab_inflow:
             )
                 
             # 重設按鈕常駐顯示
-            if st.button("🔄 還原目前基準水文資料", use_container_width=True, type="secondary"):
+            if st.session_state.get("workspace_annual_stale"):
+                st.caption("共享 current 已變更；請先使用頁面上方的完整重新載入，避免混用年度版本。")
+            if st.button(
+                "🔄 還原目前基準水文資料",
+                use_container_width=True,
+                type="secondary",
+                disabled=bool(st.session_state.get("workspace_annual_stale")),
+            ):
                 if shared_storage_mode_enabled and shared_storage_result.ok:
                     st.session_state.hydrology_df = shared_hydrology_frame(shared_storage_result.annual.hydrology)
                     st.session_state.hydrology_source_status = (
@@ -1787,7 +1897,14 @@ with tab_outflow:
             )
                 
             # 重設按鈕常駐顯示
-            if st.button("🔄 還原目前基準出流需求", use_container_width=True, type="secondary"):
+            if st.session_state.get("workspace_annual_stale"):
+                st.caption("共享 current 已變更；請先使用頁面上方的完整重新載入，避免混用年度版本。")
+            if st.button(
+                "🔄 還原目前基準出流需求",
+                use_container_width=True,
+                type="secondary",
+                disabled=bool(st.session_state.get("workspace_annual_stale")),
+            ):
                 if shared_storage_mode_enabled and shared_storage_result.ok:
                     st.session_state.demand_df = shared_demand_frame(shared_storage_result.annual.outflow_demand)
                     st.session_state.demand_source_status = (
