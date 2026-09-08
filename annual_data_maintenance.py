@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Mapping
 
+from annual_data_diagnostics import (
+    AnnualDataDiagnostics,
+    RecoverySeverity,
+    diagnose_annual_data,
+)
 from annual_data_activation import activate_annual_data_version
 from annual_data_version_writer import publish_annual_data_version
 from shared_storage_reader import SharedStorageResult, StorageErrorCode
@@ -39,6 +44,7 @@ def annual_data_write_capability(
     result: SharedStorageResult | None,
     *,
     shared_mode_enabled: bool,
+    diagnostics: AnnualDataDiagnostics | None = None,
     environ: Mapping[str, str] | None = None,
     platform: str | None = None,
 ) -> AnnualDataWriteCapability:
@@ -56,6 +62,33 @@ def annual_data_write_capability(
             False, False, "shared_state_unavailable", "共享資料根目錄或讀取結果不可用。"
         )
 
+    if diagnostics is None or diagnostics.root != result.root:
+        diagnostics = diagnose_annual_data(shared_result=result)
+
+    # Filesystem diagnostics are authoritative for recovery interlocks.  The
+    # ordinary reader cannot prove whether a successful current transition has
+    # its matching audit, and a missing current is not a first-version state
+    # when complete immutable versions already exist.
+    if diagnostics is not None:
+        if diagnostics.overall_severity is RecoverySeverity.RECOVERY_REQUIRED:
+            return AnnualDataWriteCapability(
+                False,
+                False,
+                "recovery_required",
+                f"年度正式資料需要復原處理；正常建立／啟用已停止。{diagnostics.summary}",
+                root=result.root,
+                observed_revision=diagnostics.revision,
+                observed_current_version_id=diagnostics.current_version_id,
+            )
+        if diagnostics.overall_severity is RecoverySeverity.UNINSPECTABLE:
+            return AnnualDataWriteCapability(
+                False,
+                False,
+                "diagnostics_uninspectable",
+                f"年度 diagnostics 無法可靠完成；正常建立／啟用已停止。{diagnostics.summary}",
+                root=result.root,
+            )
+
     if result.ok:
         current = result.annual.current
         revision = current["revision"]
@@ -64,6 +97,15 @@ def annual_data_write_capability(
     elif result.error is not None and result.error.code is StorageErrorCode.ANNUAL_CURRENT_MISSING:
         # The reader reaches this code only after root and system.json, including
         # reservoir_id=liyutan, have passed validation.
+        if diagnostics is not None and not diagnostics.is_first_version_state:
+            return AnnualDataWriteCapability(
+                False,
+                False,
+                "shared_state_invalid",
+                "current 缺失，但 versions 中已存在正式資料 evidence，需要 recovery 判斷，"
+                "不能視為第一版。",
+                root=result.root,
+            )
         revision = 0
         current_id = None
         state = "first_version"

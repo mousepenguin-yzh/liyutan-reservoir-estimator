@@ -15,7 +15,11 @@ import calendar
 import io
 import plotly.graph_objects as go
 import json
-from annual_data_preview_ui import render_annual_data_maintenance
+from annual_data_diagnostics import diagnose_annual_data
+from annual_data_preview_ui import (
+    render_annual_data_diagnostics,
+    render_annual_data_maintenance,
+)
 from annual_data_maintenance import annual_data_write_capability
 from shared_storage_reader import (
     DataSourceMode,
@@ -692,6 +696,11 @@ def plot_reservoir_capacity_trend(df_sim_results: pd.DataFrame, display_start: d
 # 未啟用時維持既有線上網站的相容模式，完全不存取共享路徑。
 shared_storage_mode_enabled = shared_storage_enabled()
 shared_storage_result = load_shared_storage() if shared_storage_mode_enabled else None
+annual_diagnostics = (
+    diagnose_annual_data(shared_result=shared_storage_result)
+    if shared_storage_mode_enabled
+    else None
+)
 if "shared_builtin_fallback_confirmed" not in st.session_state:
     st.session_state.shared_builtin_fallback_confirmed = False
 if "hydrology_session_upload" not in st.session_state:
@@ -810,6 +819,7 @@ st.session_state.formal_operations_available = False
 annual_write_capability = annual_data_write_capability(
     shared_storage_result,
     shared_mode_enabled=shared_storage_mode_enabled,
+    diagnostics=annual_diagnostics,
 )
 st.session_state.annual_data_write_available = annual_write_capability.available
 st.session_state.annual_data_activation_available = annual_write_capability.activation_available
@@ -856,9 +866,15 @@ st.title("💧 鯉魚潭水庫庫容推估系統")
 
 render_shared_annual_workspace_interlock(shared_storage_result)
 
+render_annual_data_diagnostics(
+    annual_diagnostics,
+    shared_mode_enabled=shared_storage_mode_enabled,
+)
+
 render_annual_data_maintenance(
     shared_storage_result,
     shared_mode_enabled=shared_storage_mode_enabled,
+    diagnostics=annual_diagnostics,
     capability=annual_write_capability,
 )
 

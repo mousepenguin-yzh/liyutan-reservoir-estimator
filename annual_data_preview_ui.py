@@ -7,6 +7,12 @@ import hashlib
 import pandas as pd
 import streamlit as st
 
+from annual_data_diagnostics import (
+    AnnualDataDiagnostics,
+    CurrentAuditStatus,
+    RecoverySeverity,
+    VersionStatus,
+)
 from annual_data_activation import (
     AnnualDataActivationConflictError,
     AnnualDataActivationError,
@@ -28,7 +34,178 @@ RECOVERY_REQUIRED_KEY = "annual_activation_recovery_required"
 ACTIVATION_RESULT_KEY = "annual_activation_result"
 
 
-def _baseline_context(result, *, shared_mode_enabled: bool):
+def render_annual_data_diagnostics(
+    diagnostics: AnnualDataDiagnostics | None,
+    *,
+    shared_mode_enabled: bool,
+) -> None:
+    """Render read-only filesystem evidence without offering recovery actions."""
+    if not shared_mode_enabled:
+        return
+    with st.expander("🩺 年度資料診斷與復原狀態", expanded=False):
+        if diagnostics is None:
+            st.error("年度 diagnostics 結果不可用；正常建立／啟用功能維持停止。")
+            return
+
+        severity = diagnostics.overall_severity
+        if severity is RecoverySeverity.HEALTHY:
+            st.success(f"年度資料診斷：healthy。{diagnostics.summary}")
+        elif severity is RecoverySeverity.ATTENTION:
+            st.warning(f"年度資料診斷：attention。{diagnostics.summary}")
+        elif severity is RecoverySeverity.RECOVERY_REQUIRED:
+            st.error(
+                "正式年度資料需要復原處理；正常建立／啟用功能維持停止。"
+            )
+            st.warning(diagnostics.summary)
+            st.info(
+                "Recovery actions 尚未實作，將於 2-4C2b2b 提供人工確認流程。"
+            )
+        else:
+            st.error(f"年度資料診斷：uninspectable。{diagnostics.summary}")
+
+        current_columns = st.columns(4)
+        current_columns[0].metric("current 狀態", diagnostics.current_status.value)
+        current_columns[1].metric(
+            "current version",
+            diagnostics.current_version_id or "無",
+        )
+        current_columns[2].metric(
+            "current revision",
+            str(diagnostics.revision) if diagnostics.revision is not None else "無",
+        )
+        current_columns[3].metric(
+            "current activation audit",
+            diagnostics.current_audit_status.value,
+        )
+        if diagnostics.current_audit_status is CurrentAuditStatus.MISSING:
+            st.error(
+                "current 本身與版本完整，但找不到對應此次 current transition 的正式 "
+                "audit event，需要 recovery 補建。"
+            )
+        elif diagnostics.current_audit_status is CurrentAuditStatus.AMBIGUOUS:
+            st.error(
+                "找到多個對應同一 revision transition 的 audit event，需要人工檢查。"
+            )
+        if diagnostics.current_failure_reason:
+            st.caption(f"current diagnostics：{diagnostics.current_failure_reason}")
+
+        counts = {
+            status: sum(item.status is status for item in diagnostics.versions)
+            for status in VersionStatus
+        }
+        version_columns = st.columns(4)
+        version_columns[0].metric("current versions", counts[VersionStatus.CURRENT])
+        version_columns[1].metric("historical versions", counts[VersionStatus.HISTORICAL])
+        version_columns[2].metric("orphan versions", counts[VersionStatus.ORPHAN])
+        version_columns[3].metric("invalid versions", counts[VersionStatus.INVALID])
+        evidence_columns = st.columns(3)
+        evidence_columns[0].metric("staging", len(diagnostics.staging))
+        evidence_columns[1].metric("quarantine", len(diagnostics.quarantine))
+        evidence_columns[2].metric("temp artifacts", len(diagnostics.temp_artifacts))
+        st.caption(f"overall recovery severity：{severity.value}")
+
+        if diagnostics.versions:
+            st.markdown("**Annual versions inventory**")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "entry": item.entry_name,
+                            "status": item.status.value,
+                            "validation": "valid" if item.validation_ok else "invalid",
+                            "modified_at": item.modified_at,
+                            "failure_reason": item.failure_reason,
+                        }
+                        for item in diagnostics.versions
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        if diagnostics.staging:
+            st.markdown("**Annual writer staging inventory（非正式版本）**")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "entry": item.entry_name,
+                            "status": item.status.value,
+                            "directory": item.is_directory,
+                            "COMMITTED.json": item.has_committed,
+                            "looks_complete": item.looks_complete,
+                            "validation": "valid" if item.validation_ok else "invalid",
+                            "modified_at": item.modified_at,
+                            "failure_reason": item.failure_reason,
+                        }
+                        for item in diagnostics.staging
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        if diagnostics.quarantine:
+            st.markdown("**Quarantine inventory（只讀 evidence）**")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "entry": item.entry_name,
+                            "annual_data_evidence": item.is_annual_data_evidence,
+                            "validation": item.validation_ok,
+                            "modified_at": item.modified_at,
+                            "failure_reason": item.failure_reason,
+                        }
+                        for item in diagnostics.quarantine
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        if diagnostics.audits:
+            st.markdown("**Audit inventory**")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "path": str(item.path.relative_to(diagnostics.root)),
+                            "status": item.status.value,
+                            "modified_at": item.modified_at,
+                            "failure_reason": item.failure_reason,
+                        }
+                        for item in diagnostics.audits
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        if diagnostics.temp_artifacts:
+            st.markdown("**Residual temp artifacts（diagnostics evidence only）**")
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "path": str(item.path.relative_to(diagnostics.root)),
+                            "type": item.artifact_type,
+                            "modified_at": item.modified_at,
+                        }
+                        for item in diagnostics.temp_artifacts
+                    ]
+                ),
+                hide_index=True,
+                width="stretch",
+            )
+        if diagnostics.inspection_errors:
+            st.error("；".join(diagnostics.inspection_errors))
+        if diagnostics.lock_metadata and diagnostics.lock_metadata.exists:
+            st.caption(diagnostics.lock_metadata.note)
+
+
+def _baseline_context(
+    result,
+    *,
+    shared_mode_enabled: bool,
+    diagnostics: AnnualDataDiagnostics | None = None,
+):
     if not shared_mode_enabled:
         return (
             "unverified",
@@ -48,7 +225,15 @@ def _baseline_context(result, *, shared_mode_enabled: bool):
             "warning",
         )
     if result.error.code is StorageErrorCode.ANNUAL_CURRENT_MISSING:
-        return "confirmed_absent", None, None, None
+        if diagnostics is not None and diagnostics.is_first_version_state:
+            return "confirmed_absent", None, None, None
+        return (
+            "unverified",
+            None,
+            "current 缺失，但 versions 中已存在正式資料 evidence，需要 recovery 判斷，"
+            "不能視為第一版。下方只顯示候選內容完整預覽。",
+            "error",
+        )
     if result.error.code is StorageErrorCode.SYSTEM_MISSING:
         return (
             "unverified",
@@ -389,12 +574,15 @@ def render_annual_data_maintenance(
     result,
     *,
     shared_mode_enabled: bool,
+    diagnostics: AnnualDataDiagnostics | None = None,
     capability: AnnualDataWriteCapability | None = None,
     service: AnnualDataMaintenanceService | None = None,
 ) -> None:
     """Render preview plus two independent, explicitly confirmed write actions."""
     capability = capability or annual_data_write_capability(
-        result, shared_mode_enabled=shared_mode_enabled
+        result,
+        shared_mode_enabled=shared_mode_enabled,
+        diagnostics=diagnostics,
     )
     service = service or AnnualDataMaintenanceService()
     with st.expander("🧾 系統基準資料維護－驗證、建立與啟用", expanded=False):
@@ -482,7 +670,9 @@ def render_annual_data_maintenance(
                     st.caption("warnings：0 項")
 
                 baseline_state, baseline, message, message_kind = _baseline_context(
-                    result, shared_mode_enabled=shared_mode_enabled
+                    result,
+                    shared_mode_enabled=shared_mode_enabled,
+                    diagnostics=diagnostics,
                 )
                 if message:
                     getattr(st, message_kind)(message)

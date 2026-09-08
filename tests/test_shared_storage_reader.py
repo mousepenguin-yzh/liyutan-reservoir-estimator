@@ -15,7 +15,9 @@ from shared_storage_reader import (
     shared_storage_enabled,
 )
 from shared_storage_schema import (
+    ANNUAL_ACTIVATION_EVENT_TYPE,
     ANNUAL_CURRENT_SCHEMA,
+    AUDIT_EVENT_SCHEMA,
     OFFICIAL_CURRENT_SCHEMA,
     SCHEMA_VERSION,
     SHARED_ROOT_SCHEMA,
@@ -72,6 +74,34 @@ def _build_root(tmp_path: Path, *, official: bool = False, annual_bundle=None) -
     _write_bundle(
         root / "annual-data" / "versions" / ANNUAL_ID,
         annual_bundle or _annual_bundle(),
+    )
+    audit_dir = root / "audit" / "events" / "2026" / "12"
+    audit_dir.mkdir(parents=True)
+    (audit_dir / "20261215T023500000000Z_synthetic-activation-1.json").write_bytes(
+        serialize_json(
+            {
+                "schema": AUDIT_EVENT_SCHEMA,
+                "schema_version": SCHEMA_VERSION,
+                "event_id": "synthetic-activation-1",
+                "event_type": ANNUAL_ACTIVATION_EVENT_TYPE,
+                "occurred_at": "2026-12-15T02:35:00Z",
+                "annual_target_version_id": ANNUAL_ID,
+                "before_revision": 0,
+                "before_current_version_id": None,
+                "after_revision": 1,
+                "after_current_version_id": ANNUAL_ID,
+                "operator_display_name": "測試操作人",
+                "note": "合成首次啟用",
+                "result": "success",
+                "software": {
+                    "repository": "mousepenguin-yzh/liyutan-reservoir-estimator",
+                    "git_commit": "a" * 40,
+                    "app_version": "git-aaaaaaaaaaaa",
+                    "source_tree_dirty": False,
+                },
+                "diagnostics": {"hostname": "synthetic-host", "process_id": 1},
+            }
+        )
     )
     if official:
         official_current = {
