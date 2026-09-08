@@ -1,5 +1,8 @@
+import shutil
+
 import pytest
 
+from annual_data_diagnostics import diagnose_annual_data
 from annual_data_maintenance import (
     ENABLE_ANNUAL_DATA_WRITES_ENV,
     AnnualDataMaintenanceService,
@@ -51,6 +54,8 @@ def test_healthy_current_and_first_version_expose_exact_observed_state(tmp_path)
     )
 
     (root / "annual-data" / "current.json").unlink()
+    shutil.rmtree(root / "annual-data" / "versions")
+    shutil.rmtree(root / "audit")
     missing = load_shared_storage(root)
     first = annual_data_write_capability(
         missing,
@@ -98,6 +103,26 @@ def test_damaged_current_and_non_windows_activation_are_not_misrepresented(tmp_p
     )
     assert linux.available
     assert not linux.activation_available
+
+
+def test_diagnostics_recovery_required_blocks_create_and_activate(tmp_path):
+    root = _build_root(tmp_path)
+    for audit in (root / "audit" / "events").rglob("*.json"):
+        audit.unlink()
+    reader_result = load_shared_storage(root)
+    diagnostics = diagnose_annual_data(root)
+
+    capability = annual_data_write_capability(
+        reader_result,
+        shared_mode_enabled=True,
+        diagnostics=diagnostics,
+        environ={ENABLE_ANNUAL_DATA_WRITES_ENV: "1"},
+        platform="win32",
+    )
+
+    assert not capability.available
+    assert not capability.activation_available
+    assert capability.state == "recovery_required"
 
 
 def test_provenance_is_read_only_derived_and_rejects_unreliable_commit(tmp_path):

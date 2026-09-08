@@ -1,4 +1,5 @@
 import contextlib
+import shutil
 from pathlib import Path
 
 from streamlit.testing.v1 import AppTest
@@ -152,6 +153,78 @@ def test_annual_write_flag_alone_never_reads_or_writes_shared_root(tmp_path, mon
     assert not untouched.exists()
 
 
+def test_annual_diagnostics_healthy_is_green(tmp_path, monkeypatch):
+    root = _build_root(tmp_path)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+
+    app = _run_app()
+
+    assert not app.exception
+    assert "年度資料診斷：healthy" in _messages(app.success)
+    assert "matched" in _messages(app.metric)
+
+
+def test_annual_diagnostics_orphan_is_attention_but_current_remains_writable(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path)
+    orphan_id = "annual-synthetic-orphan-ui"
+    _write_bundle(
+        root / "annual-data" / "versions" / orphan_id,
+        _annual_bundle(version_mutator=lambda value: value.update(version_id=orphan_id)),
+    )
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_WRITES_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+
+    app = _run_app()
+
+    assert not app.exception
+    assert "年度資料診斷：attention" in _messages(app.warning)
+    assert app.session_state.annual_data_write_available is True
+
+
+def test_filesystem_audit_missing_shows_recovery_and_disables_create_activate(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path)
+    for audit in (root / "audit" / "events").rglob("*.json"):
+        audit.unlink()
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_WRITES_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+
+    app = _run_app()
+
+    assert not app.exception
+    assert "正式年度資料需要復原處理" in _messages(app.error)
+    assert "找不到對應此次 current transition" in _messages(app.error)
+    assert app.session_state.annual_data_write_available is False
+    assert next(button for button in app.button if button.label == "建立版本").disabled
+    assert next(button for button in app.button if button.label == "啟用此版本").disabled
+
+
+def test_filesystem_recovery_is_rediscovered_after_session_key_is_cleared(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path)
+    for audit in (root / "audit" / "events").rglob("*.json"):
+        audit.unlink()
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_WRITES_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    app = _run_app()
+    app.session_state.annual_activation_recovery_required = {"synthetic": True}
+    del app.session_state["annual_activation_recovery_required"]
+
+    app = app.run(timeout=30)
+
+    assert not app.exception
+    assert "正式年度資料需要復原處理" in _messages(app.error)
+    assert app.session_state.annual_data_write_available is False
+
+
 def test_healthy_current_and_first_version_enable_annual_specific_capability(
     tmp_path, monkeypatch
 ):
@@ -167,6 +240,8 @@ def test_healthy_current_and_first_version_enable_annual_specific_capability(
     assert healthy.session_state.formal_operations_available is False
 
     (root / "annual-data" / "current.json").unlink()
+    shutil.rmtree(root / "annual-data" / "versions")
+    shutil.rmtree(root / "audit")
     first = _run_app()
     assert not first.exception
     assert first.session_state.annual_data_write_available is True
@@ -706,6 +781,8 @@ def test_valid_system_without_annual_current_confirms_first_version(
 ):
     root = _build_root(tmp_path)
     (root / "annual-data" / "current.json").unlink()
+    shutil.rmtree(root / "annual-data" / "versions")
+    shutil.rmtree(root / "audit")
     monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
     monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
     app = _run_app()
@@ -723,6 +800,27 @@ def test_valid_system_without_annual_current_confirms_first_version(
     assert "年度資料 current pointer 不存在" in _messages(app.error)
     assert app.session_state.formal_write_available is False
     assert app.session_state.formal_operations_available is False
+
+
+def test_missing_current_with_complete_version_is_not_misreported_as_first_version(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").unlink()
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    app = _run_app()
+
+    app = _annual_uploader(app).upload(
+        "synthetic.xlsx",
+        _workbook_bytes(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ).run(timeout=30)
+
+    assert not app.exception
+    assert "不能視為第一版，需要 recovery 判斷" in _messages(app.error)
+    assert "這是第一個候選系統基準版本" not in _messages(app.info)
+    assert "候選內容完整預覽（未與舊版比較）" in _messages(app.subheader)
 
 
 def test_damaged_active_baseline_is_not_misreported_as_first_version(tmp_path, monkeypatch):
