@@ -17,7 +17,7 @@
 - 第二階段 2-3 已完成 `shared_storage_reader.py` 唯讀載入：明確設定 `LIYUTAN_ENABLE_SHARED_STORAGE=1` 後，透過 `LIYUTAN_SHARED_ROOT` 讀取並完整驗證目前年度版本及最近正式推估；不建立、修改、重新命名或刪除共享檔案。
 - 共享功能尚未啟用時，既有線上 Streamlit 網站維持內建年度資料的相容模式；共享功能啟用後若讀取失敗，則只有使用者明確選擇「內建備援資料」後才能進行非正式試算。
 - 第二階段 2-4A 已新增 `scripts/create_annual_data_template.py`，可用明確的 `--output` 產生四張工作表、固定36旬且所有業務數值留白的年度資料 Excel 公版；Excel 僅供人工填寫及交換，不是正式權威資料。
-- 第二階段 2-4B 已新增 `annual_data_excel.py` 純邏輯與 `annual_data_preview_ui.py` 呈現模組，可解析與完整驗證 2-4A.1 Excel、建立記憶體候選資料、計算穩定 fingerprint，並與目前啟用年度版本進行差異預覽；只有在 `system.json` 已驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認沒有任何完整 immutable version 時，才會確認為第一版完整預覽。
+- 第二階段 2-4B 已新增 `annual_data_excel.py` 純邏輯與 `annual_data_preview_ui.py` 呈現模組，可解析與完整驗證 2-4A.1 Excel、建立記憶體候選資料、計算穩定 fingerprint，並與目前啟用年度版本進行差異預覽；只有在 `system.json` 已驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認 versions inventory 完全為空時，才會確認為第一版完整預覽。
 - 第二階段 2-4C1 ✅：`annual_data_version_writer.py` 對已確認候選重新解析原始 Excel 並核對 SHA-256、fingerprint、完整內容及 warnings，將固定 JSON／CSV 與原始 Excel 寫入同根目錄 staging，逐檔驗證後以 rename 發布為不可變年度版本；發布成功仍未啟用為 current。
 - 第二階段 2-4C2a ✅：`annual_data_activation.py` 完整重驗既有不可變年度版本，透過 Windows/SMB OS-level 排他鎖重讀並核對 observed current 狀態，再以同目錄 temp、flush/fsync、重讀驗證及 atomic replace 切換 `current.json`，並以一事件一檔方式原子發布 audit event。
 - 第二階段 2-4C2b1 ✅：已完成 Streamlit 年度版本「建立後不自動啟用」與第二次人工確認啟用工作流、年度專用安全旗標、software provenance，以及 current changed 工作區保護。
@@ -179,7 +179,7 @@ streamlit run app.py
 $env:LIYUTAN_ENABLE_ANNUAL_DATA_WRITES = '1'
 ```
 
-只有值精確為 `1`，且共享模式已啟用、root 與 `system.json`（含 `reservoir_id=liyutan`）已驗證，reader 與 diagnostics 均確認健康 current／完整 bundle／唯一匹配的 current transition audit，或 diagnostics 確認 current 缺失且沒有任何完整 immutable version 的合法第一版狀態時，`annual_data_write_available=True`。current audit missing／ambiguous、current／target 損壞、current 缺失但已有完整版本，以及無法可靠盤點的狀態一律停止 create／activate。單純 historical、orphan、staging、quarantine 或 temp evidence 在 current 與 audit 健康時只標示 attention，不一定阻止寫入。其他 fallback、compatibility、權限或讀取錯誤仍不開放。正式 activation 另限 Windows/SMB；非 Windows 可 import/test，但 production 啟用按鈕停用。這個年度專用能力不會打開 generic `formal_write_available` 或 `formal_operations_available`。
+只有值精確為 `1`，且共享模式已啟用、root 與 `system.json`（含 `reservoir_id=liyutan`）已驗證，reader 與 diagnostics 均確認健康 current／完整 bundle／唯一匹配的 current transition audit，或 diagnostics 確認 current 缺失且 versions inventory 完全為空的合法第一版狀態時，`annual_data_write_available=True`。current audit missing／ambiguous、current／target 損壞、current 缺失但已有任何 valid 或 invalid version entry，以及無法可靠盤點的狀態一律停止 create／activate。單純 historical、orphan、staging、quarantine 或 temp evidence 在 current 與 audit 健康時只標示 attention，不一定阻止寫入。其他 fallback、compatibility、權限或讀取錯誤仍不開放。正式 activation 另限 Windows/SMB；非 Windows 可 import/test，但 production 啟用按鈕停用。這個年度專用能力不會打開 generic `formal_write_available` 或 `formal_operations_available`。
 
 資料來源分為：
 
@@ -206,7 +206,7 @@ python scripts/create_annual_data_template.py --output "C:\明確指定位置\�
 
 Streamlit 頁面上方提供獨立的「系統基準資料維護－Excel驗證與差異預覽」。使用者必須手動上傳 `.xlsx`；系統不會掃描或自動載入公司資料夾。解析器拒絕未知範本版本、巨集、外部連結、公式、缺少或額外工作表、修改固定機器代碼或旬鍵、未知資料列／欄位，以及不完整、非有限、負值或語意順序錯誤的業務資料。
 
-驗證成功後只在記憶體中建立候選資料，顯示檔案 SHA-256、候選 fingerprint、完整性、warnings，以及與目前已啟用年度版本的舊值、新值與差值。水庫參數的數值、適用起日、來源及備註均納入主要差異筆數與明細；舊版未保存這些 metadata 時會標示「舊版未記錄」，不會誤報完全相同。只有在 `system.json` 已成功驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認沒有任何完整 immutable version 時，介面才顯示可確認的第一版完整預覽；current 缺失但已有完整版本時明確要求 recovery 判斷。相容模式、未設定或無法存取根目錄、`system.json` 尚未初始化，以及權限、損壞或版本不一致等讀取失敗，仍可顯示候選內容，但會明確標示無法確認正式環境是否存在舊版，且不產生看似可靠的新舊差異。所有畫面均標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」`formal_write_available` 與 `formal_operations_available` 仍為 `False`。
+驗證成功後只在記憶體中建立候選資料，顯示檔案 SHA-256、候選 fingerprint、完整性、warnings，以及與目前已啟用年度版本的舊值、新值與差值。水庫參數的數值、適用起日、來源及備註均納入主要差異筆數與明細；舊版未保存這些 metadata 時會標示「舊版未記錄」，不會誤報完全相同。只有在 `system.json` 已成功驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認 versions inventory 完全為空時，介面才顯示可確認的第一版完整預覽；current 缺失但已有任何 valid 或 invalid version entry 時明確要求 recovery 判斷。相容模式、未設定或無法存取根目錄、`system.json` 尚未初始化，以及權限、損壞或版本不一致等讀取失敗，仍可顯示候選內容，但會明確標示無法確認正式環境是否存在舊版，且不產生看似可靠的新舊差異。所有畫面均標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」`formal_write_available` 與 `formal_operations_available` 仍為 `False`。
 
 供後續 2-4C 使用的候選資料位置約定為 `AnnualDataCandidate.parameter_metadata[parameter_code]`，每項包含 `effective_start_date`、`source_reference` 與 `note`。若未來正式年度版本保存這些欄位，比較器接受同層的 `parameter_metadata` 映射；本階段不更動正式 schema，也不寫入任何版本。
 

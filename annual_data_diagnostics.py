@@ -175,7 +175,7 @@ class AnnualDataDiagnostics:
 
     @property
     def is_first_version_state(self) -> bool:
-        return self.current_status is CurrentStatus.MISSING and self.complete_version_count == 0
+        return self.current_status is CurrentStatus.MISSING and not self.versions
 
     @property
     def recovery_required(self) -> bool:
@@ -648,15 +648,17 @@ def _severity(
 ) -> tuple[RecoverySeverity, str]:
     if current_status is CurrentStatus.UNINSPECTABLE or inspection_errors:
         return RecoverySeverity.UNINSPECTABLE, "部分正式狀態無法安全讀取，無法可靠完成 recovery 判斷。"
-    complete_count = sum(item.validation_ok for item in versions)
     if current_status in {
         CurrentStatus.CURRENT_INVALID,
         CurrentStatus.CURRENT_TARGET_MISSING,
         CurrentStatus.CURRENT_TARGET_INVALID,
     }:
         return RecoverySeverity.RECOVERY_REQUIRED, "current 或其正式 immutable target 不一致，需要復原處理。"
-    if current_status is CurrentStatus.MISSING and complete_count:
-        return RecoverySeverity.RECOVERY_REQUIRED, "已有完整 immutable version，但 current 缺失，需要 recovery 判斷。"
+    if current_status is CurrentStatus.MISSING and versions:
+        return (
+            RecoverySeverity.RECOVERY_REQUIRED,
+            "current 缺失，但 versions 中已存在正式資料 evidence，需要 recovery 判斷，不能視為第一版。",
+        )
     if audit_status in {CurrentAuditStatus.MISSING, CurrentAuditStatus.AMBIGUOUS}:
         return RecoverySeverity.RECOVERY_REQUIRED, "current 完整，但此次 current transition audit 缺失或不唯一。"
     attention = bool(
@@ -669,7 +671,7 @@ def _severity(
     if attention:
         return RecoverySeverity.ATTENTION, "目前 current 可用，但存在需要人工檢視的非正式或異常 evidence。"
     if current_status is CurrentStatus.MISSING:
-        return RecoverySeverity.HEALTHY, "尚無 current 且沒有任何完整 version，屬合法 first-version 狀態。"
+        return RecoverySeverity.HEALTHY, "尚無 current 且 versions inventory 為空，屬合法 first-version 狀態。"
     return RecoverySeverity.HEALTHY, "current、immutable bundle 與 activation audit 均完整一致。"
 
 

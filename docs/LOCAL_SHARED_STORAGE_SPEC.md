@@ -263,7 +263,7 @@ period_key,month,period,upstream_irrigation_cms,downstream_irrigation_cms,public
 
 2-4C2b2a 以獨立 `annual_data_diagnostics.py` 從明確 root 或 `SharedStorageResult.root` 做唯讀檢查，不依賴 reader 成功後的 `result.annual`。開始時必須確認 root 存在且為 directory，並完整驗證 `system.json` schema 與 `reservoir_id=liyutan`；system 不可信時只回報 system-level `uninspectable`，不得繼續猜測正式年度資料。
 
-current 分為 `healthy`、`missing`、`current_invalid`、`current_target_missing`、`current_target_invalid` 與 `uninspectable`。`missing` 只有在沒有任何完整 immutable version 時才是合法 first-version 狀態；若已有完整版本則必須 recovery 判斷。current 或 target 異常時不得自動切換到其他版本。
+current 分為 `healthy`、`missing`、`current_invalid`、`current_target_missing`、`current_target_invalid` 與 `uninspectable`。`missing` 只有在 versions inventory 完全沒有任何 entry 時才是合法 first-version 狀態；若存在任何完整、invalid、corrupt 或 incomplete version entry 都必須 recovery 判斷。current 或 target 異常時不得自動切換到其他版本。
 
 `annual-data/versions` 只掃描直接子項目並拒絕 unsafe ID、symlink、junction/reparse 與特殊 filesystem entry。完整 bundle 若是健康 current target 分為 `current`；若被 current.previous 或合法 activation audit 的 before／after ID 引用，分為 `historical`；沒有任何可靠 activation history 證據則分為合法 `orphan`。檔案集合、`COMMITTED.json`、manifest/schema/checksum、36 旬或 version ID 驗證失敗均分為 `invalid` 並保留原因；不得用檔名時間推測 history。
 
@@ -603,7 +603,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 - 2-4A 已提供可重複執行的空白公版產生器；公版固定包含 `版本資訊`、`水文Q值`、`年度基準出流`、`水庫參數`，並以穩定機器代碼搭配中文名稱。所有業務數值留白，不能視為已發布或已啟用的年度資料。
 - 上傳後必須先顯示解析與差異預覽，再由使用者確認轉成新的正式 JSON／CSV 版本；不得直接覆蓋啟用版本。
 - 2-4B 已提供獨立、無 Streamlit 相依的 Excel 解析器，以及「系統基準資料維護－Excel驗證與差異預覽」介面。解析成功只建立記憶體候選資料及標準 JSON／CSV bytes；上傳內容不套用至目前推估工作區。
-- 2-4B 預覽固定標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」；只有 `system.json` 已完整驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認沒有任何完整 immutable version 時，才能顯示第一版完整預覽。current 缺失但已有完整版本時要求 recovery 判斷；相容模式、根目錄未設定／不存在／無權限、`system.json` 尚未初始化、讀取失敗、資料損壞或版本不一致時，只能顯示候選內容並說明無法確認正式環境是否存在舊版，不得產生不可靠的新舊差異。
+- 2-4B 預覽固定標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」；只有 `system.json` 已完整驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認 versions inventory 完全為空時，才能顯示第一版完整預覽。current 缺失但已有任何 valid 或 invalid version entry 時要求 recovery 判斷；相容模式、根目錄未設定／不存在／無權限、`system.json` 尚未初始化、讀取失敗、資料損壞或版本不一致時，只能顯示候選內容並說明無法確認正式環境是否存在舊版，不得產生不可靠的新舊差異。
 - 水庫參數的數值、適用起日、來源及備註都屬主要差異比較內容。候選位置固定為 `AnnualDataCandidate.parameter_metadata[parameter_code]`，其中包含 `effective_start_date`、`source_reference` 與 `note`；供後續正式版本比較的相容位置為年度版本物件同層的 `parameter_metadata`。舊版未提供 metadata 時，預覽顯示「舊版未記錄」並計入變更。本約定不代表 2-4B 已修改正式 schema 或實作寫入。
 - 2-4C1 已將上述 parameter metadata 納入正式 `version.json` 與 reader round-trip；writer 重新解析原始 Excel 後才建立完整 bundle，並將原始 bytes 固定保存為 `source/original.xlsx`。
 - 下載的 Excel 是正式 JSON／CSV 資料或演算結果的衍生產品，必須標示來源版本 ID，但不得反過來成為權威資料。
@@ -634,7 +634,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 
 共享模式一旦啟用，讀取失敗時不得無提示退回內建資料；只有使用者明確點選備援後才能開放非正式工作區。reader 僅執行讀取，不建立、修改、重新命名或刪除共享資料。開發與自動化測試只可使用 pytest 暫存目錄及合成資料。
 
-狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`。年度專用 `annual_data_write_available` 只有在 `LIYUTAN_ENABLE_SHARED_STORAGE=1`、`LIYUTAN_ENABLE_ANNUAL_DATA_WRITES=1`，且 reader 與 2-4C2b2a diagnostics 共同確認健康 current／bundle／matched audit，或 current 缺失且沒有完整 immutable version 的 first-version 狀態時才為 True。diagnostics 的 `recovery_required`／`uninspectable` 一律同時停止 create 與 activate；單純 attention evidence 不必全面阻止。compatibility、fallback、未設定或不存在的 root、system 缺少／錯誤、wrong reservoir、current／bundle 損壞、權限／讀取錯誤與 `CURRENT_CHANGED` 均為 False。production activation 另限 Windows/SMB。公司 SMB 寫入權限與實機人工驗收仍未完成；generic `formal_write_available=False` 與 `formal_operations_available=False` 仍固定不變，供尚未完成的正式推估流程使用。
+狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`。年度專用 `annual_data_write_available` 只有在 `LIYUTAN_ENABLE_SHARED_STORAGE=1`、`LIYUTAN_ENABLE_ANNUAL_DATA_WRITES=1`，且 reader 與 2-4C2b2a diagnostics 共同確認健康 current／bundle／matched audit，或 current 缺失且 versions inventory 完全為空的 first-version 狀態時才為 True。current 缺失但存在任何 valid 或 invalid version entry、diagnostics 的其他 `recovery_required`／`uninspectable` 狀態，一律同時停止 create 與 activate；單純 attention evidence 不必全面阻止。compatibility、fallback、未設定或不存在的 root、system 缺少／錯誤、wrong reservoir、current／bundle 損壞、權限／讀取錯誤與 `CURRENT_CHANGED` 均為 False。production activation 另限 Windows/SMB。公司 SMB 寫入權限與實機人工驗收仍未完成；generic `formal_write_available=False` 與 `formal_operations_available=False` 仍固定不變，供尚未完成的正式推估流程使用。
 
 驗收：
 
@@ -651,7 +651,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 本階段拆分如下，且 2-4 整體尚未完成：
 
 - 2-4A（已完成）：只建立可重複產生的空白年度資料 Excel 公版、暫存目錄自動化測試及使用說明。Excel 只供人工填寫與交換，不是正式權威資料。
-- 2-4B（已完成）：Excel 解析、完整內容驗證、記憶體候選資料、穩定 fingerprint、目前啟用年度版本差異預覽，以及在系統資料已驗證、annual current 確實缺少且 diagnostics 確認沒有完整 immutable version 時的第一版完整預覽。current 缺失但已有完整版本時不宣稱第一版；無法讀取或尚未初始化共享資料時只顯示候選內容，不宣稱沒有舊版。這不等同正式發布或啟用。
+- 2-4B（已完成）：Excel 解析、完整內容驗證、記憶體候選資料、穩定 fingerprint、目前啟用年度版本差異預覽，以及在系統資料已驗證、annual current 確實缺少且 diagnostics 確認 versions inventory 完全為空時的第一版完整預覽。current 缺失但已有任何 valid 或 invalid version entry 時不宣稱第一版；無法讀取或尚未初始化共享資料時只顯示候選內容，不宣稱沒有舊版。這不等同正式發布或啟用。
 - 2-4C1（已完成）：將已確認的 2-4B candidate 與原始 Excel 重新驗證後，於指定且已初始化的根目錄完成 staging、逐檔 checksum、`COMMITTED.json` 最後寫入、完整 schema／36旬驗證、quarantine 及同磁碟 rename，發布不可變但未啟用的年度版本。自動化測試只使用 pytest `tmp_path` 與合成 Excel。
 - 2-4C2a（已完成）：對既有完整年度版本實作 Windows/SMB OS-level 排他鎖、鎖內 revision/current ID conflict、first-current 與 already-current 語意、`annual-data/current.json` 同目錄原子切換、一事件一檔 audit，以及 current 已切換但 audit 不完整時不 rollback 的 recovery-required 狀態。自動化測試只使用 pytest `tmp_path`、synthetic bundles、fake locks 與 fault injection。
 - 2-4C2b1（已完成）：Streamlit 保留 2-4B preview，在年度專用預設關閉旗標與安全 capability 下，以操作人、獨立備註、warnings／內容兩層確認建立 immutable version；建立不自動啟用。啟用是第二次人工動作，使用當次畫面的 exact observed revision/current、software provenance 與 Windows/SMB production lock；conflict 不重試。已開啟工作區遇 current A→B 只顯示 persistent stale 提示，使用者明確 reload 前不修改 hydrology、demand、水庫參數、session overrides 或結果。

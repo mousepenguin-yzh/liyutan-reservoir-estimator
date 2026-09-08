@@ -65,6 +65,7 @@ def test_empty_first_version_state_is_not_recovery_required(tmp_path):
     result = diagnose_annual_data(root)
 
     assert result.current_status is CurrentStatus.MISSING
+    assert not result.versions
     assert result.is_first_version_state
     assert result.overall_severity is RecoverySeverity.HEALTHY
 
@@ -78,7 +79,25 @@ def test_missing_current_with_complete_orphan_requires_recovery(tmp_path):
 
     assert result.current_status is CurrentStatus.MISSING
     assert result.versions[0].status is VersionStatus.ORPHAN
+    assert not result.is_first_version_state
     assert result.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
+
+
+def test_missing_current_with_invalid_version_entry_requires_recovery(tmp_path):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").unlink()
+    _remove_audits(root)
+    version_dir = root / "annual-data" / "versions" / ANNUAL_ID
+    (version_dir / "COMMITTED.json").unlink()
+
+    result = diagnose_annual_data(root)
+
+    assert result.current_status is CurrentStatus.MISSING
+    assert len(result.versions) == 1
+    assert result.versions[0].status is VersionStatus.INVALID
+    assert not result.is_first_version_state
+    assert result.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
+    assert "不能視為第一版" in result.summary
 
 
 def test_corrupt_current_still_produces_versions_inventory(tmp_path):

@@ -818,9 +818,42 @@ def test_missing_current_with_complete_version_is_not_misreported_as_first_versi
     ).run(timeout=30)
 
     assert not app.exception
-    assert "不能視為第一版，需要 recovery 判斷" in _messages(app.error)
+    assert "current 缺失，但 versions 中已存在正式資料 evidence" in _messages(app.error)
+    assert "不能視為第一版" in _messages(app.error)
     assert "這是第一個候選系統基準版本" not in _messages(app.info)
     assert "候選內容完整預覽（未與舊版比較）" in _messages(app.subheader)
+
+
+def test_missing_current_with_invalid_version_is_recovery_required_not_first_version(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").unlink()
+    (
+        root
+        / "annual-data"
+        / "versions"
+        / ANNUAL_ID
+        / "COMMITTED.json"
+    ).unlink()
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_WRITES_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    app = _run_app()
+
+    app = _annual_uploader(app).upload(
+        "synthetic.xlsx",
+        _workbook_bytes(),
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ).run(timeout=30)
+
+    assert not app.exception
+    assert "正式年度資料需要復原處理" in _messages(app.error)
+    assert "current 缺失，但 versions 中已存在正式資料 evidence" in _messages(app.error)
+    assert "這是第一個候選系統基準版本" not in _messages(app.info)
+    assert app.session_state.annual_data_write_available is False
+    assert next(button for button in app.button if button.label == "建立版本").disabled
+    assert next(button for button in app.button if button.label == "啟用此版本").disabled
 
 
 def test_damaged_active_baseline_is_not_misreported_as_first_version(tmp_path, monkeypatch):

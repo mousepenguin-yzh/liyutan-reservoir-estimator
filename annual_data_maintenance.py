@@ -102,7 +102,8 @@ def annual_data_write_capability(
                 False,
                 False,
                 "shared_state_invalid",
-                "current 缺失，但 diagnostics 無法確認為空白的 first-version 狀態。",
+                "current 缺失，但 versions 中已存在正式資料 evidence，需要 recovery 判斷，"
+                "不能視為第一版。",
                 root=result.root,
             )
         revision = 0

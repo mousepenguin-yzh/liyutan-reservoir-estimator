@@ -2,7 +2,7 @@ import shutil
 
 import pytest
 
-from annual_data_diagnostics import diagnose_annual_data
+from annual_data_diagnostics import RecoverySeverity, VersionStatus, diagnose_annual_data
 from annual_data_maintenance import (
     ENABLE_ANNUAL_DATA_WRITES_ENV,
     AnnualDataMaintenanceService,
@@ -120,6 +120,56 @@ def test_diagnostics_recovery_required_blocks_create_and_activate(tmp_path):
         platform="win32",
     )
 
+    assert not capability.available
+    assert not capability.activation_available
+    assert capability.state == "recovery_required"
+
+
+def test_missing_current_with_valid_orphan_blocks_create_and_activate(tmp_path):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").unlink()
+    for audit in (root / "audit" / "events").rglob("*.json"):
+        audit.unlink()
+
+    diagnostics = diagnose_annual_data(root)
+
+    capability = annual_data_write_capability(
+        load_shared_storage(root),
+        shared_mode_enabled=True,
+        diagnostics=diagnostics,
+        environ={ENABLE_ANNUAL_DATA_WRITES_ENV: "1"},
+        platform="win32",
+    )
+
+    assert diagnostics.versions[0].status is VersionStatus.ORPHAN
+    assert diagnostics.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
+    assert not capability.available
+    assert not capability.activation_available
+    assert capability.state == "recovery_required"
+
+
+def test_missing_current_with_invalid_version_entry_blocks_create_and_activate(tmp_path):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").unlink()
+    (
+        root
+        / "annual-data"
+        / "versions"
+        / "annual-synthetic-2027"
+        / "COMMITTED.json"
+    ).unlink()
+
+    diagnostics = diagnose_annual_data(root)
+    capability = annual_data_write_capability(
+        load_shared_storage(root),
+        shared_mode_enabled=True,
+        diagnostics=diagnostics,
+        environ={ENABLE_ANNUAL_DATA_WRITES_ENV: "1"},
+        platform="win32",
+    )
+
+    assert not diagnostics.is_first_version_state
+    assert diagnostics.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
     assert not capability.available
     assert not capability.activation_available
     assert capability.state == "recovery_required"

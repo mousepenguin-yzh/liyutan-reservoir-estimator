@@ -230,8 +230,8 @@ def _baseline_context(
         return (
             "unverified",
             None,
-            "annual-data/current.json 缺失，但已存在完整 immutable version；"
-            "不能視為第一版，需要 recovery 判斷。下方只顯示候選內容完整預覽。",
+            "current 缺失，但 versions 中已存在正式資料 evidence，需要 recovery 判斷，"
+            "不能視為第一版。下方只顯示候選內容完整預覽。",
             "error",
         )
     if result.error.code is StorageErrorCode.SYSTEM_MISSING:
