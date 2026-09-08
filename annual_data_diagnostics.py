@@ -9,6 +9,7 @@ writes repair/audit data.
 from __future__ import annotations
 
 import datetime as dt
+import hashlib
 import os
 import re
 import stat
@@ -18,11 +19,13 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from shared_storage_schema import (
+    ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
     ANNUAL_ACTIVATION_EVENT_TYPE,
     ANNUAL_REQUIRED_FILES,
     StorageValidationError,
     deserialize_json,
     validate_annual_activation_audit_event,
+    validate_annual_activation_recovery_audit_event,
     validate_annual_bundle,
     validate_annual_current,
     validate_safe_id,
@@ -62,12 +65,15 @@ class StagingStatus(str, Enum):
 
 class AuditStatus(str, Enum):
     VALID_ANNUAL_ACTIVATION = "valid_annual_activation"
+    VALID_ANNUAL_ACTIVATION_RECOVERY = "valid_annual_activation_recovery"
     INVALID = "invalid"
     UNKNOWN = "unknown_unsupported"
 
 
 class CurrentAuditStatus(str, Enum):
     MATCHED = "matched"
+    MATCHED_RECOVERY = "matched_recovery"
+    REDUNDANT_EVIDENCE = "redundant_evidence"
     MISSING = "missing"
     AMBIGUOUS = "ambiguous"
     NOT_APPLICABLE = "not_applicable"
@@ -90,6 +96,7 @@ class AnnualVersionDiagnostic:
     version_id: str | None = None
     validation_ok: bool = False
     failure_reason: str | None = None
+    data: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -180,6 +187,14 @@ class AnnualDataDiagnostics:
     @property
     def recovery_required(self) -> bool:
         return self.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
+
+    @property
+    def current_original_audit_match_count(self) -> int:
+        return _matching_audit_counts(self.current_status, self.current, self.audits)[0]
+
+    @property
+    def current_recovery_audit_match_count(self) -> int:
+        return _matching_audit_counts(self.current_status, self.current, self.audits)[1]
 
 
 class _UnsafeFilesystemEntry(ValueError):
@@ -279,13 +294,18 @@ def _inspect_audits(root: Path) -> tuple[tuple[AnnualAuditDiagnostic, ...], list
                 if path.suffix.lower() != ".json":
                     continue
                 modified = _modified_at(path)
+                parsed: Any = None
                 try:
                     if _is_reparse_or_symlink(path) or not path.is_file():
                         raise _UnsafeFilesystemEntry("audit item 不是安全的實體檔案")
                     parsed = deserialize_json(path.read_bytes())
                     if not isinstance(parsed, dict):
                         raise StorageValidationError("audit JSON 必須是 object")
-                    if parsed.get("event_type") != ANNUAL_ACTIVATION_EVENT_TYPE:
+                    event_type = parsed.get("event_type")
+                    if event_type not in {
+                        ANNUAL_ACTIVATION_EVENT_TYPE,
+                        ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
+                    }:
                         diagnostics.append(
                             AnnualAuditDiagnostic(
                                 path,
@@ -296,11 +316,16 @@ def _inspect_audits(root: Path) -> tuple[tuple[AnnualAuditDiagnostic, ...], list
                             )
                         )
                         continue
-                    event = validate_annual_activation_audit_event(parsed)
+                    if event_type == ANNUAL_ACTIVATION_EVENT_TYPE:
+                        event = validate_annual_activation_audit_event(parsed)
+                        status = AuditStatus.VALID_ANNUAL_ACTIVATION
+                    else:
+                        event = validate_annual_activation_recovery_audit_event(parsed)
+                        status = AuditStatus.VALID_ANNUAL_ACTIVATION_RECOVERY
                     diagnostics.append(
                         AnnualAuditDiagnostic(
                             path,
-                            AuditStatus.VALID_ANNUAL_ACTIVATION,
+                            status,
                             modified,
                             event=event,
                         )
@@ -324,19 +349,95 @@ def _inspect_audits(root: Path) -> tuple[tuple[AnnualAuditDiagnostic, ...], list
                             failure_reason=str(exc),
                         )
                     )
+                    if (
+                        isinstance(parsed, dict)
+                        and parsed.get("event_type")
+                        == ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE
+                    ):
+                        errors.append(
+                            f"recovery audit schema 無法安全驗證：{path}：{exc}"
+                        )
     return tuple(diagnostics), errors
 
 
 def _activation_references(audits: tuple[AnnualAuditDiagnostic, ...]) -> set[str]:
     referenced: set[str] = set()
     for item in audits:
-        if item.status is not AuditStatus.VALID_ANNUAL_ACTIVATION or item.event is None:
+        if item.event is None:
             continue
-        before_id = item.event["before_current_version_id"]
+        if item.status is AuditStatus.VALID_ANNUAL_ACTIVATION:
+            transition = item.event
+        elif item.status is AuditStatus.VALID_ANNUAL_ACTIVATION_RECOVERY:
+            transition = item.event["recovered_transition"]
+        else:
+            continue
+        before_id = transition["before_current_version_id"]
         if before_id is not None:
             referenced.add(before_id)
-        referenced.add(item.event["after_current_version_id"])
+        referenced.add(transition["after_current_version_id"])
     return referenced
+
+
+def _verify_recovery_evidence(
+    root: Path,
+    current_status: CurrentStatus,
+    current: dict[str, Any] | None,
+    audits: tuple[AnnualAuditDiagnostic, ...],
+) -> tuple[tuple[AnnualAuditDiagnostic, ...], list[str]]:
+    """Reject recovery matches whose recorded immutable evidence no longer matches."""
+    if current_status is not CurrentStatus.HEALTHY or current is None:
+        return audits, []
+    try:
+        current_sha256 = hashlib.sha256(
+            (root / "annual-data" / "current.json").read_bytes()
+        ).hexdigest()
+        manifest_sha256 = hashlib.sha256(
+            (
+                root
+                / "annual-data"
+                / "versions"
+                / current["current_version_id"]
+                / "version.json"
+            ).read_bytes()
+        ).hexdigest()
+    except OSError as exc:
+        return audits, [f"recovery audit evidence 無法重讀比對：{exc}"]
+
+    checked: list[AnnualAuditDiagnostic] = []
+    errors: list[str] = []
+    for item in audits:
+        transition = _event_transition(item)
+        if (
+            item.status is AuditStatus.VALID_ANNUAL_ACTIVATION_RECOVERY
+            and item.event is not None
+            and transition["before_revision"] == current["revision"] - 1
+            and transition["before_current_version_id"]
+            == current["previous_version_id"]
+            and transition["after_revision"] == current["revision"]
+            and transition["after_current_version_id"]
+            == current["current_version_id"]
+        ):
+            evidence = item.event["evidence"]
+            if (
+                evidence["current_json_sha256"] != current_sha256
+                or evidence["current_version_manifest_sha256"] != manifest_sha256
+            ):
+                checked.append(
+                    AnnualAuditDiagnostic(
+                        item.path,
+                        AuditStatus.INVALID,
+                        item.modified_at,
+                        failure_reason=(
+                            "recovery audit evidence checksum 與目前 current／manifest 不一致"
+                        ),
+                    )
+                )
+                errors.append(
+                    f"recovery audit evidence checksum 不一致：{item.path}"
+                )
+                continue
+        checked.append(item)
+    return tuple(checked), errors
 
 
 def _inspect_versions(
@@ -394,6 +495,7 @@ def _inspect_versions(
                 modified,
                 version_id=validated["version"]["version_id"],
                 validation_ok=True,
+                data=validated,
             )
         )
     return tuple(diagnostics), errors
@@ -607,6 +709,42 @@ def _inspect_current(root: Path) -> tuple[CurrentStatus, dict[str, Any] | None, 
     return CurrentStatus.HEALTHY, current, None
 
 
+def _event_transition(item: AnnualAuditDiagnostic) -> dict[str, Any] | None:
+    if item.event is None:
+        return None
+    if item.status is AuditStatus.VALID_ANNUAL_ACTIVATION:
+        return item.event
+    if item.status is AuditStatus.VALID_ANNUAL_ACTIVATION_RECOVERY:
+        return item.event["recovered_transition"]
+    return None
+
+
+def _matching_audit_counts(
+    current_status: CurrentStatus,
+    current: dict[str, Any] | None,
+    audits: tuple[AnnualAuditDiagnostic, ...],
+) -> tuple[int, int]:
+    if current_status is not CurrentStatus.HEALTHY or current is None:
+        return 0, 0
+    original_matches = 0
+    recovery_matches = 0
+    for item in audits:
+        event = _event_transition(item)
+        if event is None:
+            continue
+        if (
+            event["before_revision"] == current["revision"] - 1
+            and event["before_current_version_id"] == current["previous_version_id"]
+            and event["after_revision"] == current["revision"]
+            and event["after_current_version_id"] == current["current_version_id"]
+        ):
+            if item.status is AuditStatus.VALID_ANNUAL_ACTIVATION:
+                original_matches += 1
+            else:
+                recovery_matches += 1
+    return original_matches, recovery_matches
+
+
 def _current_audit_state(
     current_status: CurrentStatus,
     current: dict[str, Any] | None,
@@ -617,23 +755,19 @@ def _current_audit_state(
         return CurrentAuditStatus.NOT_APPLICABLE, 0
     if audit_scan_failed:
         return CurrentAuditStatus.UNINSPECTABLE, 0
-    matches = 0
-    for item in audits:
-        if item.status is not AuditStatus.VALID_ANNUAL_ACTIVATION or item.event is None:
-            continue
-        event = item.event
-        if (
-            event["before_revision"] == current["revision"] - 1
-            and event["before_current_version_id"] == current["previous_version_id"]
-            and event["after_revision"] == current["revision"]
-            and event["after_current_version_id"] == current["current_version_id"]
-        ):
-            matches += 1
-    if matches == 1:
+    original_matches, recovery_matches = _matching_audit_counts(
+        current_status, current, audits
+    )
+    total = original_matches + recovery_matches
+    if original_matches > 1 or recovery_matches > 1:
+        return CurrentAuditStatus.AMBIGUOUS, total
+    if original_matches == 1 and recovery_matches == 1:
+        return CurrentAuditStatus.REDUNDANT_EVIDENCE, total
+    if original_matches == 1:
         return CurrentAuditStatus.MATCHED, 1
-    if matches == 0:
-        return CurrentAuditStatus.MISSING, 0
-    return CurrentAuditStatus.AMBIGUOUS, matches
+    if recovery_matches == 1:
+        return CurrentAuditStatus.MATCHED_RECOVERY, 1
+    return CurrentAuditStatus.MISSING, 0
 
 
 def _severity(
@@ -662,7 +796,8 @@ def _severity(
     if audit_status in {CurrentAuditStatus.MISSING, CurrentAuditStatus.AMBIGUOUS}:
         return RecoverySeverity.RECOVERY_REQUIRED, "current 完整，但此次 current transition audit 缺失或不唯一。"
     attention = bool(
-        staging
+        audit_status is CurrentAuditStatus.REDUNDANT_EVIDENCE
+        or staging
         or quarantine
         or temp_artifacts
         or any(item.status in {VersionStatus.ORPHAN, VersionStatus.INVALID} for item in versions)
@@ -672,6 +807,8 @@ def _severity(
         return RecoverySeverity.ATTENTION, "目前 current 可用，但存在需要人工檢視的非正式或異常 evidence。"
     if current_status is CurrentStatus.MISSING:
         return RecoverySeverity.HEALTHY, "尚無 current 且 versions inventory 為空，屬合法 first-version 狀態。"
+    if audit_status is CurrentAuditStatus.MATCHED_RECOVERY:
+        return RecoverySeverity.HEALTHY, "current 與 immutable bundle 完整；此次 transition 由 recovery audit 補建 evidence。"
     return RecoverySeverity.HEALTHY, "current、immutable bundle 與 activation audit 均完整一致。"
 
 
@@ -727,6 +864,9 @@ def diagnose_annual_data(
 
     current_status, current, current_reason = _inspect_current(shared_root)
     audits, audit_errors = _inspect_audits(shared_root)
+    audits, recovery_evidence_errors = _verify_recovery_evidence(
+        shared_root, current_status, current, audits
+    )
     references = _activation_references(audits)
     if current is not None and current.get("previous_version_id") is not None:
         references.add(current["previous_version_id"])
@@ -752,6 +892,7 @@ def diagnose_annual_data(
     temp_artifacts, temp_errors = _inspect_temp_artifacts(shared_root)
     inspection_errors = [
         *audit_errors,
+        *recovery_evidence_errors,
         *version_errors,
         *staging_errors,
         *quarantine_errors,
@@ -761,7 +902,7 @@ def diagnose_annual_data(
         current_status,
         current,
         audits,
-        bool(audit_errors),
+        bool(audit_errors or recovery_evidence_errors),
     )
     severity, summary = _severity(
         current_status,

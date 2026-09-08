@@ -20,7 +20,10 @@ from annual_data_preview_ui import (
     render_annual_data_diagnostics,
     render_annual_data_maintenance,
 )
-from annual_data_maintenance import annual_data_write_capability
+from annual_data_maintenance import (
+    annual_data_recovery_capability,
+    annual_data_write_capability,
+)
 from shared_storage_reader import (
     DataSourceMode,
     compatibility_data_source,
@@ -821,8 +824,14 @@ annual_write_capability = annual_data_write_capability(
     shared_mode_enabled=shared_storage_mode_enabled,
     diagnostics=annual_diagnostics,
 )
+annual_recovery_capability = annual_data_recovery_capability(
+    shared_storage_result,
+    shared_mode_enabled=shared_storage_mode_enabled,
+    diagnostics=annual_diagnostics,
+)
 st.session_state.annual_data_write_available = annual_write_capability.available
 st.session_state.annual_data_activation_available = annual_write_capability.activation_available
+st.session_state.annual_recovery_available = annual_recovery_capability.available
 
 # 時間區間初始化
 if "display_start_date" not in st.session_state:
@@ -869,6 +878,8 @@ render_shared_annual_workspace_interlock(shared_storage_result)
 render_annual_data_diagnostics(
     annual_diagnostics,
     shared_mode_enabled=shared_storage_mode_enabled,
+    result=shared_storage_result,
+    recovery_capability=annual_recovery_capability,
 )
 
 render_annual_data_maintenance(

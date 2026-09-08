@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：第二階段 2-4B Excel 解析／驗證／差異預覽、2-4C1 不可變年度版本 writer、2-4C2a 年度啟用安全核心、2-4C2b1 Streamlit 建立／啟用與 current-changed 工作區保護，以及 2-4C2b2a 唯讀 diagnostics／inventory 已實作；2-4C2b2b recovery actions 尚未完成，2-4 整體仍未完成
+狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 broken-current repair ⏳。2-4 整體與公司 SMB acceptance 仍未完成。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -267,13 +267,27 @@ current 分為 `healthy`、`missing`、`current_invalid`、`current_target_missi
 
 `annual-data/versions` 只掃描直接子項目並拒絕 unsafe ID、symlink、junction/reparse 與特殊 filesystem entry。完整 bundle 若是健康 current target 分為 `current`；若被 current.previous 或合法 activation audit 的 before／after ID 引用，分為 `historical`；沒有任何可靠 activation history 證據則分為合法 `orphan`。檔案集合、`COMMITTED.json`、manifest/schema/checksum、36 旬或 version ID 驗證失敗均分為 `invalid` 並保留原因；不得用檔名時間推測 history。
 
-staging 只接受 writer 的 `annual-data-*` 命名範圍，分成 `incomplete`、`complete_but_unpublished`、`invalid`、`unsafe`；即使完整也永遠不是正式版本。quarantine 只做 entry、mtime、annual failure evidence 與可驗證原因 inventory。audit 只掃描 `audit/events/YYYY/MM/*.json`，分為合法 annual activation、invalid、unknown／unsupported；未知未來 event 不 crash，也不作為 activation history。已知 current／audit temp pattern 只列為 evidence，不影響 current validity。`locks/annual-current.lock` 存在只代表 metadata file 存在，不代表 OS-level exclusive handle 正被持有；diagnostics 不取得 production lock。
+staging 只接受 writer 的 `annual-data-*` 命名範圍；即使完整也永遠不是正式版本。quarantine 只做 inventory。audit 掃描 `audit/events/YYYY/MM/*.json`，辨識合法 annual activation 與 `annual-data-activation-recovery`；invalid、unknown／unsupported 不作為 transition evidence。已知 temp pattern 只列為 evidence，lock metadata file 不代表 OS-level handle 正被持有。
 
-健康 current 的 audit matching 必須精確符合 `before_revision=N-1`、`before_current_version_id=A`、`after_revision=N`、`after_current_version_id=B`。恰好一份為 `matched`；零份為 `missing`；多份為 `ambiguous`。missing／ambiguous 都是 filesystem-authoritative recovery-required，因此 Streamlit session state 消失或程式重啟後仍能重新發現並停止正常 create／activate。
+健康 current 的 audit matching 必須精確符合 `before_revision=N-1`、`before_current_version_id=A`、`after_revision=N`、`after_current_version_id=B`。exactly one original 為 `matched`；zero original + exactly one recovery 且 evidence checksum 符合為 `matched_recovery`；original + recovery 為 `redundant_evidence` attention；多份 original 或 recovery 為 `ambiguous`。missing／ambiguous 仍是 filesystem-authoritative recovery-required。
 
 overall severity 為 `healthy`、`attention`、`recovery_required`、`uninspectable`。orphan、非空 staging／quarantine、invalid／unknown audit 或 residual temp 在 current 與 audit 健康時為 attention；current／target 異常、current transition audit missing／ambiguous、current 缺失但已有完整版本為 recovery-required；root/system 或必要 inventory 因權限／讀取失敗而無法安全判斷為 uninspectable。historical versions 與單純 lock metadata file 不提高 severity。
 
-本階段沒有任何 recovery action：不得 repair／建立 current、rollback、activate orphan／historical version、補 audit、刪除／搬移 staging 或 quarantine、清 temp、修改 immutable version、修 checksum 或猜最新版本。所有自動化測試只使用 pytest `tmp_path` 與 synthetic bundle／audit；未讀寫公司 `U:`。實際 action 全部留待 2-4C2b2b。
+2-4C2b2a 模組本身仍完全唯讀；2-4C2b2b1 另提供下節兩種受控 action。不得 repair／重建 broken 或 missing current、猜最新版本、處理 ambiguous、刪除／搬移 staging 或 quarantine、清 temp、修改 immutable version 或修 checksum。所有自動化測試只使用 pytest `tmp_path` 與 synthetic evidence；未讀寫公司 `U:`。
+
+### 5.9 年度資料 safe recovery actions（2-4C2b2b1）
+
+Recovery capability 與一般年度 write capability 分離。只有 `LIYUTAN_ENABLE_SHARED_STORAGE=1`、`LIYUTAN_ENABLE_ANNUAL_DATA_WRITES=1`、`LIYUTAN_ENABLE_ANNUAL_DATA_RECOVERY=1`、Windows production environment 與 diagnostics 的明確 safe case 同時成立才可操作；任一旗標只接受精確字串 `1`。這不會打開 generic `formal_write_available` 或 `formal_operations_available`。
+
+Audit recovery 只接受 system valid、current healthy、current immutable bundle 完整、`current_audit_status=missing`、original match count = 0 與 recovery match count = 0。取得 `locks/annual-current.lock` 後，鎖內重跑 diagnostics 並核對 observed revision/current/previous；普通 activation audit 必須仍為 missing，recovery audit 也必須不存在。狀態改變、別台已補建、ambiguous、uninspectable、broken／missing current 或 target missing／invalid 都停止並要求重新 diagnostics。
+
+Recovery event 使用獨立 `annual-data-activation-recovery` type 與 validator。必要欄位包含 recovered transition、recovery operator/note/software、diagnostics hostname/PID、`current.json` SHA-256、current version ID、current immutable `version.json` SHA-256、補建前 diagnostics inspected state、`result=recovered_audit_evidence`，以及固定文字明示它是事後依目前 evidence 補建，而不是原始 activation event。欄位不得冒充原始操作時的 note、software、hostname、process 或真正操作人。
+
+事件沿用一事件一檔目錄，以 unique ID/filename、同目錄 temp、flush/fsync、重讀 schema validation、no-overwrite atomic publish 與發布後重讀驗證建立。此 action 不修改 `annual-data/current.json` 或任何 immutable bundle；成功後 rerun 應為 `matched_recovery`，revision/current version 完全不變，一般年度寫入只在該次 rerun 後恢復。
+
+當 current 健康且 transition audit 已是 matched、matched_recovery 或 redundant evidence 時，inventory 中 validation_ok 的 historical／orphan version 可供人工選擇，current 與 invalid version 不列入。UI 顯示 target metadata 與完整差異，要求新操作人、啟用備註、software provenance 及明確 checkbox。按下後直接呼叫既有 `activate_annual_data_version()`，保留 Windows/SMB lock、observed conflict、current/target 重驗、atomic replace、audit 與 no-last-write-wins；conflict 不 retry。成功 revision +1、previous = 原 current、target bytes 不變，工作區仍由既有 current-changed interlock 處理而不背景 reload。
+
+本階段不提供 broken-current repair、missing-current repair、自動選最新版、ambiguous 自動處理、staging/quarantine/temp cleanup 或 checksum repair；這些只顯示「需要下一階段 broken-current repair」或 evidence inventory。
 
 ## 6. 正式推估版本
 
@@ -455,11 +469,11 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 鎖只涵蓋重讀 current、雙欄位 conflict check、目前 current version 完整驗證、target 最終確認、current 原子切換與 audit。current 不存在時是 `(revision=0, current_version_id=null)`；存在時必須完整通過 `validate_annual_current()`。實際 revision 或 current ID 任一項與 observed state 不同（包含 current 出現或消失）均回報 `revision_conflict`，不得更新 observed 後繼續或採 last-write-wins。
 
-observed conflict check 通過後，只要 `before_current_version_id` 非 null，就必須在同一把鎖內以 target 共用的 immutable annual bundle helper 完整重驗 `annual-data/versions/<before_current_version_id>`，包含安全路徑與 symlink、版本目錄、`COMMITTED.json`、manifest/version schema、manifest 與正式檔案 checksum、36 旬完整性，以及 version ID 與目錄名一致性。任何失敗均回報 `current_version_invalid`，不得切換 target、增加 revision、重寫 current、建立 success audit、猜測其他版本或自動修復；正常 activation 不可用 A → B 掩蓋損壞的 A，真正 recovery actions 留待 2-4C2b2b。只有目前 current version 與 target 都完整合法時才能繼續。target 已是 current 時回報 `already_current`，不重寫 current、不增加 revision、不製造 audit success。
+observed conflict check 通過後，只要 `before_current_version_id` 非 null，就必須在同一把鎖內完整重驗目前 current bundle。任何失敗均回報 `current_version_invalid`，不得用合法 target 掩蓋損壞的 current；broken-current repair 留待 2-4C2b2b2。只有目前 current version 與 target 都完整合法時才能繼續。target 已是 current 時回報 `already_current`，不重寫 current、不增加 revision、不製造 audit success。
 
 新 current 以同一 `annual-data` 目錄的唯一 temp file 寫入完整 bytes，flush/fsync、關閉、重讀驗證且與預期完全相同後，才 `os.replace` 原子取代 `current.json`，並於 replace 後再次重讀驗證。成功 revision 固定加一，`previous_version_id` 指向舊 current，因此 A → B → A 合法形成 1 → 2 → 3，而 A/B 版本本體不變。
 
-為降低 current 已切換但 audit 失敗的窗口，audit temp 會先準備並驗證，再切換 current，最後才發布正式 event。若 current atomic replace 已成功，但 audit rename、重讀或驗證仍失敗，絕不 rollback current；API 回報 `current_switched_audit_incomplete` recovery-required 狀態，也不宣稱完整成功。2-4C2b1 會保留 session recovery-required banner 並禁止重送；2-4C2b2a 以 filesystem audit matching 在後續重啟重新偵測，audit 補建與人工 recovery actions 留待 2-4C2b2b。
+為降低 current 已切換但 audit 失敗的窗口，audit temp 會先準備並驗證，再切換 current，最後才發布正式 event。若 current atomic replace 已成功但 audit 後續失敗，絕不 rollback current；API 回報 `current_switched_audit_incomplete`。2-4C2b2b1 只在 current 仍健康且 zero audit match 時允許人工補建 recovery evidence。
 
 ## 10. 初始化與跨裝置接續
 
@@ -655,10 +669,11 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 - 2-4C1（已完成）：將已確認的 2-4B candidate 與原始 Excel 重新驗證後，於指定且已初始化的根目錄完成 staging、逐檔 checksum、`COMMITTED.json` 最後寫入、完整 schema／36旬驗證、quarantine 及同磁碟 rename，發布不可變但未啟用的年度版本。自動化測試只使用 pytest `tmp_path` 與合成 Excel。
 - 2-4C2a（已完成）：對既有完整年度版本實作 Windows/SMB OS-level 排他鎖、鎖內 revision/current ID conflict、first-current 與 already-current 語意、`annual-data/current.json` 同目錄原子切換、一事件一檔 audit，以及 current 已切換但 audit 不完整時不 rollback 的 recovery-required 狀態。自動化測試只使用 pytest `tmp_path`、synthetic bundles、fake locks 與 fault injection。
 - 2-4C2b1（已完成）：Streamlit 保留 2-4B preview，在年度專用預設關閉旗標與安全 capability 下，以操作人、獨立備註、warnings／內容兩層確認建立 immutable version；建立不自動啟用。啟用是第二次人工動作，使用當次畫面的 exact observed revision/current、software provenance 與 Windows/SMB production lock；conflict 不重試。已開啟工作區遇 current A→B 只顯示 persistent stale 提示，使用者明確 reload 前不修改 hydrology、demand、水庫參數、session overrides 或結果。
-- 2-4C2b2a（已完成）：獨立唯讀 diagnostics／inventory 在 reader 失敗時仍能由可信 root 檢查 current、所有直接子版本、annual writer staging、quarantine、audit 與 residual temp；以 current.previous 與合法 activation audit 判定 historical，無 activation 證據的完整版本判定 orphan，並精確偵測 current transition audit missing／ambiguous。filesystem evidence 是 recovery interlock 權威；沒有 repair 按鈕或任何自動修復。
-- 2-4C2b2b（未實作）：人工確認後的 audit 補建、current repair、rollback／activate historical version，以及 staging／quarantine／temp 隔離或清理。
+- 2-4C2b2a（已完成）：獨立唯讀 diagnostics／inventory，精確辨識 original／recovery transition evidence 與 missing／ambiguous。
+- 2-4C2b2b1（已完成）：healthy current 的 recovery audit 補建，以及以既有 activation 安全核心重新啟用合法 historical／orphan version。
+- 2-4C2b2b2（未實作）：broken／missing current repair。staging／quarantine／temp 隔離或清理另待維運驗收規則。
 
-2-4 整體仍未完成。2-4C1 建立成功只代表不可變版本已發布；2-4C2b1 UI 必須再經獨立確認才呼叫 2-4C2a activation，writer 永不自動切換。activation 成功也不直接覆蓋已開啟工作區，下一次 reader 看見 A→B 後仍需使用者明確 reload。若 `current_switched_audit_incomplete`，UI 不宣稱成功、不 rollback、不重送；2-4C2b2a 只診斷並持續顯示 recovery-required，不補建 audit 或修復 current。尚未在公司實際 SMB 環境驗證，本 PR 未存取正式共享根目錄或受控測試共享根目錄；`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
+2-4 整體仍未完成。writer 永不自動切換，activation 或重新啟用成功也不直接覆蓋已開啟工作區。2-4C2b2b1 safe recovery 不修復 broken current、不猜 target、不清理 evidence。尚未在公司實際 SMB 環境驗證，本 PR 未存取正式共享根目錄或受控測試共享根目錄；`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
 
 驗收：
 
