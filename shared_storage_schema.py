@@ -29,6 +29,13 @@ ANNUAL_CURRENT_SCHEMA = "liyutan-reservoir-estimator/annual-data-current"
 AUDIT_EVENT_SCHEMA = "liyutan-reservoir-estimator/audit-event"
 ANNUAL_ACTIVATION_EVENT_TYPE = "annual-data-activation"
 ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE = "annual-data-activation-recovery"
+ANNUAL_CURRENT_REPAIR_EVENT_TYPE = "annual-data-current-repair"
+ANNUAL_CURRENT_REPAIR_KINDS = (
+    "reconstruct_missing_current",
+    "reconstruct_invalid_current",
+    "switch_from_missing_target",
+    "switch_from_invalid_target",
+)
 ANNUAL_ACTIVATION_RECOVERY_NOTICE = (
     "這是事後依目前 current 與 immutable evidence 補建的 recovery record，"
     "不是原始 activation event。"
@@ -842,6 +849,160 @@ def validate_annual_activation_recovery_audit_event(data: Any) -> dict:
         _fail(f"{label}.recovery_record_notice 必須明確標示為事後 recovery record")
     if item["result"] != "recovered_audit_evidence":
         _fail(f"{label}.result 必須是 recovered_audit_evidence")
+    return copy.deepcopy(item)
+
+
+def validate_annual_current_repair_audit_event(data: Any) -> dict:
+    """Validate an explicit current repair event without treating it as activation."""
+    label = "annual current repair audit event"
+    item = _schema(data, AUDIT_EVENT_SCHEMA, label)
+    _exact_fields(
+        item,
+        (
+            "schema",
+            "schema_version",
+            "event_id",
+            "event_type",
+            "occurred_at",
+            "repair_kind",
+            "recovery_operator_display_name",
+            "recovery_note",
+            "recovery_software",
+            "diagnostics",
+            "pre_repair_diagnostics",
+            "pre_repair_current_evidence",
+            "target_version_id",
+            "target_manifest_sha256",
+            "before_revision",
+            "after_revision",
+            "resulting_current",
+            "result",
+        ),
+        label,
+    )
+    validate_safe_id(item["event_id"], f"{label}.event_id")
+    if item["event_type"] != ANNUAL_CURRENT_REPAIR_EVENT_TYPE:
+        _fail(f"{label}.event_type 必須是 {ANNUAL_CURRENT_REPAIR_EVENT_TYPE}")
+    _timestamp(item["occurred_at"], f"{label}.occurred_at")
+    repair_kind = item["repair_kind"]
+    if repair_kind not in ANNUAL_CURRENT_REPAIR_KINDS:
+        _fail(f"{label}.repair_kind 不在允許清單")
+    _string(
+        item["recovery_operator_display_name"],
+        f"{label}.recovery_operator_display_name",
+    )
+    _string(item["recovery_note"], f"{label}.recovery_note")
+    validate_software_metadata(item["recovery_software"], f"{label}.recovery_software")
+
+    diagnostics = _mapping(item["diagnostics"], f"{label}.diagnostics")
+    _exact_fields(diagnostics, ("hostname", "process_id"), f"{label}.diagnostics")
+    _string(diagnostics["hostname"], f"{label}.diagnostics.hostname")
+    _integer(diagnostics["process_id"], f"{label}.diagnostics.process_id", 1)
+
+    inspected = _mapping(
+        item["pre_repair_diagnostics"], f"{label}.pre_repair_diagnostics"
+    )
+    _exact_fields(
+        inspected,
+        (
+            "inspected_at",
+            "system_valid",
+            "current_status",
+            "current_audit_status",
+            "overall_severity",
+            "observed_revision",
+            "observed_current_version_id",
+            "observed_previous_version_id",
+        ),
+        f"{label}.pre_repair_diagnostics",
+    )
+    _timestamp(inspected["inspected_at"], f"{label}.pre_repair_diagnostics.inspected_at")
+    if inspected["system_valid"] is not True:
+        _fail(f"{label}.pre_repair_diagnostics.system_valid 必須是 true")
+    expected_status = {
+        "reconstruct_missing_current": "missing",
+        "reconstruct_invalid_current": "current_invalid",
+        "switch_from_missing_target": "current_target_missing",
+        "switch_from_invalid_target": "current_target_invalid",
+    }[repair_kind]
+    if inspected["current_status"] != expected_status:
+        _fail(f"{label} repair_kind 與 pre-repair current_status 不一致")
+    _string(inspected["current_audit_status"], f"{label}.pre_repair_diagnostics.current_audit_status")
+    _string(inspected["overall_severity"], f"{label}.pre_repair_diagnostics.overall_severity")
+    observed_revision = inspected["observed_revision"]
+    observed_current_id = inspected["observed_current_version_id"]
+    observed_previous_id = inspected["observed_previous_version_id"]
+    if observed_revision is not None:
+        _integer(observed_revision, f"{label}.pre_repair_diagnostics.observed_revision", 1)
+    if observed_current_id is not None:
+        validate_safe_id(
+            observed_current_id,
+            f"{label}.pre_repair_diagnostics.observed_current_version_id",
+        )
+    if observed_previous_id is not None:
+        validate_safe_id(
+            observed_previous_id,
+            f"{label}.pre_repair_diagnostics.observed_previous_version_id",
+        )
+
+    evidence = _mapping(
+        item["pre_repair_current_evidence"], f"{label}.pre_repair_current_evidence"
+    )
+    _exact_fields(
+        evidence,
+        ("exists", "raw_bytes_sha256", "raw_bytes_base64"),
+        f"{label}.pre_repair_current_evidence",
+    )
+    if not isinstance(evidence["exists"], bool):
+        _fail(f"{label}.pre_repair_current_evidence.exists 必須是 boolean")
+    if evidence["exists"]:
+        _sha256(
+            evidence["raw_bytes_sha256"],
+            f"{label}.pre_repair_current_evidence.raw_bytes_sha256",
+        )
+        encoded = _string(
+            evidence["raw_bytes_base64"],
+            f"{label}.pre_repair_current_evidence.raw_bytes_base64",
+        )
+        try:
+            import base64
+
+            raw = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise StorageValidationError(
+                f"{label}.pre_repair_current_evidence.raw_bytes_base64 無效"
+            ) from exc
+        if sha256_bytes(raw) != evidence["raw_bytes_sha256"]:
+            _fail(f"{label}.pre_repair_current_evidence checksum 與保存 bytes 不一致")
+    elif evidence["raw_bytes_sha256"] is not None or evidence["raw_bytes_base64"] is not None:
+        _fail(f"{label} current 不存在時不得填入 raw bytes evidence")
+
+    target_id = validate_safe_id(item["target_version_id"], f"{label}.target_version_id")
+    _sha256(item["target_manifest_sha256"], f"{label}.target_manifest_sha256")
+    before_revision = _integer(item["before_revision"], f"{label}.before_revision", 1)
+    after_revision = _integer(item["after_revision"], f"{label}.after_revision", 1)
+    resulting = validate_annual_current(item["resulting_current"])
+    if resulting["revision"] != after_revision or resulting["current_version_id"] != target_id:
+        _fail(f"{label}.resulting_current 與 after revision／target 不一致")
+
+    reconstruction = repair_kind.startswith("reconstruct_")
+    if reconstruction:
+        if after_revision != before_revision:
+            _fail(f"{label} reconstruction 不得增加 revision")
+        if any(
+            value is not None
+            for value in (observed_revision, observed_current_id, observed_previous_id)
+        ):
+            _fail(f"{label} missing/invalid current 不得宣稱已讀到合法 observed current")
+    else:
+        if after_revision != before_revision + 1:
+            _fail(f"{label} broken-target switch 必須增加一個 revision")
+        if observed_revision != before_revision or observed_current_id is None:
+            _fail(f"{label} broken-target switch 必須保存合法 observed current")
+        if resulting["previous_version_id"] != observed_current_id:
+            _fail(f"{label} resulting current previous 必須是原 broken current target")
+    if item["result"] != "success":
+        _fail(f"{label}.result 必須是 success")
     return copy.deepcopy(item)
 
 

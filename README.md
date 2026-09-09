@@ -16,18 +16,15 @@
 - 第二階段 2-2 已完成 `shared_storage_schema.py` 純邏輯：正式 JSON／CSV schema、穩定序列化、SHA-256、設定指紋、年度資料與正式推估版本包驗證；合成測試位於 `tests/test_shared_storage_schema.py`。
 - 第二階段 2-3 已完成 `shared_storage_reader.py` 唯讀載入：明確設定 `LIYUTAN_ENABLE_SHARED_STORAGE=1` 後，透過 `LIYUTAN_SHARED_ROOT` 讀取並完整驗證目前年度版本及最近正式推估；不建立、修改、重新命名或刪除共享檔案。
 - 共享功能尚未啟用時，既有線上 Streamlit 網站維持內建年度資料的相容模式；共享功能啟用後若讀取失敗，則只有使用者明確選擇「內建備援資料」後才能進行非正式試算。
-- 第二階段 2-4A 已新增 `scripts/create_annual_data_template.py`，可用明確的 `--output` 產生四張工作表、固定36旬且所有業務數值留白的年度資料 Excel 公版；Excel 僅供人工填寫及交換，不是正式權威資料。
-- 第二階段 2-4B 已新增 `annual_data_excel.py` 純邏輯與 `annual_data_preview_ui.py` 呈現模組，可解析與完整驗證 2-4A.1 Excel、建立記憶體候選資料、計算穩定 fingerprint，並與目前啟用年度版本進行差異預覽；只有在 `system.json` 已驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認 versions inventory 完全為空時，才會確認為第一版完整預覽。
-- 第二階段 2-4C1 ✅：`annual_data_version_writer.py` 對已確認候選重新解析原始 Excel 並核對 SHA-256、fingerprint、完整內容及 warnings，將固定 JSON／CSV 與原始 Excel 寫入同根目錄 staging，逐檔驗證後以 rename 發布為不可變年度版本；發布成功仍未啟用為 current。
-- 第二階段 2-4C2a ✅：`annual_data_activation.py` 完整重驗既有不可變年度版本，透過 Windows/SMB OS-level 排他鎖重讀並核對 observed current 狀態，再以同目錄 temp、flush/fsync、重讀驗證及 atomic replace 切換 `current.json`，並以一事件一檔方式原子發布 audit event。
-- 第二階段 2-4C2b1 ✅：已完成 Streamlit 年度版本「建立後不自動啟用」與第二次人工確認啟用工作流、年度專用安全旗標、software provenance，以及 current changed 工作區保護。
-- 第二階段 2-4C2b2a ✅：已新增獨立、無 Streamlit 相依的 `annual_data_diagnostics.py`，唯讀盤點 current、immutable versions、staging、quarantine、audit、writer temp 與 lock metadata；可在 reader 因 current／bundle 損壞而失敗時，仍由已驗證的 shared root 判斷 recovery severity。
-- 第二階段 2-4C2b2b1 ✅：已新增 `annual_data_recovery.py` 與 Recovery Actions；只在 current 健康時補建明確標示為事後證據的 recovery audit，或經人工選擇後以既有安全 activation 流程重新啟用合法 historical／orphan immutable version。
-- 「系統基準資料維護」保留 2-4B 驗證／差異預覽；只有共享狀態健康或已確認為第一版，且 `LIYUTAN_ENABLE_ANNUAL_DATA_WRITES=1` 時，才會開放建立版本。啟用是建立後的獨立人工動作。
+- 第二階段 2-4 年度資料功能實作已完成，對一般維護者可概括為三件事：
+  1. **年度 Excel 驗證與版本建立**：產生空白公版、完整驗證人工上傳內容、預覽差異，並安全發布不可變年度版本；建立後不會自動啟用。
+  2. **年度版本安全啟用與版本切換**：人工再次確認後，透過 Windows/SMB 排他鎖、observed-state conflict check、atomic current publication 與 append-only audit 啟用或切換完整版本。
+  3. **診斷與受控復原**：唯讀盤點 current、versions、audit 及殘留 evidence；支援 healthy-current audit 補建、既有版本重新啟用、首次 current 初始化，以及只有在 evidence 足以唯一判斷時的 missing／invalid current reconstruction 或 broken-target switch。
+- 2-4 功能實作完成，但公司 SMB 實機多人、鎖定與中斷 acceptance 仍留在 2-8；generic `formal_write_available`／`formal_operations_available` 仍維持 `False`。
 - 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非正式資料，不會永久更新共享正式資料。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
-- 2-4C2b2b2 ⏳：broken／missing current repair 尚未實作；staging、quarantine、temp evidence 隔離／清理也不在本階段。公司實際 SMB 人工驗收尚未完成，2-4 整體仍未完成，generic `formal_write_available`／`formal_operations_available` 仍維持 `False`。
+- staging、quarantine 與一般 temp evidence 的隔離／清理仍不自動執行，屬 2-8 人工維運與實機 acceptance 範圍。
 
 
 ## V2 多情境工作流程（第一階段已完成）
@@ -38,7 +35,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 本階段完成 1～N 個入流情境、共用 0 旬至全部推估旬、共用出流、批次演算、步驟四單一情境詳情，以及步驟五跨批次比較相容；核心水量平衡公式未改動。
 
-第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。年度不可變版本建立、具衝突保護的啟用後端、2-4C2b1 Streamlit 工作流、2-4C2b2a 唯讀 diagnostics 與 2-4C2b2b1 healthy-current safe recovery 已完成；broken-current repair、正式推估保存、跨電腦接續及桌面捷徑仍尚未實作。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
+第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。2-4 年度 Excel 驗證與不可變版本建立、安全啟用／切換、唯讀 diagnostics 與受控 recovery 功能均已完成；公司 SMB 實機 acceptance 留在 2-8，正式推估保存、跨電腦接續及桌面捷徑仍尚未實作。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
 
 ## 技術與單位
 
@@ -124,7 +121,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 | --- | --- | --- |
 | Streamlit `session_state` | 同一次工作階段內保留輸入、情境及演算結果 | 關閉／逾時／重啟後仍保留；跨瀏覽器或跨電腦同步 |
 | JSON 設定檔 | 手動下載後，可在同一台或另一台電腦載入並重新演算 | 自動保存、自動載入、多人共用最新版 |
-| 公司內網共享資料夾年度資料 | 讀取目前年度版本與最近正式推估摘要；顯示 diagnostics；在獨立旗標及健康狀態下建立／啟用 immutable 年度版本、補 healthy-current recovery audit，或重新啟用合法 historical／orphan version | 尚無 broken／missing current repair、destructive evidence cleanup、正式推估保存或跨裝置載入正式推估工作區；公司 SMB acceptance 尚未完成 |
+| 公司內網共享資料夾年度資料 | 讀取目前年度版本與最近正式推估摘要；建立／啟用 immutable 年度版本；顯示 diagnostics；執行具唯一 evidence 的首次初始化、audit 補建、current reconstruction 或 broken-target switch | 尚無 destructive evidence cleanup、正式推估保存或跨裝置載入正式推估工作區；公司 SMB acceptance 留在 2-8 |
 
 因此，目前若要換電腦接續工作，必須先下載 JSON，再於另一台電腦手動載入。網站不會自動記得上一次推估條件，也不會辨識使用者或裝置。
 
@@ -138,7 +135,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 正式推估將保存完整輸入、摘要、完整逐日結果、年度資料版本、程式與 schema 版本、操作人、備註、上一版本及 checksum；年度資料將涵蓋 Q5～Q95、出流需求、滿庫容量、生態流量及士林堰 33 cms 引水上限。兩者都採新增版本、不覆蓋舊版。
 
-資料 schema、共享資料唯讀啟動、2-4A 空白 Excel 公版產生器、2-4B Excel 解析／驗證／差異預覽、2-4C1 不可變年度版本安全建立、2-4C2a 年度啟用安全核心、2-4C2b1 Streamlit 建立／啟用與 current-changed 工作區保護、2-4C2b2a diagnostics／inventory，以及 2-4C2b2b1 safe recovery 已完成。2-4C2b2b2 broken-current repair 與公司實際 SMB 多人、中斷驗收尚未完成，因此 2-4 整體仍未完成。
+資料 schema、共享資料唯讀啟動，以及 2-4 年度 Excel 驗證／版本建立、安全啟用／切換、diagnostics 與受控 recovery 功能均已完成。2-4 功能實作完成；公司實際 SMB 多人、鎖定與中斷驗收留在 2-8。
 
 - [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)
 
@@ -188,7 +185,7 @@ Recovery Actions 另有第三層、預設關閉的高風險開關：
 $env:LIYUTAN_ENABLE_ANNUAL_DATA_RECOVERY = '1'
 ```
 
-只有共享模式、年度寫入與 recovery 三個開關都為精確字串 `1`，執行環境為 Windows，且 diagnostics 明確符合 safe case 時，`annual_recovery_available=True`。audit 補建只接受 system valid、healthy current、完整 immutable bundle、原始 activation match = 0、recovery match = 0 與 audit status = missing；ambiguous、broken／missing current 或 uninspectable 一律停用。一般 `annual_data_write_available` 不會為了 recovery 被強行打開；補建完成並 rerun 成為 `matched_recovery` 後才恢復正常年度寫入。
+只有共享模式、年度寫入與 recovery 三個開關都為精確字串 `1`，執行環境為 Windows，且 diagnostics 明確符合唯一 safe case 時，`annual_recovery_available=True`。可用 action 依狀態限定為 healthy-current audit 補建、人工重新啟用完整 historical/orphan、first-current initialization、依唯一 audit chain reconstruction，或 broken-target 的人工 target switch；不顯示萬用 repair。ambiguous、audit chain 衝突、unreadable evidence、無完整 target 或 uninspectable 一律停用。一般 `annual_data_write_available` 不會為了 recovery 被強行打開；完成並 rerun 為 `matched_recovery` 或 `matched_repair` 後才恢復正常年度寫入。
 
 資料來源分為：
 
@@ -245,13 +242,13 @@ Streamlit 頁面上方提供獨立的「系統基準資料維護－Excel驗證�
 
 已開啟工作區記住其 loaded annual version。其他電腦把 current A 切至 B 後，rerun 只顯示 A→B stale 警示，不會改 hydrology、demand、水庫參數或使用者輸入。使用者可暫時保留 A（警示持續），或明確按「重新載入新版系統基準資料 B」；後者完整套用 B、清除水文／出流年度 session overrides、使舊演算結果失效並更新 workspace version。activation 成功本身不直接改工作區。
 
-`current_switched_audit_incomplete` 會留下 session recovery-required banner、停止再次建立／啟用且不 rollback。2-4C2b2a 另會在每次 rerun 由 filesystem 尋找與 current 的 `(N-1, A) → (N, B)` 完全匹配的合法 activation audit；零份為 missing，多份為 ambiguous，兩者即使 session key 已消失仍會重新判定 recovery-required。actual audit 補建、current repair、rollback／activate historical version 與 evidence 清理均留給 2-4C2b2b。公司實際 SMB acceptance 尚未完成，2-4 整體仍未完成，generic `formal_write_available` 與 `formal_operations_available` 仍為 `False`。
+`current_switched_audit_incomplete` 會留下 session recovery-required banner、停止再次建立／啟用且不 rollback。diagnostics 另會在每次 rerun 由 filesystem 尋找與 current 的 `(N-1, A) → (N, B)` 完全匹配的合法 activation/recovery/repair evidence；零份、矛盾或多個可能狀態即使 session key 已消失仍會重新判定。後續受控 action 由 2-4C2b2b1/b2b2 處理；evidence cleanup 不自動執行。公司實際 SMB acceptance 留在 2-8，generic `formal_write_available` 與 `formal_operations_available` 仍為 `False`。
 
 ### 2-4C2b2a 年度資料唯讀 diagnostics／inventory
 
 `annual_data_diagnostics.py` 只接受明確 root 或 `SharedStorageResult.root`，先驗證 root directory、`system.json` schema 與 `reservoir_id=liyutan`；system 不可信時停止，不猜測正式資料。它只掃描 `annual-data/versions` 的直接子項目、writer 命名的 `staging/annual-data-*`、`quarantine`、固定 `audit/events/YYYY/MM/*.json` 與已知 current／audit temp pattern。完整版本依可靠證據分成 current、historical（current previous reference 或合法 activation audit before／after reference）及 orphan；驗證失敗則保留可理解原因並列為 invalid。orphan 代表完整但沒有 activation history 證據，不等同損壞。
 
-overall severity 固定為 `healthy`、`attention`、`recovery_required` 或 `uninspectable`。合法 recovery event 且 transition、`current.json` checksum 與 current manifest checksum 全部符合目前 current 時為 `matched_recovery`；原始 activation 與 recovery 同時符合時為 `redundant_evidence` attention；多份 recovery 仍為 ambiguous。diagnostics 模組本身維持唯讀。
+overall severity 包含 `healthy`、`attention`、`initialization_required`、`recovery_required` 與 `uninspectable`。合法 recovery event 且 transition、`current.json` checksum 與 current manifest checksum 全部符合目前 current 時為 `matched_recovery`；完整 repair event 則為 `matched_repair`，current 已寫入但 repair audit 未發布時為 `repair_evidence_incomplete`。多個可能 transition 或不可信 evidence 停止自動復原。diagnostics 模組本身維持唯讀。
 
 ### 2-4C2b2b1 年度資料 safe recovery
 
@@ -259,12 +256,22 @@ overall severity 固定為 `healthy`、`attention`、`recovery_required` 或 `un
 
 寫入前先取得既有 `annual-current.lock`，鎖內重跑 diagnostics，重新核對 revision、current、previous、完整 bundle、原始 audit 仍為 zero match、recovery audit 仍不存在。事件以唯一 temp file、flush/fsync、重讀 schema validation、no-overwrite atomic publish 與發布後重讀驗證建立；動作不修改 `current.json` 或 immutable version。若鎖內狀態改變或別台電腦已補建就停止並要求重新 diagnostics，不自動 retry。
 
-健康 current 且 audit evidence 已可接受時，inventory 中 `validation_ok=True` 的 historical／orphan（排除 current 與 invalid）可由人工選擇重新啟用。UI 顯示 target metadata 與完整差異、要求新操作人／備註／software provenance／checkbox，然後直接呼叫既有 `activate_annual_data_version()`；成功使 revision +1、previous 指向原 current，不修改 target，也不背景替換已開啟工作區。broken／missing current、ambiguous、uninspectable、staging/quarantine/temp cleanup 與 checksum repair 均不在本階段。
+健康 current 且 audit evidence 已可接受時，inventory 中 `validation_ok=True` 的 historical／orphan（排除 current 與 invalid）可由人工選擇重新啟用。UI 顯示 target metadata 與完整差異、要求新操作人／備註／software provenance／checkbox，然後直接呼叫既有 `activate_annual_data_version()`；成功使 revision +1、previous 指向原 current，不修改 target，也不背景替換已開啟工作區。ambiguous/uninspectable 自動處理、staging/quarantine/temp cleanup 與 checksum repair 均不在本階段。
+
+### 2-4C2b2b2 first-current initialization 與 broken-current repair
+
+`current.json` 缺失、沒有任何 valid activation/recovery/repair transition history、audit inventory 可完整檢查且至少有一個完整 immutable orphan 時，diagnostics 顯示 `initialization_required`，而非把正常首次建置稱為系統損壞。使用者必須明確選 target；即使有多個版本也不依檔名或修改時間自動選最新版。動作直接重用 `activate_annual_data_version(..., observed_revision=0, observed_current_version_id=None, first_current_initialization=True)`，並在既有 Windows/SMB lock 內再次驗證首次條件，因此結果仍是 revision 1、previous null 與正常 `annual-data-activation` audit。
+
+真正 repair 由 `annual_data_current_repair.py` 規劃與執行。missing／invalid current 只有在合法 transition audit 能從 revision 1 連續建鏈、每個 revision 只有一種 before/after 狀態、最後 target bundle 完整時才可 reconstruction；revision/current/previous 全由程式推導，reconstruction 不增加 revision。合法 current 指向 missing／invalid target 時，使用者可從完整 historical/orphan 中明確選擇 recovery target；`previous_version_id` 只作建議、不自動選定，成功後 revision 加一，previous 記錄原 broken current version ID。
+
+所有 repair 都沿用 `locks/annual-current.lock`，鎖內重跑 diagnostics、核對畫面 evidence token、current bytes 與 target bundle；狀態改變即 conflict，不 retry。current publication 共用 activation 的同目錄 unique temp、flush/fsync、重讀 validation、`os.replace` 與 replace 後重驗。repair 不修改或刪除任何 version、staging、quarantine 或一般 temp evidence，也不修 checksum。
+
+repair audit 使用獨立 `annual-data-current-repair` event type，明確記錄 repair kind、operator/note/software、hostname/PID、pre-repair diagnostics、target manifest checksum、before/after revision 與 resulting current。existing current 的原始 bytes 在覆寫前以 SHA-256 與 base64 完整保存；missing current 則明記不存在。若 current 已成功而 audit publication 失敗，不 rollback current、不回報成功，完整 repair audit temp 保留為 pending evidence；diagnostics 顯示 `repair_evidence_incomplete`，後續只能在鎖內補完該既有 audit，不得重送 current repair。成功後 current 來源顯示 `matched_repair`。2-4 功能實作至此完成，公司 SMB 實機 acceptance 留在 2-8。
 
 ## 自動化測試
 
 ```bash
-python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_storage_reader.py annual_data_excel.py annual_data_preview_ui.py annual_data_version_writer.py annual_data_activation.py annual_data_maintenance.py annual_data_diagnostics.py annual_data_recovery.py software_provenance.py scripts tests
+python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_storage_reader.py annual_data_excel.py annual_data_preview_ui.py annual_data_version_writer.py annual_data_activation.py annual_data_maintenance.py annual_data_diagnostics.py annual_data_recovery.py annual_data_current_repair.py software_provenance.py scripts tests
 python -m pytest -q
 ```
 

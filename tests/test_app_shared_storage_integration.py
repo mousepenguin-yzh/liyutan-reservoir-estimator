@@ -12,6 +12,7 @@ from annual_data_activation import (
     activate_annual_data_version,
 )
 from annual_data_excel import parse_annual_data_excel
+from annual_data_current_repair import repair_annual_current
 from shared_storage_reader import (
     DataSourceMode,
     ENABLE_SHARED_STORAGE_ENV,
@@ -427,6 +428,190 @@ def test_healthy_current_and_first_version_enable_annual_specific_capability(
     assert not first.exception
     assert first.session_state.annual_data_write_available is True
     assert "first-version observed state = (0, None)" in _messages(first.success)
+
+
+def _enable_annual_recovery_ui(monkeypatch, root: Path) -> None:
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_WRITES_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_RECOVERY_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    monkeypatch.setattr(maintenance_module, "RUNTIME_PLATFORM", "win32")
+
+
+def test_first_current_initialization_ui_uses_explicit_unselected_target(tmp_path, monkeypatch):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").unlink()
+    for audit in (root / "audit" / "events").rglob("*.json"):
+        audit.unlink()
+    _enable_annual_recovery_ui(monkeypatch, root)
+
+    app = _run_app()
+
+    assert not app.exception
+    assert "尚未設定第一個啟用版本" in _messages(app.warning)
+    selector = next(item for item in app.selectbox if item.label == "選擇首次正式年度版本")
+    assert selector.value is None
+    button = next(item for item in app.button if item.label == "設定為第一個正式年度版本")
+    assert button.disabled
+    assert not any(item.label == "依最後正式紀錄重建 current" for item in app.button)
+
+
+def test_missing_and_invalid_current_reconstruction_ui_are_condition_specific(tmp_path, monkeypatch):
+    missing_root = _build_root(tmp_path / "missing")
+    (missing_root / "annual-data" / "current.json").unlink()
+    _enable_annual_recovery_ui(monkeypatch, missing_root)
+
+    missing = _run_app()
+    assert not missing.exception
+    assert any(item.label == "依最後正式紀錄重建 current" for item in missing.button)
+    assert "reconstruction 不增加 revision" in _messages(missing.info)
+    assert not any(item.label == "設定為第一個正式年度版本" for item in missing.button)
+
+    invalid_root = _build_root(tmp_path / "invalid")
+    (invalid_root / "annual-data" / "current.json").write_bytes(b"{")
+    _enable_annual_recovery_ui(monkeypatch, invalid_root)
+    invalid = _run_app()
+    assert not invalid.exception
+    assert any(item.label == "依最後正式紀錄重建 current" for item in invalid.button)
+    assert "原 current SHA-256" in {item.label for item in invalid.metric}
+
+
+def test_broken_target_ui_requires_explicit_selection_and_only_recommends_previous(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path)
+    previous_id = "annual-synthetic-previous-ui"
+    _write_bundle(
+        root / "annual-data" / "versions" / previous_id,
+        _annual_bundle(version_mutator=lambda value: value.update(version_id=previous_id)),
+    )
+
+    @contextlib.contextmanager
+    def fake_lock(_path):
+        yield
+
+    software = {
+        "repository": "mousepenguin-yzh/liyutan-reservoir-estimator",
+        "git_commit": "f" * 40,
+        "app_version": "git-ffffffffffff",
+        "source_tree_dirty": False,
+    }
+    activate_annual_data_version(
+        root=root,
+        target_version_id=previous_id,
+        observed_revision=1,
+        observed_current_version_id=ANNUAL_ID,
+        operator_display_name="測試操作人",
+        note="建立 previous transition",
+        software=software,
+        lock_factory=fake_lock,
+    )
+    activate_annual_data_version(
+        root=root,
+        target_version_id=ANNUAL_ID,
+        observed_revision=2,
+        observed_current_version_id=previous_id,
+        operator_display_name="測試操作人",
+        note="回到即將損壞的 current",
+        software=software,
+        lock_factory=fake_lock,
+    )
+    (root / "annual-data" / "versions" / ANNUAL_ID / "COMMITTED.json").unlink()
+    _enable_annual_recovery_ui(monkeypatch, root)
+
+    app = _run_app()
+
+    assert not app.exception
+    selector = next(
+        item
+        for item in app.selectbox
+        if item.label == "選擇完整 historical／orphan recovery target"
+    )
+    assert selector.value is None
+    assert previous_id in _messages(app.info)
+    button = next(
+        item for item in app.button if item.label == "改以所選完整年度版本恢復 current"
+    )
+    assert button.disabled
+
+
+def test_ambiguous_current_history_has_no_repair_button(tmp_path, monkeypatch):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").unlink()
+    other_id = "annual-synthetic-ambiguous-ui"
+    _write_bundle(
+        root / "annual-data" / "versions" / other_id,
+        _annual_bundle(version_mutator=lambda value: value.update(version_id=other_id)),
+    )
+    original_path = next((root / "audit" / "events").rglob("*.json"))
+    conflict = deserialize_json(original_path.read_bytes())
+    conflict["event_id"] = "synthetic-ambiguous-ui"
+    conflict["annual_target_version_id"] = other_id
+    conflict["after_current_version_id"] = other_id
+    (original_path.parent / "ambiguous-ui.json").write_bytes(serialize_json(conflict))
+    _enable_annual_recovery_ui(monkeypatch, root)
+
+    app = _run_app()
+
+    assert not app.exception
+    labels = {item.label for item in app.button}
+    assert "依最後正式紀錄重建 current" not in labels
+    assert "改以所選完整年度版本恢復 current" not in labels
+    assert "無法由現有紀錄唯一判斷" in _messages(app.error)
+
+
+def test_reconstruction_ui_restores_write_capability_without_replacing_loaded_workspace(
+    tmp_path, monkeypatch
+):
+    @contextlib.contextmanager
+    def fake_lock(_path):
+        yield
+
+    def repair_with_fake_lock(**arguments):
+        return repair_annual_current(**arguments, lock_factory=fake_lock)
+
+    service = maintenance_module.AnnualDataMaintenanceService(
+        current_repairer=repair_with_fake_lock,
+        provenance_loader=lambda: SoftwareProvenanceResult(
+            True,
+            software={
+                "repository": "mousepenguin-yzh/liyutan-reservoir-estimator",
+                "git_commit": "e" * 40,
+                "app_version": "git-eeeeeeeeeeee",
+                "source_tree_dirty": False,
+            },
+        ),
+        platform="linux",
+    )
+    monkeypatch.setattr(preview_ui, "AnnualDataMaintenanceService", lambda: service)
+    root = _build_root(tmp_path)
+    _enable_annual_recovery_ui(monkeypatch, root)
+    healthy = _run_app()
+    loaded_before = healthy.session_state.loaded_shared_annual_version_id
+    hydrology_before = healthy.session_state.hydrology_df.copy(deep=True)
+    (root / "annual-data" / "current.json").unlink()
+
+    app = healthy.run(timeout=30)
+    _set_widget_value(app.text_input, "current repair 操作人", "重建操作人")
+    _set_widget_value(app.text_area, "current repair recovery 備註", "依唯一正式紀錄重建")
+    _set_widget_value(
+        app.checkbox,
+        "我確認 evidence 與 repair 後結果；此動作不修改任何 immutable version，且不會自動重試。",
+        True,
+    )
+    app = app.run(timeout=30)
+    button = next(
+        item for item in app.button if item.label == "依最後正式紀錄重建 current" and not item.disabled
+    )
+    app = button.click().run(timeout=30)
+
+    assert not app.exception
+    assert app.session_state.annual_data_write_available is True
+    assert app.session_state.formal_write_available is False
+    assert app.session_state.formal_operations_available is False
+    assert app.session_state.loaded_shared_annual_version_id == loaded_before
+    assert app.session_state.hydrology_df.equals(hydrology_before)
+    assert "matched_repair" in _messages(app.metric)
 
 
 def _switch_test_root_to_version_b(root):

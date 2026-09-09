@@ -70,7 +70,7 @@ def test_empty_first_version_state_is_not_recovery_required(tmp_path):
     assert result.overall_severity is RecoverySeverity.HEALTHY
 
 
-def test_missing_current_with_complete_orphan_requires_recovery(tmp_path):
+def test_missing_current_with_complete_orphan_requires_first_current_initialization(tmp_path):
     root = _build_root(tmp_path)
     (root / "annual-data" / "current.json").unlink()
     _remove_audits(root)
@@ -80,7 +80,9 @@ def test_missing_current_with_complete_orphan_requires_recovery(tmp_path):
     assert result.current_status is CurrentStatus.MISSING
     assert result.versions[0].status is VersionStatus.ORPHAN
     assert not result.is_first_version_state
-    assert result.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
+    assert result.is_first_current_initialization_state
+    assert result.overall_severity is RecoverySeverity.INITIALIZATION_REQUIRED
+    assert "尚未設定第一個啟用版本" in result.summary
 
 
 def test_missing_current_with_invalid_version_entry_requires_recovery(tmp_path):

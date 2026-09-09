@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING, Any
 from shared_storage_schema import (
     ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
     ANNUAL_ACTIVATION_EVENT_TYPE,
+    ANNUAL_CURRENT_REPAIR_EVENT_TYPE,
     ANNUAL_REQUIRED_FILES,
     StorageValidationError,
     deserialize_json,
@@ -28,6 +29,7 @@ from shared_storage_schema import (
     validate_annual_activation_recovery_audit_event,
     validate_annual_bundle,
     validate_annual_current,
+    validate_annual_current_repair_audit_event,
     validate_safe_id,
     validate_system,
 )
@@ -66,6 +68,7 @@ class StagingStatus(str, Enum):
 class AuditStatus(str, Enum):
     VALID_ANNUAL_ACTIVATION = "valid_annual_activation"
     VALID_ANNUAL_ACTIVATION_RECOVERY = "valid_annual_activation_recovery"
+    VALID_ANNUAL_CURRENT_REPAIR = "valid_annual_current_repair"
     INVALID = "invalid"
     UNKNOWN = "unknown_unsupported"
 
@@ -73,6 +76,8 @@ class AuditStatus(str, Enum):
 class CurrentAuditStatus(str, Enum):
     MATCHED = "matched"
     MATCHED_RECOVERY = "matched_recovery"
+    MATCHED_REPAIR = "matched_repair"
+    REPAIR_EVIDENCE_INCOMPLETE = "repair_evidence_incomplete"
     REDUNDANT_EVIDENCE = "redundant_evidence"
     MISSING = "missing"
     AMBIGUOUS = "ambiguous"
@@ -83,6 +88,7 @@ class CurrentAuditStatus(str, Enum):
 class RecoverySeverity(str, Enum):
     HEALTHY = "healthy"
     ATTENTION = "attention"
+    INITIALIZATION_REQUIRED = "initialization_required"
     RECOVERY_REQUIRED = "recovery_required"
     UNINSPECTABLE = "uninspectable"
 
@@ -136,6 +142,14 @@ class TempArtifactDiagnostic:
     path: Path
     artifact_type: str
     modified_at: str | None
+    event: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CurrentEvidenceDiagnostic:
+    exists: bool
+    raw_bytes_sha256: str | None
+    raw_bytes_size: int | None
 
 
 @dataclass(frozen=True)
@@ -156,6 +170,7 @@ class AnnualDataDiagnostics:
     current_status: CurrentStatus
     current: dict[str, Any] | None
     current_failure_reason: str | None
+    current_evidence: CurrentEvidenceDiagnostic
     current_audit_status: CurrentAuditStatus
     current_audit_match_count: int
     versions: tuple[AnnualVersionDiagnostic, ...]
@@ -185,6 +200,39 @@ class AnnualDataDiagnostics:
         return self.current_status is CurrentStatus.MISSING and not self.versions
 
     @property
+    def has_annual_transition_history(self) -> bool:
+        return any(_event_transition(item) is not None for item in self.audits)
+
+    @property
+    def has_untrusted_annual_audit_evidence(self) -> bool:
+        annual_types = {
+            ANNUAL_ACTIVATION_EVENT_TYPE,
+            ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
+            ANNUAL_CURRENT_REPAIR_EVENT_TYPE,
+        }
+        return any(
+            item.status is AuditStatus.INVALID
+            and isinstance(item.event, dict)
+            and item.event.get("event_type") in annual_types
+            for item in self.audits
+        )
+
+    @property
+    def is_first_current_initialization_state(self) -> bool:
+        return bool(
+            self.system_valid
+            and self.current_status is CurrentStatus.MISSING
+            and not self.inspection_errors
+            and self.complete_version_count > 0
+            and not self.has_annual_transition_history
+            and not self.has_untrusted_annual_audit_evidence
+            and not any(
+                item.artifact_type == "annual_current_repair_audit_pending"
+                for item in self.temp_artifacts
+            )
+        )
+
+    @property
     def recovery_required(self) -> bool:
         return self.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
 
@@ -195,6 +243,19 @@ class AnnualDataDiagnostics:
     @property
     def current_recovery_audit_match_count(self) -> int:
         return _matching_audit_counts(self.current_status, self.current, self.audits)[1]
+
+    @property
+    def current_repair_audit_match_count(self) -> int:
+        return _matching_audit_counts(self.current_status, self.current, self.audits)[2]
+
+    @property
+    def pending_current_repair_events(self) -> tuple[TempArtifactDiagnostic, ...]:
+        return tuple(
+            item
+            for item in self.temp_artifacts
+            if item.artifact_type == "annual_current_repair_audit_pending"
+            and item.event is not None
+        )
 
 
 class _UnsafeFilesystemEntry(ValueError):
@@ -305,6 +366,7 @@ def _inspect_audits(root: Path) -> tuple[tuple[AnnualAuditDiagnostic, ...], list
                     if event_type not in {
                         ANNUAL_ACTIVATION_EVENT_TYPE,
                         ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
+                        ANNUAL_CURRENT_REPAIR_EVENT_TYPE,
                     }:
                         diagnostics.append(
                             AnnualAuditDiagnostic(
@@ -319,9 +381,12 @@ def _inspect_audits(root: Path) -> tuple[tuple[AnnualAuditDiagnostic, ...], list
                     if event_type == ANNUAL_ACTIVATION_EVENT_TYPE:
                         event = validate_annual_activation_audit_event(parsed)
                         status = AuditStatus.VALID_ANNUAL_ACTIVATION
-                    else:
+                    elif event_type == ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE:
                         event = validate_annual_activation_recovery_audit_event(parsed)
                         status = AuditStatus.VALID_ANNUAL_ACTIVATION_RECOVERY
+                    else:
+                        event = validate_annual_current_repair_audit_event(parsed)
+                        status = AuditStatus.VALID_ANNUAL_CURRENT_REPAIR
                     diagnostics.append(
                         AnnualAuditDiagnostic(
                             path,
@@ -336,6 +401,7 @@ def _inspect_audits(root: Path) -> tuple[tuple[AnnualAuditDiagnostic, ...], list
                             path,
                             AuditStatus.INVALID,
                             modified,
+                            event=parsed if isinstance(parsed, dict) else None,
                             failure_reason=str(exc),
                         )
                     )
@@ -349,13 +415,12 @@ def _inspect_audits(root: Path) -> tuple[tuple[AnnualAuditDiagnostic, ...], list
                             failure_reason=str(exc),
                         )
                     )
-                    if (
-                        isinstance(parsed, dict)
-                        and parsed.get("event_type")
-                        == ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE
-                    ):
+                    if isinstance(parsed, dict) and parsed.get("event_type") in {
+                        ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
+                        ANNUAL_CURRENT_REPAIR_EVENT_TYPE,
+                    }:
                         errors.append(
-                            f"recovery audit schema 無法安全驗證：{path}：{exc}"
+                            f"recovery/repair audit schema 無法安全驗證：{path}：{exc}"
                         )
     return tuple(diagnostics), errors
 
@@ -369,6 +434,8 @@ def _activation_references(audits: tuple[AnnualAuditDiagnostic, ...]) -> set[str
             transition = item.event
         elif item.status is AuditStatus.VALID_ANNUAL_ACTIVATION_RECOVERY:
             transition = item.event["recovered_transition"]
+        elif item.status is AuditStatus.VALID_ANNUAL_CURRENT_REPAIR:
+            transition = _event_transition(item)
         else:
             continue
         before_id = transition["before_current_version_id"]
@@ -435,6 +502,32 @@ def _verify_recovery_evidence(
                 errors.append(
                     f"recovery audit evidence checksum 不一致：{item.path}"
                 )
+                continue
+        if (
+            item.status is AuditStatus.VALID_ANNUAL_CURRENT_REPAIR
+            and item.event is not None
+            and transition is not None
+            and transition["before_revision"] == current["revision"] - 1
+            and transition["before_current_version_id"] == current["previous_version_id"]
+            and transition["after_revision"] == current["revision"]
+            and transition["after_current_version_id"] == current["current_version_id"]
+        ):
+            if (
+                item.event["target_manifest_sha256"] != manifest_sha256
+                or item.event["resulting_current"] != current
+            ):
+                checked.append(
+                    AnnualAuditDiagnostic(
+                        item.path,
+                        AuditStatus.INVALID,
+                        item.modified_at,
+                        event=item.event,
+                        failure_reason=(
+                            "current repair audit evidence 與目前 current／manifest 不一致"
+                        ),
+                    )
+                )
+                errors.append(f"current repair audit evidence 不一致：{item.path}")
                 continue
         checked.append(item)
     return tuple(checked), errors
@@ -669,44 +762,94 @@ def _inspect_temp_artifacts(root: Path) -> tuple[tuple[TempArtifactDiagnostic, .
                     continue
                 for path in _direct_children(month):
                     if path.name.startswith(".") and ".json." in path.name and path.name.endswith(".tmp"):
+                        artifact_type = "annual_activation_audit_temp"
+                        event = None
+                        if path.name.endswith(".current-repair-audit.tmp"):
+                            artifact_type = "annual_current_repair_audit_pending"
+                            try:
+                                event = validate_annual_current_repair_audit_event(
+                                    deserialize_json(path.read_bytes())
+                                )
+                            except (OSError, StorageValidationError) as exc:
+                                artifact_type = "annual_current_repair_audit_invalid_temp"
+                                errors.append(
+                                    f"pending current repair audit 無法安全驗證：{path}：{exc}"
+                                )
                         artifacts.append(
-                            TempArtifactDiagnostic(path, "annual_activation_audit_temp", _modified_at(path))
+                            TempArtifactDiagnostic(
+                                path,
+                                artifact_type,
+                                _modified_at(path),
+                                event=event,
+                            )
                         )
     except (OSError, _UnsafeFilesystemEntry) as exc:
         errors.append(f"audit temp inventory 無法安全讀取：{exc}")
     return tuple(sorted(artifacts, key=lambda item: str(item.path))), errors
 
 
-def _inspect_current(root: Path) -> tuple[CurrentStatus, dict[str, Any] | None, str | None]:
+def _inspect_current(
+    root: Path,
+) -> tuple[
+    CurrentStatus,
+    dict[str, Any] | None,
+    str | None,
+    CurrentEvidenceDiagnostic,
+]:
     current_path = root / "annual-data" / "current.json"
     try:
         current_info = current_path.lstat()
     except FileNotFoundError:
-        return CurrentStatus.MISSING, None, None
+        return CurrentStatus.MISSING, None, None, CurrentEvidenceDiagnostic(False, None, None)
     except OSError as exc:
-        return CurrentStatus.UNINSPECTABLE, None, f"current 無法讀取：{exc}"
+        return (
+            CurrentStatus.UNINSPECTABLE,
+            None,
+            f"current 無法讀取：{exc}",
+            CurrentEvidenceDiagnostic(True, None, None),
+        )
     try:
         if _is_reparse_or_symlink(current_path) or not stat.S_ISREG(current_info.st_mode):
             raise _UnsafeFilesystemEntry("current.json 不是安全的實體檔案")
-        current = validate_annual_current(deserialize_json(current_path.read_bytes()))
+        raw = current_path.read_bytes()
     except OSError as exc:
-        return CurrentStatus.UNINSPECTABLE, None, f"current 無法讀取：{exc}"
+        return (
+            CurrentStatus.UNINSPECTABLE,
+            None,
+            f"current 無法讀取：{exc}",
+            CurrentEvidenceDiagnostic(True, None, None),
+        )
+    except _UnsafeFilesystemEntry as exc:
+        return (
+            CurrentStatus.CURRENT_INVALID,
+            None,
+            str(exc),
+            CurrentEvidenceDiagnostic(True, None, None),
+        )
+    evidence = CurrentEvidenceDiagnostic(True, hashlib.sha256(raw).hexdigest(), len(raw))
+    try:
+        current = validate_annual_current(deserialize_json(raw))
     except (StorageValidationError, _UnsafeFilesystemEntry) as exc:
-        return CurrentStatus.CURRENT_INVALID, None, str(exc)
+        return CurrentStatus.CURRENT_INVALID, None, str(exc), evidence
     target = root / "annual-data" / "versions" / current["current_version_id"]
     try:
         target.lstat()
     except FileNotFoundError:
-        return CurrentStatus.CURRENT_TARGET_MISSING, current, "current 指向的 immutable version 目錄不存在"
+        return (
+            CurrentStatus.CURRENT_TARGET_MISSING,
+            current,
+            "current 指向的 immutable version 目錄不存在",
+            evidence,
+        )
     except OSError as exc:
-        return CurrentStatus.UNINSPECTABLE, current, f"current target 無法讀取：{exc}"
+        return CurrentStatus.UNINSPECTABLE, current, f"current target 無法讀取：{exc}", evidence
     try:
         _validate_bundle_directory(target, current["current_version_id"])
     except OSError as exc:
-        return CurrentStatus.UNINSPECTABLE, current, f"current target 無法讀取：{exc}"
+        return CurrentStatus.UNINSPECTABLE, current, f"current target 無法讀取：{exc}", evidence
     except (StorageValidationError, _UnsafeFilesystemEntry) as exc:
-        return CurrentStatus.CURRENT_TARGET_INVALID, current, str(exc)
-    return CurrentStatus.HEALTHY, current, None
+        return CurrentStatus.CURRENT_TARGET_INVALID, current, str(exc), evidence
+    return CurrentStatus.HEALTHY, current, None, evidence
 
 
 def _event_transition(item: AnnualAuditDiagnostic) -> dict[str, Any] | None:
@@ -716,6 +859,23 @@ def _event_transition(item: AnnualAuditDiagnostic) -> dict[str, Any] | None:
         return item.event
     if item.status is AuditStatus.VALID_ANNUAL_ACTIVATION_RECOVERY:
         return item.event["recovered_transition"]
+    if item.status is AuditStatus.VALID_ANNUAL_CURRENT_REPAIR:
+        event = item.event
+        resulting = event["resulting_current"]
+        if event["repair_kind"].startswith("reconstruct_"):
+            return {
+                "before_revision": resulting["revision"] - 1,
+                "before_current_version_id": resulting["previous_version_id"],
+                "after_revision": resulting["revision"],
+                "after_current_version_id": resulting["current_version_id"],
+            }
+        inspected = event["pre_repair_diagnostics"]
+        return {
+            "before_revision": event["before_revision"],
+            "before_current_version_id": inspected["observed_current_version_id"],
+            "after_revision": event["after_revision"],
+            "after_current_version_id": event["target_version_id"],
+        }
     return None
 
 
@@ -723,11 +883,12 @@ def _matching_audit_counts(
     current_status: CurrentStatus,
     current: dict[str, Any] | None,
     audits: tuple[AnnualAuditDiagnostic, ...],
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     if current_status is not CurrentStatus.HEALTHY or current is None:
-        return 0, 0
+        return 0, 0, 0
     original_matches = 0
     recovery_matches = 0
+    repair_matches = 0
     for item in audits:
         event = _event_transition(item)
         if event is None:
@@ -740,28 +901,57 @@ def _matching_audit_counts(
         ):
             if item.status is AuditStatus.VALID_ANNUAL_ACTIVATION:
                 original_matches += 1
-            else:
+            elif item.status is AuditStatus.VALID_ANNUAL_ACTIVATION_RECOVERY:
                 recovery_matches += 1
-    return original_matches, recovery_matches
+            else:
+                repair_matches += 1
+    return original_matches, recovery_matches, repair_matches
+
+
+def _matching_pending_repair_count(
+    current_status: CurrentStatus,
+    current: dict[str, Any] | None,
+    temp_artifacts: tuple[TempArtifactDiagnostic, ...],
+) -> int:
+    if current_status is not CurrentStatus.HEALTHY or current is None:
+        return 0
+    return sum(
+        item.event is not None and item.event.get("resulting_current") == current
+        for item in temp_artifacts
+        if item.artifact_type == "annual_current_repair_audit_pending"
+    )
 
 
 def _current_audit_state(
     current_status: CurrentStatus,
     current: dict[str, Any] | None,
     audits: tuple[AnnualAuditDiagnostic, ...],
+    temp_artifacts: tuple[TempArtifactDiagnostic, ...],
     audit_scan_failed: bool,
 ) -> tuple[CurrentAuditStatus, int]:
     if current_status is not CurrentStatus.HEALTHY or current is None:
         return CurrentAuditStatus.NOT_APPLICABLE, 0
     if audit_scan_failed:
         return CurrentAuditStatus.UNINSPECTABLE, 0
-    original_matches, recovery_matches = _matching_audit_counts(
+    original_matches, recovery_matches, repair_matches = _matching_audit_counts(
         current_status, current, audits
     )
-    total = original_matches + recovery_matches
-    if original_matches > 1 or recovery_matches > 1:
+    pending_repair_matches = _matching_pending_repair_count(
+        current_status, current, temp_artifacts
+    )
+    total = original_matches + recovery_matches + repair_matches
+    if pending_repair_matches == 1:
+        return CurrentAuditStatus.REPAIR_EVIDENCE_INCOMPLETE, total
+    if pending_repair_matches > 1:
         return CurrentAuditStatus.AMBIGUOUS, total
-    if original_matches == 1 and recovery_matches == 1:
+    if original_matches > 1 or recovery_matches > 1 or repair_matches > 1:
+        return CurrentAuditStatus.AMBIGUOUS, total
+    # A reconstruction repair intentionally coexists with the historical
+    # activation/recovery evidence it used.  The repair event is the source of
+    # the newly published pointer and therefore takes precedence for provenance.
+    if repair_matches == 1:
+        return CurrentAuditStatus.MATCHED_REPAIR, total
+    if total > 1:
         return CurrentAuditStatus.REDUNDANT_EVIDENCE, total
     if original_matches == 1:
         return CurrentAuditStatus.MATCHED, 1
@@ -789,11 +979,41 @@ def _severity(
     }:
         return RecoverySeverity.RECOVERY_REQUIRED, "current 或其正式 immutable target 不一致，需要復原處理。"
     if current_status is CurrentStatus.MISSING and versions:
+        has_valid_history = any(_event_transition(item) is not None for item in audits)
+        has_untrusted_history = any(
+            item.status is AuditStatus.INVALID
+            and isinstance(item.event, dict)
+            and item.event.get("event_type")
+            in {
+                ANNUAL_ACTIVATION_EVENT_TYPE,
+                ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
+                ANNUAL_CURRENT_REPAIR_EVENT_TYPE,
+            }
+            for item in audits
+        )
+        has_pending_repair = any(
+            item.artifact_type == "annual_current_repair_audit_pending"
+            for item in temp_artifacts
+        )
+        if (
+            any(item.validation_ok for item in versions)
+            and not has_valid_history
+            and not has_untrusted_history
+            and not has_pending_repair
+        ):
+            return (
+                RecoverySeverity.INITIALIZATION_REQUIRED,
+                "已建立年度資料版本，但尚未設定第一個啟用版本。請選擇要作為首次正式基準的版本。",
+            )
         return (
             RecoverySeverity.RECOVERY_REQUIRED,
-            "current 缺失，但 versions 中已存在正式資料 evidence，需要 recovery 判斷，不能視為第一版。",
+            "current 缺失且已有 transition/history evidence，需要受控 repair，不能視為第一版。",
         )
-    if audit_status in {CurrentAuditStatus.MISSING, CurrentAuditStatus.AMBIGUOUS}:
+    if audit_status in {
+        CurrentAuditStatus.MISSING,
+        CurrentAuditStatus.AMBIGUOUS,
+        CurrentAuditStatus.REPAIR_EVIDENCE_INCOMPLETE,
+    }:
         return RecoverySeverity.RECOVERY_REQUIRED, "current 完整，但此次 current transition audit 缺失或不唯一。"
     attention = bool(
         audit_status is CurrentAuditStatus.REDUNDANT_EVIDENCE
@@ -809,6 +1029,8 @@ def _severity(
         return RecoverySeverity.HEALTHY, "尚無 current 且 versions inventory 為空，屬合法 first-version 狀態。"
     if audit_status is CurrentAuditStatus.MATCHED_RECOVERY:
         return RecoverySeverity.HEALTHY, "current 與 immutable bundle 完整；此次 transition 由 recovery audit 補建 evidence。"
+    if audit_status is CurrentAuditStatus.MATCHED_REPAIR:
+        return RecoverySeverity.HEALTHY, "current 與 immutable bundle 完整；目前 current 來源為受控 current repair。"
     return RecoverySeverity.HEALTHY, "current、immutable bundle 與 activation audit 均完整一致。"
 
 
@@ -831,6 +1053,7 @@ def diagnose_annual_data(
             CurrentStatus.UNINSPECTABLE,
             None,
             "shared root 不可用",
+            CurrentEvidenceDiagnostic(False, None, None),
             CurrentAuditStatus.UNINSPECTABLE,
             0,
             (), (), (), (), (), None,
@@ -855,6 +1078,7 @@ def diagnose_annual_data(
             CurrentStatus.UNINSPECTABLE,
             None,
             "system-level validation failure；未繼續猜測正式資料",
+            CurrentEvidenceDiagnostic(False, None, None),
             CurrentAuditStatus.UNINSPECTABLE,
             0,
             (), (), (), (), (), None,
@@ -862,7 +1086,7 @@ def diagnose_annual_data(
             "root/system 無法可靠驗證；未檢查或猜測年度正式資料。",
         )
 
-    current_status, current, current_reason = _inspect_current(shared_root)
+    current_status, current, current_reason, current_evidence = _inspect_current(shared_root)
     audits, audit_errors = _inspect_audits(shared_root)
     audits, recovery_evidence_errors = _verify_recovery_evidence(
         shared_root, current_status, current, audits
@@ -902,6 +1126,7 @@ def diagnose_annual_data(
         current_status,
         current,
         audits,
+        temp_artifacts,
         bool(audit_errors or recovery_evidence_errors),
     )
     severity, summary = _severity(
@@ -934,6 +1159,7 @@ def diagnose_annual_data(
         current_status,
         current,
         current_reason,
+        current_evidence,
         current_audit_status,
         match_count,
         versions,

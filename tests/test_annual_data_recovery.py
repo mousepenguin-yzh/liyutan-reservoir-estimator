@@ -297,7 +297,7 @@ def test_original_plus_recovery_is_redundant_attention_not_recoverable(tmp_path)
 
 
 @pytest.mark.parametrize("damage", ["invalid", "target_missing", "target_invalid"])
-def test_broken_current_never_exposes_safe_recovery(tmp_path, damage):
+def test_broken_current_exposes_only_new_condition_specific_repair(tmp_path, damage):
     root = _build_root(tmp_path)
     current_path = root / "annual-data" / "current.json"
     if damage == "invalid":
@@ -310,7 +310,15 @@ def test_broken_current_never_exposes_safe_recovery(tmp_path, damage):
         target = root / "annual-data" / "versions" / ANNUAL_ID
         (target / "COMMITTED.json").unlink()
 
-    assert not _capability(root).available
+    capability = _capability(root)
+    if damage == "invalid":
+        assert capability.available
+        assert capability.current_repair_available
+        assert capability.state == "reconstruct_invalid_current"
+    else:
+        # The only bundle is the broken/missing target, so there is no safe
+        # historical/orphan target to switch to.
+        assert not capability.available
 
 
 def test_valid_orphan_can_be_reactivated_without_mutating_immutable_versions(tmp_path):

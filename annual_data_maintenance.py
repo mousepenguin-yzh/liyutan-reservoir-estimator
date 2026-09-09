@@ -17,6 +17,12 @@ from annual_data_diagnostics import (
     diagnose_annual_data,
 )
 from annual_data_activation import activate_annual_data_version
+from annual_data_current_repair import (
+    AnnualCurrentRepairPlan,
+    complete_annual_current_repair_audit,
+    plan_annual_current_repair,
+    repair_annual_current,
+)
 from annual_data_recovery import recover_annual_activation_audit
 from annual_data_version_writer import publish_annual_data_version
 from shared_storage_reader import SharedStorageResult, StorageErrorCode
@@ -56,12 +62,16 @@ class AnnualDataRecoveryCapability:
     available: bool
     audit_recovery_available: bool
     reactivation_available: bool
+    first_current_initialization_available: bool
+    current_repair_available: bool
+    repair_audit_completion_available: bool
     state: str
     reason: str
     root: Path | None = None
     observed_revision: int | None = None
     observed_current_version_id: str | None = None
     observed_previous_version_id: str | None = None
+    repair_plan: AnnualCurrentRepairPlan | None = None
 
 
 def annual_data_recovery_capability(
@@ -72,9 +82,17 @@ def annual_data_recovery_capability(
     environ: Mapping[str, str] | None = None,
     platform: str | None = None,
 ) -> AnnualDataRecoveryCapability:
-    """Expose only the two healthy-current recovery actions in this stage."""
+    """Expose exactly one condition-specific annual recovery/repair action."""
     unavailable = lambda state, reason, root=None: AnnualDataRecoveryCapability(
-        False, False, False, state, reason, root=root
+        False,
+        False,
+        False,
+        False,
+        False,
+        False,
+        state,
+        reason,
+        root=root,
     )
     if not annual_data_recovery_enabled(environ):
         return unavailable("feature_disabled", "年度資料 recovery 高風險開關目前為關閉。")
@@ -92,6 +110,33 @@ def annual_data_recovery_capability(
         )
     if diagnostics is None or diagnostics.root != result.root:
         diagnostics = diagnose_annual_data(shared_result=result)
+    repair_plan = plan_annual_current_repair(diagnostics)
+    if repair_plan.available:
+        first_current = repair_plan.first_current_initialization_available
+        current_repair = (
+            repair_plan.reconstruction_available
+            or repair_plan.broken_target_switch_available
+        )
+        completion = repair_plan.repair_audit_completion_available
+        return AnnualDataRecoveryCapability(
+            True,
+            False,
+            False,
+            first_current,
+            current_repair,
+            completion,
+            repair_plan.action.value,
+            repair_plan.reason,
+            root=result.root,
+            observed_revision=diagnostics.revision,
+            observed_current_version_id=diagnostics.current_version_id,
+            observed_previous_version_id=(
+                None
+                if diagnostics.current is None
+                else diagnostics.current.get("previous_version_id")
+            ),
+            repair_plan=repair_plan,
+        )
     if (
         diagnostics is None
         or not diagnostics.system_valid
@@ -132,6 +177,7 @@ def annual_data_recovery_capability(
         in {
             CurrentAuditStatus.MATCHED,
             CurrentAuditStatus.MATCHED_RECOVERY,
+            CurrentAuditStatus.MATCHED_REPAIR,
             CurrentAuditStatus.REDUNDANT_EVIDENCE,
         }
         and diagnostics.overall_severity
@@ -154,12 +200,16 @@ def annual_data_recovery_capability(
         True,
         audit_recovery,
         reactivation,
+        False,
+        False,
+        False,
         state,
         reason,
         root=result.root,
         observed_revision=diagnostics.revision,
         observed_current_version_id=diagnostics.current_version_id,
         observed_previous_version_id=diagnostics.current.get("previous_version_id"),
+        repair_plan=repair_plan,
     )
 
 
@@ -202,6 +252,14 @@ def annual_data_write_capability(
                 root=result.root,
                 observed_revision=diagnostics.revision,
                 observed_current_version_id=diagnostics.current_version_id,
+            )
+        if diagnostics.overall_severity is RecoverySeverity.INITIALIZATION_REQUIRED:
+            return AnnualDataWriteCapability(
+                False,
+                False,
+                "first_current_initialization_required",
+                diagnostics.summary,
+                root=result.root,
             )
         if diagnostics.overall_severity is RecoverySeverity.UNINSPECTABLE:
             return AnnualDataWriteCapability(
@@ -268,16 +326,24 @@ class AnnualDataMaintenanceService:
         publisher: Callable = publish_annual_data_version,
         activator: Callable = activate_annual_data_version,
         audit_recovery: Callable = recover_annual_activation_audit,
+        current_repairer: Callable = repair_annual_current,
+        repair_audit_completer: Callable = complete_annual_current_repair_audit,
         provenance_loader: Callable[[], SoftwareProvenanceResult] = load_software_provenance,
         platform: str | None = None,
     ) -> None:
         self._publisher = publisher
         self._activator = activator
         self._audit_recovery = audit_recovery
+        self._current_repairer = current_repairer
+        self._repair_audit_completer = repair_audit_completer
         self._provenance_loader = provenance_loader
         self._platform = RUNTIME_PLATFORM if platform is None else platform
         self._production_activator = activator is activate_annual_data_version
         self._production_audit_recovery = audit_recovery is recover_annual_activation_audit
+        self._production_current_repairer = current_repairer is repair_annual_current
+        self._production_repair_audit_completer = (
+            repair_audit_completer is complete_annual_current_repair_audit
+        )
 
     def publish(self, **arguments):
         return self._publisher(**arguments)
@@ -292,9 +358,28 @@ class AnnualDataMaintenanceService:
             )
         return self._activator(**arguments)
 
+    def initialize_first_current(self, **arguments):
+        arguments["first_current_initialization"] = True
+        return self.activate(**arguments)
+
     def recover_audit(self, **arguments):
         if self._platform != "win32" and self._production_audit_recovery:
             raise RuntimeError(
                 "正式 annual audit recovery 僅支援 Windows/SMB；測試須注入 backend。"
             )
         return self._audit_recovery(**arguments)
+
+    def repair_current(self, **arguments):
+        if self._platform != "win32" and self._production_current_repairer:
+            raise RuntimeError(
+                "正式 annual current repair 僅支援 Windows/SMB；測試須注入 backend。"
+            )
+        return self._current_repairer(**arguments)
+
+    def complete_repair_audit(self, **arguments):
+        if self._platform != "win32" and self._production_repair_audit_completer:
+            raise RuntimeError(
+                "正式 annual current repair audit completion 僅支援 Windows/SMB；"
+                "測試須注入 backend。"
+            )
+        return self._repair_audit_completer(**arguments)
