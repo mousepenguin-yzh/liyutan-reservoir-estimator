@@ -462,6 +462,7 @@ def activate_annual_data_version(
     sleep: Callable[[float], None] = time.sleep,
     random_uniform: Callable[[float, float], float] = random.uniform,
     fault_injector: FaultInjector | None = None,
+    first_current_initialization: bool = False,
 ) -> AnnualDataActivationResult:
     """Atomically switch annual current after lock-protected conflict checks."""
     operator = _required_text(
@@ -469,6 +470,11 @@ def activate_annual_data_version(
     )
     activation_note = _required_text(note, "note_required", "年度版本啟用備註為必填。")
     observed = _validate_observed_state(observed_revision, observed_current_version_id)
+    if first_current_initialization and observed != (0, None):
+        raise AnnualDataActivationError(
+            "invalid_first_current_state",
+            "first-current initialization 必須使用 observed state (0, None)。",
+        )
     try:
         safe_target = validate_safe_id(target_version_id, "target_version_id")
         software_metadata = validate_software_metadata(software)
@@ -525,6 +531,19 @@ def activate_annual_data_version(
                     "另一位使用者已先更新系統基準資料，請重新載入及比較。",
                     evidence_path=current_path,
                 )
+            if first_current_initialization:
+                # Keep the normal activation writer/audit path, but re-prove the
+                # special first-current boundary while holding the same SMB lock.
+                from annual_data_diagnostics import diagnose_annual_data
+
+                locked_diagnostics = diagnose_annual_data(shared_root)
+                if not locked_diagnostics.is_first_current_initialization_state:
+                    raise AnnualDataActivationConflictError(
+                        "first_current_precondition_changed",
+                        "鎖內 diagnostics 已不再符合 first-current initialization；"
+                        "未寫入 current，請重新執行 diagnostics。",
+                        evidence_path=current_path,
+                    )
             if before_id is not None:
                 _validate_current_version_bundle(shared_root, before_id)
             _, final_target_bytes = _read_immutable_annual_bundle(shared_root, safe_target)

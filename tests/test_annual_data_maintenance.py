@@ -142,10 +142,10 @@ def test_missing_current_with_valid_orphan_blocks_create_and_activate(tmp_path):
     )
 
     assert diagnostics.versions[0].status is VersionStatus.ORPHAN
-    assert diagnostics.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
+    assert diagnostics.overall_severity is RecoverySeverity.INITIALIZATION_REQUIRED
     assert not capability.available
+    assert capability.state == "first_current_initialization_required"
     assert not capability.activation_available
-    assert capability.state == "recovery_required"
 
 
 def test_missing_current_with_invalid_version_entry_blocks_create_and_activate(tmp_path):

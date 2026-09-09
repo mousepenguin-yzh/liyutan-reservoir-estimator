@@ -10,8 +10,15 @@ import streamlit as st
 from annual_data_diagnostics import (
     AnnualDataDiagnostics,
     CurrentAuditStatus,
+    CurrentStatus,
     RecoverySeverity,
     VersionStatus,
+)
+from annual_data_current_repair import (
+    AnnualCurrentRepairConflictError,
+    AnnualCurrentRepairError,
+    AnnualCurrentRepairRecoveryRequiredError,
+    CurrentRepairAction,
 )
 from annual_data_activation import (
     AnnualDataActivationConflictError,
@@ -42,6 +49,9 @@ RECOVERY_REQUIRED_KEY = "annual_activation_recovery_required"
 ACTIVATION_RESULT_KEY = "annual_activation_result"
 AUDIT_RECOVERY_RESULT_KEY = "annual_audit_recovery_result"
 REACTIVATION_RESULT_KEY = "annual_existing_version_reactivation_result"
+FIRST_CURRENT_RESULT_KEY = "annual_first_current_initialization_result"
+CURRENT_REPAIR_RESULT_KEY = "annual_current_repair_result"
+CURRENT_REPAIR_PARTIAL_KEY = "annual_current_repair_partial_result"
 
 
 def render_annual_data_diagnostics(
@@ -65,12 +75,15 @@ def render_annual_data_diagnostics(
             st.success(f"年度資料診斷：healthy。{diagnostics.summary}")
         elif severity is RecoverySeverity.ATTENTION:
             st.warning(f"年度資料診斷：attention。{diagnostics.summary}")
+        elif severity is RecoverySeverity.INITIALIZATION_REQUIRED:
+            st.warning(diagnostics.summary)
+            st.info("這是首次正式基準設定，不代表 current 損壞；系統不會自動選擇版本。")
         elif severity is RecoverySeverity.RECOVERY_REQUIRED:
             st.error(
                 "正式年度資料需要復原處理；正常建立／啟用功能維持停止。"
             )
             st.warning(diagnostics.summary)
-            st.info("只有 healthy current 的明確 safe recovery case 可在本階段人工處理。")
+            st.info("只有 evidence 足以唯一判斷的 condition-specific recovery 才會顯示寫入動作。")
         else:
             st.error(f"年度資料診斷：uninspectable。{diagnostics.summary}")
 
@@ -85,7 +98,7 @@ def render_annual_data_diagnostics(
             str(diagnostics.revision) if diagnostics.revision is not None else "無",
         )
         current_columns[3].metric(
-            "current activation audit",
+            "current evidence source",
             diagnostics.current_audit_status.value,
         )
         if diagnostics.current_audit_status is CurrentAuditStatus.MISSING:
@@ -102,6 +115,10 @@ def render_annual_data_diagnostics(
                 "此 current transition 的 audit evidence 是事後補建的 recovery record，"
                 "不是原始 activation 操作紀錄。"
             )
+        elif diagnostics.current_audit_status is CurrentAuditStatus.MATCHED_REPAIR:
+            st.warning("目前 current 的來源為受控 current repair；repair audit evidence 已完整。")
+        elif diagnostics.current_audit_status is CurrentAuditStatus.REPAIR_EVIDENCE_INCOMPLETE:
+            st.error("current 已健康，但 current-repair audit publication 尚未完成；不可重送 repair。")
         elif diagnostics.current_audit_status is CurrentAuditStatus.REDUNDANT_EVIDENCE:
             st.warning(
                 "此 transition 同時存在原始 activation audit 與 recovery evidence；"
@@ -286,6 +303,258 @@ def _render_software_provenance(service: AnnualDataMaintenanceService):
     return software
 
 
+def _explicit_target_selectbox(label: str, target_ids: tuple[str, ...], *, key: str):
+    return st.selectbox(
+        label,
+        (None, *target_ids),
+        index=0,
+        format_func=lambda value: "請明確選擇版本" if value is None else value,
+        key=key,
+    )
+
+
+def _render_condition_specific_current_action(
+    diagnostics: AnnualDataDiagnostics,
+    *,
+    capability: AnnualDataRecoveryCapability,
+    service: AnnualDataMaintenanceService,
+) -> bool:
+    """Render one first-current/repair action and suppress unrelated controls."""
+    plan = capability.repair_plan
+    if plan is None or plan.action is CurrentRepairAction.NONE:
+        return False
+
+    partial = st.session_state.get(CURRENT_REPAIR_PARTIAL_KEY)
+    if partial:
+        st.error(
+            f"current 已 repair 為 {partial['current_version_id']} / revision "
+            f"{partial['revision']}，但 repair audit 未完整發布；請只使用下方補建動作。"
+        )
+    repaired = st.session_state.get(CURRENT_REPAIR_RESULT_KEY)
+    if repaired:
+        st.success(
+            f"current repair 已完成：{repaired['target_version_id']} / revision "
+            f"{repaired['after_revision']}，來源為 current-repair audit。"
+        )
+    initialized = st.session_state.get(FIRST_CURRENT_RESULT_KEY)
+    if initialized:
+        st.success(
+            f"第一個正式年度版本已設定：{initialized['target_version_id']} / revision 1。"
+        )
+
+    if plan.first_current_initialization_available:
+        st.markdown("#### 設定第一個正式年度版本")
+        st.info(
+            "已建立年度資料版本，但尚未設定第一個啟用版本。"
+            "請選擇要作為首次正式基準的完整 orphan version。"
+        )
+        target_id = _explicit_target_selectbox(
+            "選擇首次正式年度版本",
+            plan.target_version_ids,
+            key=f"annual_first_current_target_{plan.observed_token}",
+        )
+        software = _render_software_provenance(service)
+        operator = st.text_input(
+            "首次設定操作人",
+            key=f"annual_first_current_operator_{plan.observed_token}",
+        )
+        st.caption("人工填報身分未經登入驗證。")
+        note = st.text_area(
+            "首次設定備註",
+            key=f"annual_first_current_note_{plan.observed_token}",
+        )
+        if target_id is not None:
+            st.caption(
+                f"設定後結果：revision = 1｜current = {target_id}｜previous = None｜"
+                "normal activation audit"
+            )
+        confirmed = st.checkbox(
+            "我確認要以所選 immutable version 建立第一個 current；系統不會自動選最新版。",
+            key=f"annual_first_current_confirm_{plan.observed_token}",
+        )
+        enabled = bool(
+            capability.first_current_initialization_available
+            and target_id is not None
+            and software is not None
+            and operator.strip()
+            and note.strip()
+            and confirmed
+        )
+        if st.button(
+            "設定為第一個正式年度版本",
+            type="primary",
+            disabled=not enabled,
+            key=f"annual_first_current_button_{plan.observed_token}",
+        ):
+            try:
+                activated = service.initialize_first_current(
+                    root=capability.root,
+                    target_version_id=target_id,
+                    observed_revision=0,
+                    observed_current_version_id=None,
+                    operator_display_name=operator,
+                    note=note,
+                    software=software,
+                )
+            except AnnualDataActivationConflictError:
+                st.error("鎖內首次設定條件已改變；未寫入，請重新執行 diagnostics。")
+            except AnnualDataActivationRecoveryRequiredError as exc:
+                st.session_state[RECOVERY_REQUIRED_KEY] = {
+                    "target_version_id": target_id,
+                    "after_revision": exc.current.get("revision"),
+                    "current": exc.current,
+                    "audit_path": str(exc.audit_path),
+                }
+                st.error("第一個 current 已可能建立，但 normal activation audit 未確認；請勿重送。")
+            except AnnualDataActivationError as exc:
+                st.error(f"首次正式年度版本設定失敗（{exc.code}）：{exc}")
+            else:
+                st.session_state[FIRST_CURRENT_RESULT_KEY] = {
+                    "target_version_id": activated.target_version_id,
+                    "after_revision": activated.after_revision,
+                    "audit_path": str(activated.audit_path),
+                }
+                st.info("目前工作區未由此動作偷偷改寫；rerun 後沿用 current-changed interlock。")
+                st.rerun()
+        return True
+
+    if plan.repair_audit_completion_available:
+        st.markdown("#### 補完 current-repair audit")
+        st.error("前次 current repair 已完成 pointer 寫入，但 audit publication 未完成。")
+        st.caption(f"pending evidence：{plan.pending_audit_path}")
+        confirmed = st.checkbox(
+            "我確認只發布既有 pending repair evidence，不重寫 current、不重送 repair。",
+            key=f"annual_repair_completion_confirm_{plan.observed_token}",
+        )
+        if st.button(
+            "補完 current-repair audit",
+            type="primary",
+            disabled=not confirmed,
+            key=f"annual_repair_completion_button_{plan.observed_token}",
+        ):
+            try:
+                completed = service.complete_repair_audit(
+                    root=capability.root,
+                    observed_plan_token=plan.observed_token,
+                )
+            except AnnualCurrentRepairConflictError:
+                st.error("current 或 pending evidence 已改變；未發布，請重新 diagnostics。")
+            except (AnnualCurrentRepairError, AnnualDataActivationError) as exc:
+                st.error(f"repair audit 補完失敗（{exc.code}）：{exc}")
+            else:
+                st.session_state.pop(CURRENT_REPAIR_PARTIAL_KEY, None)
+                st.session_state[CURRENT_REPAIR_RESULT_KEY] = {
+                    "target_version_id": completed.target_version_id,
+                    "after_revision": completed.after_revision,
+                    "audit_path": str(completed.audit_path),
+                }
+                st.rerun()
+        return True
+
+    if not capability.current_repair_available:
+        return False
+
+    reconstruction = plan.reconstruction_available
+    if reconstruction:
+        st.markdown("#### 依最後一筆可驗證正式紀錄重建 current")
+        target_id = plan.reconstructed_current_version_id
+        after_revision = plan.reconstructed_revision
+        previous_id = plan.reconstructed_previous_version_id
+        st.info("audit transition chain 已完整且唯一；reconstruction 不增加 revision。")
+    else:
+        st.markdown("#### 改以其他完整年度版本恢復 current")
+        if plan.recommended_target_version_id:
+            st.info(
+                f"建議優先檢視 previous_version_id：{plan.recommended_target_version_id}；"
+                "此建議不會自動選定或執行。"
+            )
+        target_id = _explicit_target_selectbox(
+            "選擇完整 historical／orphan recovery target",
+            plan.target_version_ids,
+            key=f"annual_current_repair_target_{plan.observed_token}",
+        )
+        after_revision = None if diagnostics.revision is None else diagnostics.revision + 1
+        previous_id = diagnostics.current_version_id
+
+    evidence = st.columns(4)
+    evidence[0].metric("pre-repair status", diagnostics.current_status.value)
+    evidence[1].metric(
+        "原 current SHA-256",
+        diagnostics.current_evidence.raw_bytes_sha256 or "current 不存在",
+    )
+    evidence[2].metric("target", target_id or "尚未選擇")
+    evidence[3].metric("repair 後 revision", str(after_revision) if after_revision else "待選擇")
+    st.caption(
+        f"repair 後 previous_version_id：{previous_id or 'None'}｜"
+        "immutable target 與 broken bundle 均不修改。"
+    )
+    software = _render_software_provenance(service)
+    operator = st.text_input(
+        "current repair 操作人",
+        key=f"annual_current_repair_operator_{plan.observed_token}",
+    )
+    st.caption("人工填報身分未經登入驗證。")
+    note = st.text_area(
+        "current repair recovery 備註",
+        key=f"annual_current_repair_note_{plan.observed_token}",
+    )
+    confirmed = st.checkbox(
+        "我確認 evidence 與 repair 後結果；此動作不修改任何 immutable version，且不會自動重試。",
+        key=f"annual_current_repair_confirm_{plan.observed_token}",
+    )
+    enabled = bool(
+        target_id is not None
+        and software is not None
+        and operator.strip()
+        and note.strip()
+        and confirmed
+    )
+    label = (
+        "依最後正式紀錄重建 current"
+        if reconstruction
+        else "改以所選完整年度版本恢復 current"
+    )
+    if st.button(
+        label,
+        type="primary",
+        disabled=not enabled,
+        key=f"annual_current_repair_button_{plan.observed_token}",
+    ):
+        try:
+            repaired_result = service.repair_current(
+                root=capability.root,
+                observed_plan_token=plan.observed_token,
+                repair_kind=plan.action.value,
+                target_version_id=target_id,
+                recovery_operator_display_name=operator,
+                recovery_note=note,
+                recovery_software=software,
+            )
+        except AnnualCurrentRepairConflictError:
+            st.error("鎖內 evidence 已改變；未 repair、不 retry，請重新執行 diagnostics。")
+        except AnnualCurrentRepairRecoveryRequiredError as exc:
+            st.session_state[CURRENT_REPAIR_PARTIAL_KEY] = {
+                "current_version_id": exc.current["current_version_id"],
+                "revision": exc.current["revision"],
+                "pending_audit_path": str(exc.pending_audit_path),
+            }
+            st.error("current 已 repair，但 audit publication 未完成；不 rollback，也不可重送 repair。")
+            st.rerun()
+        except (AnnualCurrentRepairError, AnnualDataActivationError) as exc:
+            st.error(f"current repair 失敗（{exc.code}）：{exc}")
+        except Exception as exc:
+            st.error(f"current repair 失敗，未自動重試：{exc}")
+        else:
+            st.session_state[CURRENT_REPAIR_RESULT_KEY] = {
+                "target_version_id": repaired_result.target_version_id,
+                "after_revision": repaired_result.after_revision,
+                "audit_path": str(repaired_result.audit_path),
+            }
+            st.info("目前工作區未由 repair action 偷偷改寫；rerun 後沿用 current-changed interlock。")
+            st.rerun()
+    return True
+
+
 def _render_recovery_actions(
     diagnostics: AnnualDataDiagnostics,
     *,
@@ -322,6 +591,13 @@ def _render_recovery_actions(
             f"既有版本 {reactivated['target_version_id']} 已重新啟用；"
             f"新 revision = {reactivated['after_revision']}。"
         )
+
+    if _render_condition_specific_current_action(
+        diagnostics,
+        capability=capability,
+        service=service,
+    ):
+        return
 
     if diagnostics.current_audit_status is CurrentAuditStatus.MISSING:
         st.markdown("#### 補建此次 current transition 的 recovery audit")
@@ -382,8 +658,11 @@ def _render_recovery_actions(
                 st.rerun()
 
     if not capability.available:
-        if diagnostics.current_status.value != "healthy":
-            st.warning("需要下一階段 broken-current repair；本階段不提供 recovery 寫入。")
+        if diagnostics.current_status is not CurrentStatus.HEALTHY:
+            st.error(
+                "系統無法由現有紀錄唯一判斷正確正式版本，已停止自動復原。"
+                "請由系統維護人員人工檢查。"
+            )
         return
 
     if not capability.reactivation_available:
@@ -446,7 +725,12 @@ def _render_recovery_actions(
         key=f"annual_reactivation_button_{identity}",
     ):
         try:
-            activated = service.activate(
+            activation = (
+                service.initialize_first_current
+                if capability.state == "first_version"
+                else service.activate
+            )
+            activated = activation(
                 root=capability.root,
                 target_version_id=target_id,
                 observed_revision=capability.observed_revision,

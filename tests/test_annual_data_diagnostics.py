@@ -1,6 +1,8 @@
 import hashlib
 from pathlib import Path
 
+import pytest
+
 from annual_data_diagnostics import (
     AuditStatus,
     CurrentAuditStatus,
@@ -11,7 +13,13 @@ from annual_data_diagnostics import (
     diagnose_annual_data,
 )
 from shared_storage_reader import load_shared_storage
-from shared_storage_schema import deserialize_json, serialize_json
+from shared_storage_schema import (
+    ANNUAL_ACTIVATION_EVENT_TYPE,
+    ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
+    ANNUAL_CURRENT_REPAIR_EVENT_TYPE,
+    deserialize_json,
+    serialize_json,
+)
 from test_shared_storage_reader import ANNUAL_ID, _build_root, _write_bundle
 from test_shared_storage_schema import _annual_bundle
 
@@ -70,7 +78,7 @@ def test_empty_first_version_state_is_not_recovery_required(tmp_path):
     assert result.overall_severity is RecoverySeverity.HEALTHY
 
 
-def test_missing_current_with_complete_orphan_requires_recovery(tmp_path):
+def test_missing_current_with_complete_orphan_requires_first_current_initialization(tmp_path):
     root = _build_root(tmp_path)
     (root / "annual-data" / "current.json").unlink()
     _remove_audits(root)
@@ -80,7 +88,9 @@ def test_missing_current_with_complete_orphan_requires_recovery(tmp_path):
     assert result.current_status is CurrentStatus.MISSING
     assert result.versions[0].status is VersionStatus.ORPHAN
     assert not result.is_first_version_state
-    assert result.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
+    assert result.is_first_current_initialization_state
+    assert result.overall_severity is RecoverySeverity.INITIALIZATION_REQUIRED
+    assert "尚未設定第一個啟用版本" in result.summary
 
 
 def test_missing_current_with_invalid_version_entry_requires_recovery(tmp_path):
@@ -234,7 +244,7 @@ def test_missing_and_duplicate_current_transition_audits_require_recovery(tmp_pa
     assert duplicate.overall_severity is RecoverySeverity.RECOVERY_REQUIRED
 
 
-def test_invalid_and_unknown_audits_are_inventory_only(tmp_path):
+def test_invalid_recognized_audit_is_untrusted_while_unknown_remains_inventory_only(tmp_path):
     root = _build_root(tmp_path)
     audit_dir = root / "audit" / "events" / "2026" / "12"
     (audit_dir / "invalid.json").write_bytes(
@@ -251,8 +261,33 @@ def test_invalid_and_unknown_audits_are_inventory_only(tmp_path):
         AuditStatus.INVALID,
         AuditStatus.UNKNOWN,
     }
-    assert result.current_audit_status is CurrentAuditStatus.MATCHED
-    assert result.overall_severity is RecoverySeverity.ATTENTION
+    assert result.has_untrusted_annual_audit_evidence
+    assert result.current_audit_status is CurrentAuditStatus.UNINSPECTABLE
+    assert result.overall_severity is RecoverySeverity.UNINSPECTABLE
+    assert any("annual audit evidence 無法可靠驗證" in error for error in result.inspection_errors)
+
+
+@pytest.mark.parametrize(
+    "event_type",
+    (
+        ANNUAL_ACTIVATION_EVENT_TYPE,
+        ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
+        ANNUAL_CURRENT_REPAIR_EVENT_TYPE,
+    ),
+)
+def test_each_recognized_invalid_annual_event_is_untrusted(tmp_path, event_type):
+    root = _build_root(tmp_path)
+    audit_path = root / "audit" / "events" / "2026" / "12" / "invalid-recognized.json"
+    audit_path.write_bytes(serialize_json({"event_type": event_type}))
+
+    result = diagnose_annual_data(root)
+    audit = next(item for item in result.audits if item.path == audit_path)
+
+    assert audit.status is AuditStatus.INVALID
+    assert audit.event == {"event_type": event_type}
+    assert audit.failure_reason
+    assert result.has_untrusted_annual_audit_evidence
+    assert any("annual audit evidence 無法可靠驗證" in error for error in result.inspection_errors)
 
 
 def test_leftover_current_and_audit_temp_are_attention_only(tmp_path):
