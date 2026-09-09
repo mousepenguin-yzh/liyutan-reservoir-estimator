@@ -237,6 +237,19 @@ def test_invalid_annual_upload_keeps_actionable_validation_feedback(tmp_path, mo
     assert next(button for button in app.button if button.label == "建立新版").disabled
 
 
+def test_annual_created_date_uses_taipei_timezone():
+    assert preview_ui.format_annual_created_date("2026-12-15T02:30:00Z") == "2026-12-15"
+
+
+def test_annual_created_date_handles_utc_to_taipei_date_rollover():
+    assert preview_ui.format_annual_created_date("2026-12-15T20:30:00+00:00") == "2026-12-16"
+
+
+def test_annual_created_date_has_safe_fallback_for_unparseable_values():
+    assert preview_ui.format_annual_created_date("not-a-timestamp") == "無法判讀"
+    assert preview_ui.format_annual_created_date(None) == "無法判讀"
+
+
 def test_annual_write_flag_alone_never_reads_or_writes_shared_root(tmp_path, monkeypatch):
     untouched = tmp_path / "must-not-be-read"
     monkeypatch.delenv(ENABLE_SHARED_STORAGE_ENV, raising=False)

@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import datetime as dt
 import hashlib
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pandas as pd
 import streamlit as st
@@ -52,6 +54,24 @@ REACTIVATION_RESULT_KEY = "annual_existing_version_reactivation_result"
 FIRST_CURRENT_RESULT_KEY = "annual_first_current_initialization_result"
 CURRENT_REPAIR_RESULT_KEY = "annual_current_repair_result"
 CURRENT_REPAIR_PARTIAL_KEY = "annual_current_repair_partial_result"
+TAIPEI_TIMEZONE_NAME = "Asia/Taipei"
+UNREADABLE_DATE_LABEL = "無法判讀"
+
+
+def format_annual_created_date(created_at: object) -> str:
+    """Return a timezone-aware Asia/Taipei calendar date for UI display."""
+    if not isinstance(created_at, str) or not created_at.strip():
+        return UNREADABLE_DATE_LABEL
+    timestamp_text = created_at.strip()
+    if timestamp_text.endswith("Z"):
+        timestamp_text = f"{timestamp_text[:-1]}+00:00"
+    try:
+        timestamp = dt.datetime.fromisoformat(timestamp_text)
+        if timestamp.tzinfo is None or timestamp.utcoffset() is None:
+            return UNREADABLE_DATE_LABEL
+        return timestamp.astimezone(ZoneInfo(TAIPEI_TIMEZONE_NAME)).date().isoformat()
+    except (OverflowError, ValueError, ZoneInfoNotFoundError):
+        return UNREADABLE_DATE_LABEL
 
 
 def render_annual_data_diagnostics(

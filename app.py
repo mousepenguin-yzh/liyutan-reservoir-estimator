@@ -17,6 +17,7 @@ import plotly.graph_objects as go
 import json
 from annual_data_diagnostics import diagnose_annual_data
 from annual_data_preview_ui import (
+    format_annual_created_date,
     render_annual_data_diagnostics,
     render_annual_data_maintenance,
 )
@@ -892,7 +893,10 @@ elif shared_storage_result.ok:
     source_cols = st.columns(3)
     source_cols[0].metric("使用年度", str(annual.version["applicable_year"]))
     source_cols[1].metric("實績資料更新至", annual.version["actual_data_cutoff_period"])
-    source_cols[2].metric("資料更新日期", annual.version["created_at"].split("T", 1)[0])
+    source_cols[2].metric(
+        "資料更新日期",
+        format_annual_created_date(annual.version.get("created_at")),
+    )
     if source_decision.mode is DataSourceMode.SESSION_UPLOAD:
         st.warning(
             "⚠️ 本次推估目前使用臨時上傳資料，不是系統基準資料；"
