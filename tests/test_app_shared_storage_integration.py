@@ -17,8 +17,17 @@ from shared_storage_reader import (
     ENABLE_SHARED_STORAGE_ENV,
     SHARED_ROOT_ENV,
 )
-from annual_data_maintenance import ENABLE_ANNUAL_DATA_WRITES_ENV
-from shared_storage_schema import ANNUAL_CURRENT_SCHEMA, SCHEMA_VERSION, serialize_json
+from annual_data_maintenance import (
+    ENABLE_ANNUAL_DATA_RECOVERY_ENV,
+    ENABLE_ANNUAL_DATA_WRITES_ENV,
+)
+from annual_data_recovery import recover_annual_activation_audit
+from shared_storage_schema import (
+    ANNUAL_CURRENT_SCHEMA,
+    SCHEMA_VERSION,
+    deserialize_json,
+    serialize_json,
+)
 from test_shared_storage_reader import ANNUAL_ID, _build_root
 from test_shared_storage_reader import _write_bundle
 from test_shared_storage_schema import (
@@ -203,6 +212,178 @@ def test_filesystem_audit_missing_shows_recovery_and_disables_create_activate(
     assert app.session_state.annual_data_write_available is False
     assert next(button for button in app.button if button.label == "建立版本").disabled
     assert next(button for button in app.button if button.label == "啟用此版本").disabled
+
+
+def test_recovery_action_is_visible_but_disabled_when_recovery_flag_is_off(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path)
+    for audit in (root / "audit" / "events").rglob("*.json"):
+        audit.unlink()
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_WRITES_ENV, "1")
+    monkeypatch.delenv(ENABLE_ANNUAL_DATA_RECOVERY_ENV, raising=False)
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+
+    app = _run_app()
+
+    assert not app.exception
+    assert app.session_state.annual_recovery_available is False
+    button = next(item for item in app.button if item.label == "補建 Recovery Audit")
+    assert button.disabled
+    assert "原始 activation audit 缺失" in _messages(app.error)
+
+
+def test_recovery_ui_writes_only_audit_then_reruns_as_matched_recovery(
+    tmp_path, monkeypatch
+):
+    @contextlib.contextmanager
+    def fake_lock(_path):
+        yield
+
+    def recover_with_fake_lock(**arguments):
+        return recover_annual_activation_audit(**arguments, lock_factory=fake_lock)
+
+    service = maintenance_module.AnnualDataMaintenanceService(
+        audit_recovery=recover_with_fake_lock,
+        provenance_loader=lambda: SoftwareProvenanceResult(
+            True,
+            software={
+                "repository": "mousepenguin-yzh/liyutan-reservoir-estimator",
+                "git_commit": "c" * 40,
+                "app_version": "git-cccccccccccc",
+                "source_tree_dirty": False,
+            },
+        ),
+        platform="linux",
+    )
+    monkeypatch.setattr(maintenance_module, "RUNTIME_PLATFORM", "win32")
+    monkeypatch.setattr(preview_ui, "AnnualDataMaintenanceService", lambda: service)
+    root = _build_root(tmp_path)
+    for audit in (root / "audit" / "events").rglob("*.json"):
+        audit.unlink()
+    current_path = root / "annual-data" / "current.json"
+    current_before = current_path.read_bytes()
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_WRITES_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_RECOVERY_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+
+    app = _run_app()
+    assert not app.exception
+    assert app.session_state.annual_recovery_available is True
+    assert app.session_state.annual_data_write_available is False
+    assert app.session_state.formal_write_available is False
+    assert app.session_state.formal_operations_available is False
+    _set_widget_value(app.text_input, "recovery 操作人", "事後確認人")
+    _set_widget_value(app.text_area, "recovery 備註", "依畫面 evidence 人工補建")
+    _set_widget_value(
+        app.checkbox,
+        "我了解這不是還原原始操作紀錄，而是依目前完整 current／version evidence 補建 "
+        "recovery audit。",
+        True,
+    )
+    app = app.run(timeout=30)
+    button = next(
+        item for item in app.button if item.label == "補建 Recovery Audit" and not item.disabled
+    )
+
+    app = button.click().run(timeout=30)
+
+    assert not app.exception
+    assert current_path.read_bytes() == current_before
+    assert app.session_state.annual_audit_recovery_result["revision"] == 1
+    assert app.session_state.annual_data_write_available is True
+    assert app.session_state.formal_write_available is False
+    assert app.session_state.formal_operations_available is False
+    assert "matched_recovery" in _messages(app.metric)
+    assert "不是原始 activation 操作紀錄" in _messages(app.warning)
+    assert len(list((root / "audit" / "events").rglob("*.json"))) == 1
+
+
+def test_orphan_reactivation_ui_reuses_safe_activation_without_workspace_reload(
+    tmp_path, monkeypatch
+):
+    @contextlib.contextmanager
+    def fake_lock(_path):
+        yield
+
+    def activate_with_fake_lock(**arguments):
+        return activate_annual_data_version(**arguments, lock_factory=fake_lock)
+
+    service = maintenance_module.AnnualDataMaintenanceService(
+        activator=activate_with_fake_lock,
+        provenance_loader=lambda: SoftwareProvenanceResult(
+            True,
+            software={
+                "repository": "mousepenguin-yzh/liyutan-reservoir-estimator",
+                "git_commit": "d" * 40,
+                "app_version": "git-dddddddddddd",
+                "source_tree_dirty": False,
+            },
+        ),
+        platform="linux",
+    )
+    monkeypatch.setattr(maintenance_module, "RUNTIME_PLATFORM", "win32")
+    monkeypatch.setattr(preview_ui, "AnnualDataMaintenanceService", lambda: service)
+    root = _build_root(tmp_path)
+    orphan_id = "annual-synthetic-orphan-reactivation"
+    orphan = root / "annual-data" / "versions" / orphan_id
+    _write_bundle(
+        orphan,
+        _annual_bundle(version_mutator=lambda value: value.update(version_id=orphan_id)),
+    )
+    orphan_before = {
+        path.relative_to(orphan).as_posix(): path.read_bytes()
+        for path in orphan.rglob("*")
+        if path.is_file()
+    }
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_WRITES_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_RECOVERY_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+
+    app = _run_app()
+    hydrology_before = app.session_state.hydrology_df.copy(deep=True)
+    assert app.session_state.loaded_shared_annual_version_id == ANNUAL_ID
+    assert any(
+        item.value == orphan_id
+        for item in app.selectbox
+        if item.label == "選擇 historical／orphan target"
+    )
+    _set_widget_value(app.text_input, "重新啟用操作人", "版本切換確認人")
+    _set_widget_value(app.text_area, "新的啟用備註", "重新啟用既有 orphan")
+    _set_widget_value(
+        app.checkbox,
+        f"我確認要將既有 immutable 年度版本 {orphan_id} 重新設為 current；"
+        "此動作會建立新的 revision，不會修改任何歷史版本。",
+        True,
+    )
+    app = app.run(timeout=30)
+    button = next(
+        item
+        for item in app.button
+        if item.label == "重新啟用既有版本" and not item.disabled
+    )
+
+    app = button.click().run(timeout=30)
+
+    assert not app.exception
+    current = deserialize_json((root / "annual-data" / "current.json").read_bytes())
+    assert current["revision"] == 2
+    assert current["current_version_id"] == orphan_id
+    assert current["previous_version_id"] == ANNUAL_ID
+    assert {
+        path.relative_to(orphan).as_posix(): path.read_bytes()
+        for path in orphan.rglob("*")
+        if path.is_file()
+    } == orphan_before
+    assert app.session_state.loaded_shared_annual_version_id == ANNUAL_ID
+    assert app.session_state.hydrology_df.equals(hydrology_before)
+    assert app.session_state.workspace_annual_stale is True
+    assert app.session_state.annual_existing_version_reactivation_result[
+        "after_revision"
+    ] == 2
 
 
 def test_filesystem_recovery_is_rediscovered_after_session_key_is_cleared(

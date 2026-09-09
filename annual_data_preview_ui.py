@@ -19,12 +19,20 @@ from annual_data_activation import (
     AnnualDataActivationRecoveryRequiredError,
     AnnualDataAlreadyCurrentError,
 )
-from annual_data_excel import PREVIEW_NOTICE, compare_annual_data, parse_annual_data_excel
+from annual_data_excel import (
+    PREVIEW_NOTICE,
+    AnnualDataCandidate,
+    compare_annual_data,
+    parse_annual_data_excel,
+)
 from annual_data_maintenance import (
     AnnualDataMaintenanceService,
+    AnnualDataRecoveryCapability,
     AnnualDataWriteCapability,
+    annual_data_recovery_capability,
     annual_data_write_capability,
 )
+from annual_data_recovery import AnnualDataRecoveryConflictError, AnnualDataRecoveryError
 from annual_data_version_writer import AnnualDataVersionPublishError
 from shared_storage_reader import StorageErrorCode
 
@@ -32,14 +40,19 @@ from shared_storage_reader import StorageErrorCode
 PENDING_VERSION_KEY = "annual_pending_published_version"
 RECOVERY_REQUIRED_KEY = "annual_activation_recovery_required"
 ACTIVATION_RESULT_KEY = "annual_activation_result"
+AUDIT_RECOVERY_RESULT_KEY = "annual_audit_recovery_result"
+REACTIVATION_RESULT_KEY = "annual_existing_version_reactivation_result"
 
 
 def render_annual_data_diagnostics(
     diagnostics: AnnualDataDiagnostics | None,
     *,
     shared_mode_enabled: bool,
+    result=None,
+    recovery_capability: AnnualDataRecoveryCapability | None = None,
+    service: AnnualDataMaintenanceService | None = None,
 ) -> None:
-    """Render read-only filesystem evidence without offering recovery actions."""
+    """Render diagnostics plus the two explicitly gated safe recovery actions."""
     if not shared_mode_enabled:
         return
     with st.expander("🩺 年度資料診斷與復原狀態", expanded=False):
@@ -57,9 +70,7 @@ def render_annual_data_diagnostics(
                 "正式年度資料需要復原處理；正常建立／啟用功能維持停止。"
             )
             st.warning(diagnostics.summary)
-            st.info(
-                "Recovery actions 尚未實作，將於 2-4C2b2b 提供人工確認流程。"
-            )
+            st.info("只有 healthy current 的明確 safe recovery case 可在本階段人工處理。")
         else:
             st.error(f"年度資料診斷：uninspectable。{diagnostics.summary}")
 
@@ -85,6 +96,16 @@ def render_annual_data_diagnostics(
         elif diagnostics.current_audit_status is CurrentAuditStatus.AMBIGUOUS:
             st.error(
                 "找到多個對應同一 revision transition 的 audit event，需要人工檢查。"
+            )
+        elif diagnostics.current_audit_status is CurrentAuditStatus.MATCHED_RECOVERY:
+            st.warning(
+                "此 current transition 的 audit evidence 是事後補建的 recovery record，"
+                "不是原始 activation 操作紀錄。"
+            )
+        elif diagnostics.current_audit_status is CurrentAuditStatus.REDUNDANT_EVIDENCE:
+            st.warning(
+                "此 transition 同時存在原始 activation audit 與 recovery evidence；"
+                "不需要也不允許再次補建。"
             )
         if diagnostics.current_failure_reason:
             st.caption(f"current diagnostics：{diagnostics.current_failure_reason}")
@@ -198,6 +219,268 @@ def render_annual_data_diagnostics(
             st.error("；".join(diagnostics.inspection_errors))
         if diagnostics.lock_metadata and diagnostics.lock_metadata.exists:
             st.caption(diagnostics.lock_metadata.note)
+
+        service = service or AnnualDataMaintenanceService()
+        recovery_capability = recovery_capability or annual_data_recovery_capability(
+            result,
+            shared_mode_enabled=shared_mode_enabled,
+            diagnostics=diagnostics,
+        )
+        _render_recovery_actions(
+            diagnostics,
+            result=result,
+            capability=recovery_capability,
+            service=service,
+        )
+
+
+def _candidate_from_version_data(data: dict) -> AnnualDataCandidate:
+    version = data["version"]
+    return AnnualDataCandidate(
+        template_version=version["template_version"],
+        reservoir_id=version["reservoir_id"],
+        reservoir_name=version["reservoir_name"],
+        applicable_year=version["applicable_year"],
+        actual_data_cutoff_period=version["actual_data_cutoff_period"],
+        hydrology_source_period=version["hydrology_source_period"],
+        annual_outflow_source=version["annual_outflow_source"],
+        overall_note=version["overall_note"],
+        hydrology=tuple(data["hydrology"]),
+        outflow_demand=tuple(data["outflow_demand"]),
+        reservoir_parameters=dict(data["reservoir_parameters"]),
+        parameter_metadata=dict(version["parameter_metadata"]),
+        source_filename=version["source_excel"]["original_filename"],
+        source_sha256=version["source_excel"]["sha256"],
+        fingerprint=version["candidate_fingerprint"],
+        warnings=(),
+    )
+
+
+def _eligible_reactivation_versions(
+    diagnostics: AnnualDataDiagnostics,
+):
+    """Return only complete non-current historical/orphan immutable versions."""
+    return tuple(
+        item
+        for item in diagnostics.versions
+        if item.validation_ok
+        and item.data is not None
+        and item.status in {VersionStatus.HISTORICAL, VersionStatus.ORPHAN}
+        and item.version_id != diagnostics.current_version_id
+    )
+
+
+def _render_software_provenance(service: AnnualDataMaintenanceService):
+    provenance = service.software_provenance()
+    if not provenance.ok:
+        st.error(provenance.error)
+        return None
+    software = provenance.software
+    st.caption(
+        f"Software provenance：{software['repository']} @ {software['git_commit']}｜"
+        f"app version：{software['app_version']}｜"
+        f"source tree dirty：{'是' if software['source_tree_dirty'] else '否'}"
+    )
+    if software["source_tree_dirty"]:
+        st.warning("目前 source tree 有未提交變更；此狀態會如實寫入 audit metadata。")
+    return software
+
+
+def _render_recovery_actions(
+    diagnostics: AnnualDataDiagnostics,
+    *,
+    result,
+    capability: AnnualDataRecoveryCapability,
+    service: AnnualDataMaintenanceService,
+) -> None:
+    st.divider()
+    st.subheader("Recovery Actions")
+    st.caption(capability.reason)
+    previous_id = (
+        diagnostics.current.get("previous_version_id")
+        if diagnostics.current is not None
+        else None
+    )
+    facts = st.columns(4)
+    facts[0].metric("current version", diagnostics.current_version_id or "無")
+    facts[1].metric(
+        "current revision",
+        str(diagnostics.revision) if diagnostics.revision is not None else "無",
+    )
+    facts[2].metric("previous version", previous_id or "無")
+    facts[3].metric("diagnostics 結論", diagnostics.overall_severity.value)
+
+    recovered = st.session_state.get(AUDIT_RECOVERY_RESULT_KEY)
+    if recovered:
+        st.success(
+            f"Recovery audit 已補建；current {recovered['current_version_id']}／"
+            f"revision {recovered['revision']} 均未變，diagnostics = matched_recovery。"
+        )
+    reactivated = st.session_state.get(REACTIVATION_RESULT_KEY)
+    if reactivated:
+        st.success(
+            f"既有版本 {reactivated['target_version_id']} 已重新啟用；"
+            f"新 revision = {reactivated['after_revision']}。"
+        )
+
+    if diagnostics.current_audit_status is CurrentAuditStatus.MISSING:
+        st.markdown("#### 補建此次 current transition 的 recovery audit")
+        st.error("原始 activation audit 缺失。")
+        software = _render_software_provenance(service)
+        identity = f"{diagnostics.current_version_id}_{diagnostics.revision}"
+        operator = st.text_input(
+            "recovery 操作人",
+            key=f"annual_recovery_operator_{identity}",
+        )
+        st.caption("人工填報身分未經登入驗證。")
+        note = st.text_area(
+            "recovery 備註",
+            key=f"annual_recovery_note_{identity}",
+        )
+        confirmed = st.checkbox(
+            "我了解這不是還原原始操作紀錄，而是依目前完整 current／version evidence "
+            "補建 recovery audit。",
+            key=f"annual_recovery_confirm_{identity}",
+        )
+        can_recover = bool(
+            capability.audit_recovery_available
+            and software is not None
+            and operator.strip()
+            and note.strip()
+            and confirmed
+        )
+        if st.button(
+            "補建 Recovery Audit",
+            type="primary",
+            disabled=not can_recover,
+            key=f"annual_recovery_button_{identity}",
+        ):
+            try:
+                recovery = service.recover_audit(
+                    root=capability.root,
+                    observed_revision=capability.observed_revision,
+                    observed_current_version_id=capability.observed_current_version_id,
+                    observed_previous_version_id=capability.observed_previous_version_id,
+                    recovery_operator_display_name=operator,
+                    recovery_note=note,
+                    recovery_software=software,
+                )
+            except AnnualDataRecoveryConflictError:
+                st.error(
+                    "鎖內狀態已改變或其他電腦已補建；未重複寫入，請重新執行 diagnostics。"
+                )
+            except (AnnualDataRecoveryError, AnnualDataActivationError) as exc:
+                st.error(f"Recovery audit 補建失敗（{exc.code}）：{exc}")
+            except Exception as exc:
+                st.error(f"Recovery audit 補建失敗；current 未變更：{exc}")
+            else:
+                st.session_state[AUDIT_RECOVERY_RESULT_KEY] = {
+                    "current_version_id": recovery.current_version_id,
+                    "revision": recovery.revision,
+                    "audit_path": str(recovery.audit_path),
+                }
+                st.rerun()
+
+    if not capability.available:
+        if diagnostics.current_status.value != "healthy":
+            st.warning("需要下一階段 broken-current repair；本階段不提供 recovery 寫入。")
+        return
+
+    if not capability.reactivation_available:
+        return
+    eligible = _eligible_reactivation_versions(diagnostics)
+    st.markdown("#### 重新啟用既有 immutable 年度版本")
+    if not eligible:
+        st.caption("目前沒有可重新啟用的 historical／orphan 合法版本。")
+        return
+    choices = {item.version_id: item for item in eligible}
+    target_id = st.selectbox(
+        "選擇 historical／orphan target",
+        tuple(choices),
+        key=f"annual_reactivation_target_{diagnostics.revision}",
+    )
+    target = choices[target_id]
+    version = target.data["version"]
+    details = st.columns(4)
+    details[0].metric("target version ID", target_id)
+    details[1].metric("target 適用年度", str(version["applicable_year"]))
+    details[2].metric("target 建立時間", version["created_at"])
+    details[3].metric("inventory status", target.status.value)
+    st.caption(
+        f"原建立操作人：{version['operator_display_name']}｜原建立備註：{version['note']}"
+    )
+    st.caption(
+        f"current version：{diagnostics.current_version_id}｜"
+        f"current revision：{diagnostics.revision}"
+    )
+    target_candidate = _candidate_from_version_data(target.data)
+    baseline = result.annual if result is not None and result.ok else None
+    _render_difference(
+        compare_annual_data(target_candidate, baseline),
+        heading="target 與 current 的完整差異摘要",
+        checkbox_key=f"annual_reactivation_difference_{target_id}_{diagnostics.revision}",
+    )
+    software = _render_software_provenance(service)
+    identity = f"{target_id}_{diagnostics.revision}_{diagnostics.current_version_id}"
+    operator = st.text_input(
+        "重新啟用操作人",
+        key=f"annual_reactivation_operator_{identity}",
+    )
+    st.caption("人工填報身分未經登入驗證。")
+    note = st.text_area(
+        "新的啟用備註",
+        key=f"annual_reactivation_note_{identity}",
+    )
+    confirmed = st.checkbox(
+        f"我確認要將既有 immutable 年度版本 {target_id} 重新設為 current；"
+        "此動作會建立新的 revision，不會修改任何歷史版本。",
+        key=f"annual_reactivation_confirm_{identity}",
+    )
+    can_activate = bool(
+        software is not None and operator.strip() and note.strip() and confirmed
+    )
+    if st.button(
+        "重新啟用既有版本",
+        type="primary",
+        disabled=not can_activate,
+        key=f"annual_reactivation_button_{identity}",
+    ):
+        try:
+            activated = service.activate(
+                root=capability.root,
+                target_version_id=target_id,
+                observed_revision=capability.observed_revision,
+                observed_current_version_id=capability.observed_current_version_id,
+                operator_display_name=operator,
+                note=note,
+                software=software,
+            )
+        except AnnualDataActivationConflictError:
+            st.error("current revision 已改變；不自動 retry，請重新執行 diagnostics。")
+        except AnnualDataAlreadyCurrentError:
+            st.info("target 已是 current；未建立新 revision 或 audit。")
+        except AnnualDataActivationRecoveryRequiredError as exc:
+            st.session_state[RECOVERY_REQUIRED_KEY] = {
+                "target_version_id": target_id,
+                "after_revision": exc.current.get("revision"),
+                "current": exc.current,
+                "audit_path": str(exc.audit_path),
+            }
+            st.error("current 可能已切換但 audit 未確認；請勿重試，需重新 diagnostics。")
+        except AnnualDataActivationError as exc:
+            st.error(f"既有版本重新啟用失敗（{exc.code}）：{exc}")
+        except Exception as exc:
+            st.error(f"既有版本重新啟用失敗，未自動重試：{exc}")
+        else:
+            st.session_state[REACTIVATION_RESULT_KEY] = {
+                "target_version_id": activated.target_version_id,
+                "after_revision": activated.after_revision,
+                "previous_version_id": activated.before_current_version_id,
+            }
+            st.info(
+                "目前工作區不會背景替換；既有 current-changed interlock 會在 rerun 後處理。"
+            )
+            st.rerun()
 
 
 def _baseline_context(

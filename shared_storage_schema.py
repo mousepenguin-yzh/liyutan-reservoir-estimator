@@ -28,6 +28,11 @@ RESERVOIR_PARAMETERS_SCHEMA = "liyutan-reservoir-estimator/reservoir-parameters"
 ANNUAL_CURRENT_SCHEMA = "liyutan-reservoir-estimator/annual-data-current"
 AUDIT_EVENT_SCHEMA = "liyutan-reservoir-estimator/audit-event"
 ANNUAL_ACTIVATION_EVENT_TYPE = "annual-data-activation"
+ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE = "annual-data-activation-recovery"
+ANNUAL_ACTIVATION_RECOVERY_NOTICE = (
+    "這是事後依目前 current 與 immutable evidence 補建的 recovery record，"
+    "不是原始 activation event。"
+)
 OFFICIAL_ESTIMATE_SCHEMA = "liyutan-reservoir-estimator/official-estimate-version"
 OFFICIAL_INPUTS_SCHEMA = "liyutan-reservoir-estimator/official-inputs"
 OFFICIAL_CURRENT_SCHEMA = "liyutan-reservoir-estimator/official-estimate-current"
@@ -692,6 +697,151 @@ def validate_annual_activation_audit_event(data: Any) -> dict:
     _exact_fields(diagnostics, ("hostname", "process_id"), f"{label}.diagnostics")
     _string(diagnostics["hostname"], f"{label}.diagnostics.hostname")
     _integer(diagnostics["process_id"], f"{label}.diagnostics.process_id", 1)
+    return copy.deepcopy(item)
+
+
+def validate_annual_activation_recovery_audit_event(data: Any) -> dict:
+    """Validate a post-hoc recovery record without impersonating activation metadata."""
+    label = "annual activation recovery audit event"
+    item = _schema(data, AUDIT_EVENT_SCHEMA, label)
+    _exact_fields(
+        item,
+        (
+            "schema",
+            "schema_version",
+            "event_id",
+            "event_type",
+            "occurred_at",
+            "recovered_transition",
+            "recovery_operator_display_name",
+            "recovery_note",
+            "recovery_software",
+            "diagnostics",
+            "evidence",
+            "recovery_record_notice",
+            "result",
+        ),
+        label,
+    )
+    validate_safe_id(item["event_id"], f"{label}.event_id")
+    if item["event_type"] != ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE:
+        _fail(f"{label}.event_type 必須是 {ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE}")
+    _timestamp(item["occurred_at"], f"{label}.occurred_at")
+
+    transition = _mapping(item["recovered_transition"], f"{label}.recovered_transition")
+    _exact_fields(
+        transition,
+        (
+            "before_revision",
+            "before_current_version_id",
+            "after_revision",
+            "after_current_version_id",
+        ),
+        f"{label}.recovered_transition",
+    )
+    before_revision = _integer(
+        transition["before_revision"],
+        f"{label}.recovered_transition.before_revision",
+        0,
+    )
+    before_id = _optional_safe_id(
+        transition["before_current_version_id"],
+        f"{label}.recovered_transition.before_current_version_id",
+    )
+    after_revision = _integer(
+        transition["after_revision"],
+        f"{label}.recovered_transition.after_revision",
+        1,
+    )
+    after_id = validate_safe_id(
+        transition["after_current_version_id"],
+        f"{label}.recovered_transition.after_current_version_id",
+    )
+    if (before_revision == 0) != (before_id is None):
+        _fail(f"{label} 的 recovered transition before 狀態不一致")
+    if after_revision != before_revision + 1:
+        _fail(f"{label} recovered transition 的 after_revision 必須等於 before_revision + 1")
+    if before_id == after_id:
+        _fail(f"{label} 不得把 already-current transition 記錄為 recovery")
+
+    _string(
+        item["recovery_operator_display_name"],
+        f"{label}.recovery_operator_display_name",
+    )
+    _string(item["recovery_note"], f"{label}.recovery_note")
+    validate_software_metadata(item["recovery_software"], f"{label}.recovery_software")
+    diagnostics = _mapping(item["diagnostics"], f"{label}.diagnostics")
+    _exact_fields(diagnostics, ("hostname", "process_id"), f"{label}.diagnostics")
+    _string(diagnostics["hostname"], f"{label}.diagnostics.hostname")
+    _integer(diagnostics["process_id"], f"{label}.diagnostics.process_id", 1)
+
+    evidence = _mapping(item["evidence"], f"{label}.evidence")
+    _exact_fields(
+        evidence,
+        (
+            "current_json_sha256",
+            "current_version_id",
+            "current_version_manifest_sha256",
+            "diagnostics_inspected_state",
+        ),
+        f"{label}.evidence",
+    )
+    _sha256(evidence["current_json_sha256"], f"{label}.evidence.current_json_sha256")
+    evidence_current_id = validate_safe_id(
+        evidence["current_version_id"], f"{label}.evidence.current_version_id"
+    )
+    _sha256(
+        evidence["current_version_manifest_sha256"],
+        f"{label}.evidence.current_version_manifest_sha256",
+    )
+    if evidence_current_id != after_id:
+        _fail(f"{label} evidence.current_version_id 與 recovered transition 不一致")
+
+    inspected = _mapping(
+        evidence["diagnostics_inspected_state"],
+        f"{label}.evidence.diagnostics_inspected_state",
+    )
+    _exact_fields(
+        inspected,
+        (
+            "inspected_at",
+            "system_valid",
+            "current_status",
+            "current_audit_status",
+            "original_activation_match_count",
+            "recovery_match_count",
+            "overall_severity",
+        ),
+        f"{label}.evidence.diagnostics_inspected_state",
+    )
+    _timestamp(
+        inspected["inspected_at"],
+        f"{label}.evidence.diagnostics_inspected_state.inspected_at",
+    )
+    if inspected["system_valid"] is not True:
+        _fail(f"{label} evidence 必須確認 system_valid=true")
+    if inspected["current_status"] != "healthy":
+        _fail(f"{label} evidence.current_status 必須是 healthy")
+    if inspected["current_audit_status"] != "missing":
+        _fail(f"{label} evidence.current_audit_status 必須是 missing")
+    if _integer(
+        inspected["original_activation_match_count"],
+        f"{label}.evidence.diagnostics_inspected_state.original_activation_match_count",
+        0,
+    ) != 0:
+        _fail(f"{label} 只能補建零份 original activation match 的 transition")
+    if _integer(
+        inspected["recovery_match_count"],
+        f"{label}.evidence.diagnostics_inspected_state.recovery_match_count",
+        0,
+    ) != 0:
+        _fail(f"{label} 只能補建零份 recovery match 的 transition")
+    if inspected["overall_severity"] != "recovery_required":
+        _fail(f"{label} evidence.overall_severity 必須是 recovery_required")
+    if item["recovery_record_notice"] != ANNUAL_ACTIVATION_RECOVERY_NOTICE:
+        _fail(f"{label}.recovery_record_notice 必須明確標示為事後 recovery record")
+    if item["result"] != "recovered_audit_evidence":
+        _fail(f"{label}.result 必須是 recovered_audit_evidence")
     return copy.deepcopy(item)
 
 
