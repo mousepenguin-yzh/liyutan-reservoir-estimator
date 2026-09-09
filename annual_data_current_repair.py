@@ -220,10 +220,10 @@ def plan_annual_current_repair(diagnostics: AnnualDataDiagnostics) -> AnnualCurr
     token = _plan_token(diagnostics)
     if not diagnostics.system_valid:
         return _unavailable(diagnostics, "system invalid；停止自動復原。")
+    if diagnostics.has_untrusted_annual_audit_evidence:
+        return _unavailable(diagnostics, "annual audit evidence 無法可靠驗證，已停止自動復原。")
     if diagnostics.inspection_errors:
         return _unavailable(diagnostics, "shared root 或 audit evidence 無法完整檢查；停止自動復原。")
-    if diagnostics.has_untrusted_annual_audit_evidence:
-        return _unavailable(diagnostics, "annual audit evidence 無法驗證；停止自動復原。")
 
     pending = diagnostics.pending_current_repair_events
     if pending:

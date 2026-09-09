@@ -65,6 +65,16 @@ def _remove_audits(root: Path) -> None:
         path.unlink()
 
 
+def _malform_activation_audit(root: Path, *, preserve_valid: bool = False) -> Path:
+    source = next((root / "audit" / "events").rglob("*.json"))
+    event = deserialize_json(source.read_bytes())
+    assert event["event_type"] == ANNUAL_ACTIVATION_EVENT_TYPE
+    del event["operator_display_name"]
+    target = source.parent / "malformed-activation.json" if preserve_valid else source
+    target.write_bytes(serialize_json(event))
+    return target
+
+
 def _add_version(root: Path, version_id: str) -> Path:
     target = root / "annual-data" / "versions" / version_id
     _write_bundle(
@@ -188,6 +198,42 @@ def test_existing_activation_history_is_never_first_current_initialization(tmp_p
 
     assert not diagnostics.is_first_current_initialization_state
     assert plan.action is CurrentRepairAction.RECONSTRUCT_MISSING_CURRENT
+
+
+def test_malformed_activation_audit_blocks_first_current_initialization(tmp_path):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").unlink()
+    malformed_path = _malform_activation_audit(root)
+
+    diagnostics = diagnose_annual_data(root)
+    plan = plan_annual_current_repair(diagnostics)
+    audit = next(item for item in diagnostics.audits if item.path == malformed_path)
+
+    assert audit.status is AuditStatus.INVALID
+    assert audit.event is not None
+    assert audit.event["event_type"] == ANNUAL_ACTIVATION_EVENT_TYPE
+    assert audit.failure_reason
+    assert diagnostics.has_untrusted_annual_audit_evidence
+    assert not diagnostics.is_first_current_initialization_state
+    assert not plan.available
+    assert plan.action is CurrentRepairAction.NONE
+    assert "annual audit evidence 無法可靠驗證" in plan.reason
+
+
+def test_malformed_activation_audit_blocks_invalid_current_reconstruction(tmp_path):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").write_bytes(b"{")
+    _malform_activation_audit(root, preserve_valid=True)
+
+    diagnostics = diagnose_annual_data(root)
+    plan = plan_annual_current_repair(diagnostics)
+
+    assert diagnostics.current_status is CurrentStatus.CURRENT_INVALID
+    assert diagnostics.has_untrusted_annual_audit_evidence
+    assert any(item.status is AuditStatus.VALID_ANNUAL_ACTIVATION for item in diagnostics.audits)
+    assert not plan.available
+    assert plan.action is CurrentRepairAction.NONE
+    assert "annual audit evidence 無法可靠驗證" in plan.reason
 
 
 @pytest.mark.parametrize(

@@ -412,15 +412,17 @@ def _inspect_audits(root: Path) -> tuple[tuple[AnnualAuditDiagnostic, ...], list
                             path,
                             AuditStatus.INVALID,
                             modified,
+                            event=parsed if isinstance(parsed, dict) else None,
                             failure_reason=str(exc),
                         )
                     )
                     if isinstance(parsed, dict) and parsed.get("event_type") in {
+                        ANNUAL_ACTIVATION_EVENT_TYPE,
                         ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
                         ANNUAL_CURRENT_REPAIR_EVENT_TYPE,
                     }:
                         errors.append(
-                            f"recovery/repair audit schema 無法安全驗證：{path}：{exc}"
+                            f"annual audit evidence 無法可靠驗證：{path}：{exc}"
                         )
     return tuple(diagnostics), errors
 

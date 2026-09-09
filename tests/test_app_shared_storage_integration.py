@@ -456,6 +456,29 @@ def test_first_current_initialization_ui_uses_explicit_unselected_target(tmp_pat
     assert not any(item.label == "依最後正式紀錄重建 current" for item in app.button)
 
 
+def test_malformed_activation_audit_disables_first_current_initialization_ui(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path)
+    (root / "annual-data" / "current.json").unlink()
+    audit_path = next((root / "audit" / "events").rglob("*.json"))
+    event = deserialize_json(audit_path.read_bytes())
+    del event["operator_display_name"]
+    audit_path.write_bytes(serialize_json(event))
+    _enable_annual_recovery_ui(monkeypatch, root)
+
+    app = _run_app()
+
+    assert not app.exception
+    assert not any(
+        item.label == "設定為第一個正式年度版本" and not item.disabled
+        for item in app.button
+    )
+    assert "annual audit evidence 無法可靠驗證，已停止自動復原" in _messages(
+        app.caption
+    )
+
+
 def test_missing_and_invalid_current_reconstruction_ui_are_condition_specific(tmp_path, monkeypatch):
     missing_root = _build_root(tmp_path / "missing")
     (missing_root / "annual-data" / "current.json").unlink()

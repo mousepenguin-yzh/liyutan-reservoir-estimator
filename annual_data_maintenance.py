@@ -137,6 +137,12 @@ def annual_data_recovery_capability(
             ),
             repair_plan=repair_plan,
         )
+    if diagnostics.has_untrusted_annual_audit_evidence:
+        return unavailable(
+            "untrusted_annual_audit_evidence",
+            repair_plan.reason,
+            result.root,
+        )
     if (
         diagnostics is None
         or not diagnostics.system_valid
