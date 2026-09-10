@@ -290,6 +290,8 @@ V2的核心不是固定三情境，而是：
 
 第五步驟只接收「標準化後的獨立情境結果」，不需要理解共用旬、原始單位、Q90或貼上方式。這是避免步驟二改動連帶破壞產品層的技術邊界。
 
+Phase 2-5A 進一步固定：Step 5 是可跨不同 `batch_id` 累積的比較產品，不是正式保存來源。未來正式版本只能由目前正在工作的 V2 batch 與該 batch 中使用者選定、在目前設定下重新計算成功的情境建立；不得把 Step 5 整份比較清單包成單一正式版本。
+
 ### 7.3 比較項目與命名
 
 比較項目需帶有：
@@ -319,7 +321,7 @@ V2的核心不是固定三情境，而是：
 - 批次名稱。
 - 日期區間。
 - 起始庫容與歷史庫容。
-- 水庫參數。
+- 水庫參數，包含 `max_capacity`、`shilin_eco_flow`、`liyutan_eco_flow` 與 `shilin_diversion_limit`。
 - 共用旬數。
 - 所有情境名稱、排序、旬入流及來源。
 - 共用出流。
@@ -334,11 +336,13 @@ V2的核心不是固定三情境，而是：
 - 不載入或執行檔案中的任何程式內容。
 - 不將舊演算結果視為目前有效結果，應以載入設定重新演算。
 
+2-5A 起，水量平衡公式使用 batch 明載的 `shilin_diversion_limit`，其值來自實際載入的年度參數，不再在公式內固定為 33 cms。2-5A 以前手動匯出的舊 V2 JSON 若缺少此欄位，只在載入／轉換邊界補入相容預設 33；重新匯出後欄位必須明載，正式 inputs 不接受缺欄。
+
 此功能是第一階段過渡方案，不等同正式共用記憶。
 
 ## 9. 第二階段：本機 Streamlit＋內網共享資料夾永久保存
 
-第一階段已完成驗收；本節所列功能尚未實作，應另開後續 PR，不與第一階段混在一起。
+第一階段已完成驗收。第二階段目前已完成 2-4D 與 2-5A 資料契約；2-5B 正式 bundle builder、2-5C writer/publisher 及 2-6 跨裝置接續尚未開始，完整狀態以 `LOCAL_SHARED_STORAGE_SPEC.md` 第 18 節為準。
 
 歷史上曾評估以 Google Sheet 保存共用正式資料，現已由「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」取代。Google Sheet 不再是第二階段主要永久儲存方案。正式資料夾結構、檔案 schema、append-only、Windows／SMB 寫入鎖、revision 衝突、中斷復原、保存期限與分階段驗收，以 [本機 Streamlit＋內網共享資料夾永久保存規格](LOCAL_SHARED_STORAGE_SPEC.md) 為準。
 
@@ -397,7 +401,12 @@ batch = {
     "projection_end_date": "YYYY-MM-DD",
     "initial_capacity": 0.0,
     "historical_capacities": {},
-    "reservoir_parameters": {},
+    "reservoir_parameters": {
+        "max_capacity": 11584.0,
+        "shilin_eco_flow": 2.7,
+        "liyutan_eco_flow": 0.3,
+        "shilin_diversion_limit": 33.0
+    },
     "shared_period_count": 0,
     "scenarios": [
         {

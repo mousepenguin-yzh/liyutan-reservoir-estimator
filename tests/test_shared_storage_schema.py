@@ -29,10 +29,11 @@ from shared_storage_schema import (
     validate_annual_current,
     validate_official_bundle,
     validate_official_current,
+    validate_official_save_eligibility,
     validate_safe_id,
     validate_system,
 )
-from v2_workflow import validate_batch
+from v2_workflow import settings_fingerprint, validate_batch
 
 
 def synthetic_parameters():
@@ -192,6 +193,7 @@ def _v2_batch(scenario_ids=("scenario-a", "scenario-b")):
             "max_capacity": 11584.0,
             "shilin_eco_flow": 2.7,
             "liyutan_eco_flow": 0.3,
+            "shilin_diversion_limit": 33.0,
         },
         "periods": periods,
         "shared_period_count": 0,
@@ -251,9 +253,9 @@ def _official_bundle(
             "scenario_name": f"合成情境 {order + 1}",
             "scenario_order": order,
             "calculation_status": "success",
-            "settings_fingerprint": fingerprint,
-            "final_capacity_10k_ton": 8001.0 + order,
-            "minimum_capacity_10k_ton": 8000.0,
+            "inputs_fingerprint": fingerprint,
+            "final_capacity_10k_ton": 8000.96 if order == 0 else 8018.24,
+            "minimum_capacity_10k_ton": 8000.48 if order == 0 else 8009.12,
             "spill_volume_10k_ton": 0.0,
             "agricultural_reduction_volume_10k_ton": 0.0,
             "dry_days": 0,
@@ -268,7 +270,7 @@ def _official_bundle(
                     "version_id": "estimate-synthetic-1",
                     "batch_id": "batch-synthetic-1",
                     "scenario_id": scenario_id,
-                    "settings_fingerprint": fingerprint,
+                    "inputs_fingerprint": fingerprint,
                     "date": f"2027-01-0{day}",
                     "natural_inflow_cms": 10.0 + order,
                     "upstream_demand_cms": 2.7,
@@ -278,14 +280,18 @@ def _official_bundle(
                     "agricultural_reduction_cms": 0.0,
                     "shilin_river_release_cms": 2.7,
                     "actual_diversion_cms": 7.3 + order,
-                    "diversion_volume_10k_ton": 63.07 + order,
+                    "diversion_volume_10k_ton": 63.07 if order == 0 else 71.71,
                     "dam_release_cms": 0.3,
                     "public_water_10k_ton": 60.0,
                     "total_outflow_10k_ton": 62.59,
                     "spill_volume_10k_ton": 0.0,
-                    "previous_capacity_10k_ton": 8000.0,
-                    "end_capacity_10k_ton": 8000.48,
-                    "net_capacity_change_10k_ton": 0.48,
+                    "previous_capacity_10k_ton": (
+                        8000.0 if day == 1 else (8000.48 if order == 0 else 8009.12)
+                    ),
+                    "end_capacity_10k_ton": (
+                        8000.0 + 0.48 * day if order == 0 else 8000.0 + 9.12 * day
+                    ),
+                    "net_capacity_change_10k_ton": 0.48 if order == 0 else 9.12,
                 }
             )
     if summary_mutator:
@@ -304,8 +310,9 @@ def _official_bundle(
         "batch_id": "batch-synthetic-1",
         "batch_name": "合成正式推估",
         "previous_official_version_id": None,
+        "derived_from_official_version_id": None,
         "annual_data_version_id": "annual-synthetic-2027",
-        "settings_fingerprint": fingerprint,
+        "inputs_fingerprint": fingerprint,
         "official_scenario_ids": scenario_ids,
         "created_at": "2026-12-15T02:45:00Z",
         "operator_display_name": "測試操作人",
@@ -618,7 +625,51 @@ def test_valid_official_bundle_round_trip(tmp_path):
     assert validate_batch(parsed["inputs"]["batch"]) == parsed["inputs"]["batch"]
     target = tmp_path / "synthetic-inputs.json"
     target.write_bytes(bundle["inputs.json"])
-    assert official_inputs_fingerprint(deserialize_json(target.read_bytes())) == parsed["manifest"]["settings_fingerprint"]
+    assert official_inputs_fingerprint(deserialize_json(target.read_bytes())) == parsed["manifest"]["inputs_fingerprint"]
+
+
+def test_official_inputs_fingerprint_is_distinct_from_v2_settings_fingerprint():
+    parsed = validate_official_bundle(_official_bundle())
+    assert parsed["manifest"]["inputs_fingerprint"] == official_inputs_fingerprint(parsed["inputs"])
+    assert parsed["manifest"]["inputs_fingerprint"] != settings_fingerprint(parsed["inputs"]["batch"])
+    assert "inputs_fingerprint" in SUMMARY_COLUMNS
+    assert "settings_fingerprint" not in SUMMARY_COLUMNS
+
+
+def test_previous_and_derived_official_versions_are_distinct_lineage_concepts():
+    def lineage(manifest):
+        manifest["previous_official_version_id"] = "estimate-published-before"
+        manifest["derived_from_official_version_id"] = "estimate-work-started-from"
+
+    parsed = validate_official_bundle(_official_bundle(manifest_mutator=lineage))
+    assert parsed["manifest"]["previous_official_version_id"] == "estimate-published-before"
+    assert parsed["manifest"]["derived_from_official_version_id"] == "estimate-work-started-from"
+
+
+@pytest.mark.parametrize("target", ["inputs", "manifest"])
+def test_official_core_schema_rejects_unknown_fields(target):
+    if target == "inputs":
+        bundle = _official_bundle(input_mutator=lambda inputs: inputs.update(debug=True))
+    else:
+        bundle = _official_bundle(manifest_mutator=lambda manifest: manifest.update(debug=True))
+    with pytest.raises(StorageValidationError, match="未知欄位"):
+        validate_official_bundle(bundle)
+
+
+def test_official_inputs_do_not_apply_legacy_diversion_default():
+    def remove_diversion(inputs):
+        inputs["batch"]["reservoir_parameters"].pop("shilin_diversion_limit")
+
+    with pytest.raises(StorageValidationError, match="最大引水量"):
+        validate_official_bundle(_official_bundle(input_mutator=remove_diversion))
+
+
+def test_official_inputs_reject_v2_runtime_result_fingerprint():
+    def add_runtime_state(inputs):
+        inputs["batch"]["results_fingerprint"] = "a" * 64
+
+    with pytest.raises(StorageValidationError, match="未知欄位"):
+        validate_official_bundle(_official_bundle(input_mutator=add_runtime_state))
 
 
 def test_official_inputs_reject_batch_missing_daily_outflow_date():
@@ -643,6 +694,7 @@ def test_official_inputs_reject_scenario_missing_period_inflow():
         "max_capacity_10k_ton",
         "shilin_ecological_flow_cms",
         "liyutan_ecological_release_cms",
+        "shilin_diversion_limit_cms",
     ],
 )
 def test_official_inputs_reject_outer_inner_parameter_mismatch(outer_field):
@@ -673,6 +725,112 @@ def test_official_failed_scenario_blocks_entire_bundle():
         validate_official_bundle(_official_bundle(summary_mutator=fail))
 
 
+@pytest.mark.parametrize(
+    "field, delta",
+    [
+        ("final_capacity_10k_ton", 10.0),
+        ("minimum_capacity_10k_ton", 10.0),
+        ("spill_volume_10k_ton", 10.0),
+        ("agricultural_reduction_volume_10k_ton", 10.0),
+        ("dry_days", 1),
+    ],
+)
+def test_official_summary_must_match_daily_results(field, delta):
+    def mismatch(rows):
+        rows[0][field] += delta
+
+    with pytest.raises(StorageValidationError, match="daily_results.csv 不一致"):
+        validate_official_bundle(_official_bundle(summary_mutator=mismatch))
+
+
+def test_dirty_source_tree_is_ineligible_for_formal_save_and_bundle():
+    dirty_software = {
+        "repository": "mousepenguin-yzh/liyutan-reservoir-estimator",
+        "git_commit": "a" * 40,
+        "app_version": "git-aaaaaaaaaaaa",
+        "source_tree_dirty": True,
+    }
+    value = _v2_batch(("scenario-a",))
+    value["results_fingerprint"] = settings_fingerprint(value)
+    results = {
+        "scenario-a": {"status": "success", "data": [{"date": "2027-01-01"}], "summary": {}}
+    }
+    with pytest.raises(StorageValidationError, match="dirty"):
+        validate_official_save_eligibility(
+            value,
+            results,
+            ["scenario-a"],
+            annual_data_version_id="annual-synthetic-2027",
+            shared_annual_data_validated=True,
+            software=dirty_software,
+        )
+    with pytest.raises(StorageValidationError, match="dirty"):
+        validate_official_bundle(
+            _official_bundle(
+                manifest_mutator=lambda manifest: manifest["software"].update(
+                    source_tree_dirty=True
+                )
+            )
+        )
+
+
+def test_formal_save_eligibility_requires_current_successful_selected_batch_results():
+    software = {
+        "repository": "mousepenguin-yzh/liyutan-reservoir-estimator",
+        "git_commit": "a" * 40,
+        "app_version": "git-aaaaaaaaaaaa",
+        "source_tree_dirty": False,
+    }
+    value = _v2_batch(("scenario-a", "scenario-b"))
+    value["results_fingerprint"] = settings_fingerprint(value)
+    results = {
+        scenario_id: {"status": "success", "data": [{"date": "2027-01-01"}], "summary": {}}
+        for scenario_id in ("scenario-a", "scenario-b")
+    }
+    eligible = validate_official_save_eligibility(
+        value,
+        results,
+        ["scenario-b"],
+        annual_data_version_id="annual-synthetic-2027",
+        shared_annual_data_validated=True,
+        software=software,
+    )
+    assert eligible["official_scenario_ids"] == ["scenario-b"]
+    assert eligible["v2_settings_fingerprint"] == settings_fingerprint(value)
+
+    with pytest.raises(StorageValidationError, match="共享年度基準"):
+        validate_official_save_eligibility(
+            value,
+            results,
+            ["scenario-b"],
+            annual_data_version_id="annual-synthetic-2027",
+            shared_annual_data_validated=False,
+            software=software,
+        )
+
+    stale = copy.deepcopy(value)
+    stale["initial_capacity"] += 1
+    with pytest.raises(StorageValidationError, match="過期"):
+        validate_official_save_eligibility(
+            stale,
+            results,
+            ["scenario-b"],
+            annual_data_version_id="annual-synthetic-2027",
+            shared_annual_data_validated=True,
+            software=software,
+        )
+    results["scenario-b"] = {"status": "error", "error": "synthetic"}
+    with pytest.raises(StorageValidationError, match="尚未計算成功"):
+        validate_official_save_eligibility(
+            value,
+            results,
+            ["scenario-b"],
+            annual_data_version_id="annual-synthetic-2027",
+            shared_annual_data_validated=True,
+            software=software,
+        )
+
+
 def test_official_missing_summary_blocks_entire_bundle():
     with pytest.raises(StorageValidationError, match="official_scenario_ids"):
         validate_official_bundle(_official_bundle(summary_mutator=lambda rows: rows.pop()))
@@ -685,7 +843,7 @@ def test_official_missing_daily_result_blocks_entire_bundle():
 
 def test_official_fingerprint_mismatch_blocks_entire_bundle():
     def mismatch(rows):
-        rows[0]["settings_fingerprint"] = "0" * 64
+        rows[0]["inputs_fingerprint"] = "0" * 64
 
     with pytest.raises(StorageValidationError, match="fingerprint"):
         validate_official_bundle(_official_bundle(summary_mutator=mismatch))
@@ -696,7 +854,7 @@ def test_official_inputs_change_invalidates_manifest_fingerprint():
         inputs["batch"]["initial_capacity"] = 7000.0
 
     def preserve_old_fingerprint(manifest):
-        manifest["settings_fingerprint"] = "0" * 64
+        manifest["inputs_fingerprint"] = "0" * 64
 
     with pytest.raises(StorageValidationError, match="fingerprint"):
         validate_official_bundle(
