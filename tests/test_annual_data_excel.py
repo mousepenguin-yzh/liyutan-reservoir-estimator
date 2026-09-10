@@ -76,6 +76,7 @@ def _codes(result):
 def _current_from_candidate(candidate):
     return {
         "version": {
+            "version_id": "annual-current-baseline",
             "applicable_year": candidate.applicable_year,
             "actual_data_cutoff_period": candidate.actual_data_cutoff_period,
             "hydrology_source_period": candidate.hydrology_source_period,
@@ -96,7 +97,7 @@ def test_generated_template_with_synthetic_values_parses_all_four_sheets():
     assert result.ok
     assert result.source_sha256 == sha256_bytes(raw)
     assert result.candidate.source_filename == "synthetic.xlsx"
-    assert result.candidate.template_version == "2-4A.1"
+    assert result.candidate.template_version == "2-4D.1"
     assert result.candidate.reservoir_id == "liyutan"
     assert result.candidate.applicable_year == 2027
     assert result.candidate.actual_data_cutoff_period == "06-中旬"
@@ -116,6 +117,16 @@ def test_generated_template_with_synthetic_values_parses_all_four_sheets():
         "outflow_demand.csv",
         "reservoir_parameters.json",
     }
+
+
+def test_old_template_version_is_rejected_instead_of_using_new_blank_semantics():
+    result = parse_annual_data_excel(
+        _mutated_bytes(lambda wb: setattr(wb["版本資訊"]["C5"], "value", "2-4A.1"))
+    )
+
+    assert not result.ok
+    assert _codes(result) == {"unsupported_template_version"}
+    assert "2-4D.1" in result.errors[0].message
 
 
 def test_bytesio_position_is_restored_and_explicit_path_is_not_modified(tmp_path):
@@ -243,7 +254,6 @@ def test_duplicate_and_missing_periods_are_reported_together():
 @pytest.mark.parametrize(
     ("value", "code"),
     [
-        (None, "required_number_missing"),
         ("文字", "invalid_number"),
         (-1, "negative_number"),
         ("NaN", "invalid_number"),
@@ -257,6 +267,72 @@ def test_q_values_reject_blank_text_negative_nan_and_infinity(value, code):
     )
     assert not result.ok
     assert code in _codes(result)
+
+
+def test_blank_q_value_inherits_same_period_field_from_active_baseline():
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    baseline = _current_from_candidate(baseline_candidate)
+    raw = _mutated_bytes(lambda wb: setattr(wb["水文Q值"]["D6"], "value", None))
+
+    result = parse_annual_data_excel(raw, baseline=baseline)
+
+    assert result.ok
+    assert result.candidate.hydrology[0]["q95_cms"] == baseline_candidate.hydrology[0]["q95_cms"]
+    assert [(item.period_key, item.field) for item in result.candidate.inherited_values] == [
+        ("01-上旬", "q95_cms")
+    ]
+    assert result.candidate.baseline_version_id == "annual-current-baseline"
+
+
+def test_multiple_blank_q_values_resolve_cell_by_cell_and_match_explicit_fingerprint():
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    baseline = _current_from_candidate(baseline_candidate)
+
+    def mutate(workbook):
+        workbook["水文Q值"]["D6"] = None
+        workbook["水文Q值"]["E7"] = None
+
+    inherited = parse_annual_data_excel(_mutated_bytes(mutate), baseline=baseline)
+    explicit = parse_annual_data_excel(_workbook_bytes())
+
+    assert inherited.ok
+    assert len(inherited.candidate.inherited_values) == 2
+    assert inherited.candidate.fingerprint == explicit.candidate.fingerprint
+    assert candidate_artifacts(inherited.candidate) == candidate_artifacts(explicit.candidate)
+
+
+def test_blank_q_value_without_matching_active_baseline_value_is_error():
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    baseline = _current_from_candidate(baseline_candidate)
+    baseline["hydrology"][0].pop("q95_cms")
+    raw = _mutated_bytes(lambda wb: setattr(wb["水文Q值"]["D6"], "value", None))
+
+    result = parse_annual_data_excel(raw, baseline=baseline)
+
+    assert not result.ok
+    assert "hydrology_inheritance_unavailable" in _codes(result)
+
+
+def test_first_version_blank_q_value_is_error():
+    result = parse_annual_data_excel(
+        _mutated_bytes(lambda wb: setattr(wb["水文Q值"]["D6"], "value", None))
+    )
+
+    assert not result.ok
+    assert "hydrology_inheritance_unavailable" in _codes(result)
+
+
+def test_same_year_update_inherits_only_the_supplied_current_baseline():
+    current_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    current = _current_from_candidate(current_candidate)
+    current["hydrology"][0]["q95_cms"] = 4.75
+    raw = _mutated_bytes(lambda wb: setattr(wb["水文Q值"]["D6"], "value", None))
+
+    result = parse_annual_data_excel(raw, baseline=current)
+
+    assert result.ok
+    assert result.candidate.applicable_year == current_candidate.applicable_year
+    assert result.candidate.hydrology[0]["q95_cms"] == 4.75
 
 
 def test_q_values_are_mapped_from_q95_to_q05_and_equal_neighbors_are_allowed():
@@ -281,16 +357,61 @@ def test_q_order_error_reports_sheet_period_field_and_cell():
     assert issue.sheet == "水文Q值"
     assert issue.cell == "U6"
     assert "01-上旬" in issue.message
-    assert "q05_cms" in issue.message
+    assert "Q5" in issue.message and "Q10" in issue.message
+    assert "q05_cms" not in issue.message
 
 
-@pytest.mark.parametrize("value", [None, "文字", -0.1, "NaN", "Infinity"])
+@pytest.mark.parametrize("value", ["文字", -0.1, "NaN", "Infinity"])
 def test_outflow_values_reject_invalid_inputs(value):
     result = parse_annual_data_excel(
         _mutated_bytes(lambda wb: setattr(wb["年度基準出流"]["D6"], "value", value))
     )
     assert not result.ok
     assert _codes(result) & {"required_number_missing", "invalid_number", "negative_number"}
+
+
+def test_blank_outflow_values_inherit_only_matching_active_baseline_cells():
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    baseline = _current_from_candidate(baseline_candidate)
+
+    def mutate(workbook):
+        workbook["年度基準出流"]["D6"] = None
+        workbook["年度基準出流"]["F7"] = None
+
+    result = parse_annual_data_excel(_mutated_bytes(mutate), baseline=baseline)
+
+    assert result.ok
+    assert result.candidate.outflow_demand[0]["upstream_irrigation_cms"] == baseline_candidate.outflow_demand[0]["upstream_irrigation_cms"]
+    assert result.candidate.outflow_demand[1]["public_water_10k_ton_per_day"] == baseline_candidate.outflow_demand[1]["public_water_10k_ton_per_day"]
+    assert len(result.candidate.inherited_values) == 2
+
+
+def test_blank_outflow_without_baseline_or_matching_value_is_error():
+    raw = _mutated_bytes(lambda wb: setattr(wb["年度基準出流"]["D6"], "value", None))
+    no_baseline = parse_annual_data_excel(raw)
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    incomplete = _current_from_candidate(baseline_candidate)
+    incomplete["outflow_demand"][0].pop("upstream_irrigation_cms")
+    missing_value = parse_annual_data_excel(raw, baseline=incomplete)
+
+    assert not no_baseline.ok and not missing_value.ok
+    assert "outflow_inheritance_unavailable" in _codes(no_baseline)
+    assert "outflow_inheritance_unavailable" in _codes(missing_value)
+
+
+def test_same_year_outflow_update_inherits_only_the_supplied_current_baseline():
+    current_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    current = _current_from_candidate(current_candidate)
+    current["outflow_demand"][0]["upstream_irrigation_cms"] = 8.75
+    raw = _mutated_bytes(
+        lambda wb: setattr(wb["年度基準出流"]["D6"], "value", None)
+    )
+
+    result = parse_annual_data_excel(raw, baseline=current)
+
+    assert result.ok
+    assert result.candidate.applicable_year == current_candidate.applicable_year
+    assert result.candidate.outflow_demand[0]["upstream_irrigation_cms"] == 8.75
 
 
 @pytest.mark.parametrize(
@@ -312,19 +433,86 @@ def test_reservoir_parameter_validation(cell, value, code):
     assert code in _codes(result)
 
 
-def test_missing_parameter_source_and_note_are_warnings_and_metadata_is_preserved():
+def test_blank_overall_note_source_and_note_clear_instead_of_inheriting():
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    baseline = _current_from_candidate(baseline_candidate)
+
     def mutate(workbook):
+        workbook["版本資訊"]["C12"] = None
         workbook["水庫參數"]["F6"] = None
         workbook["水庫參數"]["G7"] = None
 
-    result = parse_annual_data_excel(_mutated_bytes(mutate))
+    result = parse_annual_data_excel(_mutated_bytes(mutate), baseline=baseline)
     assert result.ok
-    assert all(issue.severity is IssueSeverity.WARNING for issue in result.issues)
-    assert {"parameter_source_missing", "parameter_note_missing"} <= _codes(result)
+    assert result.issues == ()
+    assert result.candidate.overall_note is None
     metadata = result.candidate.parameter_metadata
     assert metadata["max_capacity_10k_ton"]["source_reference"] is None
     assert metadata["shilin_ecological_flow_cms"]["note"] is None
     assert metadata["liyutan_ecological_release_cms"]["effective_start_date"] == "2027-01-01"
+
+
+def test_unchanged_parameter_value_with_blank_date_inherits_active_date():
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    baseline = _current_from_candidate(baseline_candidate)
+    raw = _mutated_bytes(lambda wb: setattr(wb["水庫參數"]["E6"], "value", None))
+
+    result = parse_annual_data_excel(raw, baseline=baseline)
+
+    assert result.ok
+    assert result.candidate.parameter_metadata["max_capacity_10k_ton"]["effective_start_date"] == "2027-01-01"
+
+
+def test_changed_parameter_value_with_blank_date_is_error():
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    baseline = _current_from_candidate(baseline_candidate)
+
+    def mutate(workbook):
+        workbook["水庫參數"]["C6"] = 11999
+        workbook["水庫參數"]["E6"] = None
+
+    result = parse_annual_data_excel(_mutated_bytes(mutate), baseline=baseline)
+
+    assert not result.ok
+    assert "parameter_effective_date_required_for_change" in _codes(result)
+
+
+def test_first_version_parameter_date_blank_is_error():
+    result = parse_annual_data_excel(
+        _mutated_bytes(lambda wb: setattr(wb["水庫參數"]["E6"], "value", None))
+    )
+
+    assert not result.ok
+    assert "parameter_effective_date_required" in _codes(result)
+
+
+def test_unchanged_parameter_with_baseline_missing_date_is_error():
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    baseline = _current_from_candidate(baseline_candidate)
+    baseline[PARAMETER_METADATA_KEY]["max_capacity_10k_ton"]["effective_start_date"] = None
+    raw = _mutated_bytes(lambda wb: setattr(wb["水庫參數"]["E6"], "value", None))
+
+    result = parse_annual_data_excel(raw, baseline=baseline)
+
+    assert not result.ok
+    assert "parameter_effective_date_inheritance_unavailable" in _codes(result)
+
+
+def test_changed_parameter_with_blank_source_warns_but_remains_publishable_candidate():
+    baseline_candidate = parse_annual_data_excel(_workbook_bytes()).candidate
+    baseline = _current_from_candidate(baseline_candidate)
+
+    def mutate(workbook):
+        workbook["水庫參數"]["C6"] = 11999
+        workbook["水庫參數"]["E6"] = "2027-02-01"
+        workbook["水庫參數"]["F6"] = None
+
+    result = parse_annual_data_excel(_mutated_bytes(mutate), baseline=baseline)
+
+    assert result.ok
+    assert _codes(result) == {"parameter_changed_source_missing"}
+    assert all(issue.severity is IssueSeverity.WARNING for issue in result.issues)
+    assert result.candidate.parameter_metadata["max_capacity_10k_ton"]["source_reference"] is None
 
 
 @pytest.mark.parametrize(

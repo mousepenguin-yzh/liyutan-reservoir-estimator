@@ -1,4 +1,4 @@
-"""Parse, validate, and preview 2-4A annual-data Excel workbooks.
+"""Parse, validate, and preview 2-4D annual-data Excel workbooks.
 
 This module is intentionally independent of Streamlit and performs no shared-
 storage discovery or writes.  A caller must explicitly provide workbook bytes,
@@ -103,6 +103,11 @@ PARAMETER_DEFINITIONS = (
     ("liyutan_ecological_release_cms", "鯉魚潭最低生態放流量", "cms"),
     ("shilin_diversion_limit_cms", "士林堰引水上限", "cms"),
 )
+OUTFLOW_FIELD_LABELS = {
+    "upstream_irrigation_cms": "上灌區需求",
+    "downstream_irrigation_cms": "下灌區需求",
+    "public_water_10k_ton_per_day": "公共出水",
+}
 
 
 class IssueSeverity(str, Enum):
@@ -126,6 +131,17 @@ class AnnualDataIssue:
 
 
 @dataclass(frozen=True)
+class InheritedAnnualValue:
+    """One blank business cell resolved from the active annual baseline."""
+
+    section: str
+    period_key: str
+    field: str
+    value: float
+    cell: str
+
+
+@dataclass(frozen=True)
 class AnnualDataCandidate:
     template_version: str
     reservoir_id: str
@@ -139,6 +155,8 @@ class AnnualDataCandidate:
     outflow_demand: tuple[dict[str, Any], ...]
     reservoir_parameters: dict[str, float]
     parameter_metadata: dict[str, dict[str, Any]]
+    baseline_version_id: str | None
+    inherited_values: tuple[InheritedAnnualValue, ...]
     source_filename: str | None
     source_sha256: str
     fingerprint: str
@@ -209,6 +227,10 @@ def _issue(
     cell: str | None = None,
 ) -> None:
     issues.append(AnnualDataIssue(severity, code, message, sheet, cell))
+
+
+def _q_label(code: str) -> str:
+    return f"Q{int(code[1:3])}"
 
 
 def _error(
@@ -405,6 +427,44 @@ def _nonnegative_number(cell, issues: list[AnnualDataIssue], field: str) -> floa
     return number
 
 
+def _optional_nonnegative_number(
+    cell, issues: list[AnnualDataIssue], field: str
+) -> tuple[float | None, bool]:
+    """Return a valid number and whether the business cell was blank."""
+    value = _cell_value(cell, issues)
+    if value is None or value == "" or (isinstance(value, str) and not value.strip()):
+        return None, True
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        _error(
+            issues,
+            "invalid_number",
+            f"{field}必須是數字，不接受文字或公式。",
+            cell.parent.title,
+            cell.coordinate,
+        )
+        return None, False
+    number = float(value)
+    if not math.isfinite(number):
+        _error(
+            issues,
+            "nonfinite_number",
+            f"{field}必須是有限數值，不接受 NaN 或 Infinity。",
+            cell.parent.title,
+            cell.coordinate,
+        )
+        return None, False
+    if number < 0:
+        _error(
+            issues,
+            "negative_number",
+            f"{field}不可為負值。",
+            cell.parent.title,
+            cell.coordinate,
+        )
+        return None, False
+    return number, False
+
+
 def _validate_fixed_period_rows(ws, issues: list[AnnualDataIssue]) -> None:
     actual_keys: list[str] = []
     expected_keys = {period_key for period_key, _, _ in CANONICAL_PERIODS}
@@ -513,17 +573,40 @@ def _parse_version_sheet(ws, issues: list[AnnualDataIssue]) -> dict[str, Any]:
     }
 
 
-def _parse_hydrology_sheet(ws, issues: list[AnnualDataIssue]) -> tuple[dict[str, Any], ...]:
+def _parse_hydrology_sheet(
+    ws,
+    issues: list[AnnualDataIssue],
+    baseline_rows: Iterable[Mapping[str, Any]],
+    inherited_values: list[InheritedAnnualValue],
+) -> tuple[dict[str, Any], ...]:
     _check_extra_values(ws, 41, len(HYDROLOGY_MACHINE_HEADERS), issues)
     _check_headers(ws, 4, HYDROLOGY_CHINESE_HEADERS, issues, code="header_modified")
     _check_headers(ws, 5, HYDROLOGY_MACHINE_HEADERS, issues, code="machine_header_modified")
     _validate_fixed_period_rows(ws, issues)
     rows: list[dict[str, Any]] = []
+    baseline_by_key = {row.get("period_key"): row for row in baseline_rows}
     for row_number, (period_key, month, period) in enumerate(CANONICAL_PERIODS, 6):
         q_values: dict[str, float | None] = {}
         row_valid = True
         for column, code in enumerate(Q_CODES_DESCENDING, 4):
-            value = _nonnegative_number(ws.cell(row_number, column), issues, f"{period_key} {code}")
+            cell = ws.cell(row_number, column)
+            value, blank = _optional_nonnegative_number(cell, issues, f"{period_key} {code}")
+            if blank:
+                baseline_value = baseline_by_key.get(period_key, {}).get(code)
+                normalized = _normalize_numeric_value(baseline_value)
+                if not isinstance(normalized, (int, float)) or isinstance(normalized, bool):
+                    _error(
+                        issues,
+                        "hydrology_inheritance_unavailable",
+                        f"{period_key} {_q_label(code)} 留白，但目前啟用的年度基準沒有可沿用數值；請補填。",
+                        ws.title,
+                        cell.coordinate,
+                    )
+                else:
+                    value = float(normalized)
+                    inherited_values.append(
+                        InheritedAnnualValue("hydrology", period_key, code, value, cell.coordinate)
+                    )
             q_values[code] = value
             row_valid = row_valid and value is not None
         if row_valid:
@@ -534,7 +617,7 @@ def _parse_hydrology_sheet(ws, issues: list[AnnualDataIssue]) -> tuple[dict[str,
                     _error(
                         issues,
                         "q_order_invalid",
-                        f"{period_key} 必須符合 Q5 ≥ Q10 ≥ … ≥ Q95；{left_code} 不得小於 {right_code}。",
+                        f"{period_key} 必須符合 Q5 ≥ Q10 ≥ … ≥ Q95；{_q_label(left_code)} 不得小於 {_q_label(right_code)}。",
                         ws.title,
                         f"{get_column_letter(right_column)}{row_number}",
                     )
@@ -548,16 +631,40 @@ def _parse_hydrology_sheet(ws, issues: list[AnnualDataIssue]) -> tuple[dict[str,
     return tuple(rows)
 
 
-def _parse_outflow_sheet(ws, issues: list[AnnualDataIssue]) -> tuple[dict[str, Any], ...]:
+def _parse_outflow_sheet(
+    ws,
+    issues: list[AnnualDataIssue],
+    baseline_rows: Iterable[Mapping[str, Any]],
+    inherited_values: list[InheritedAnnualValue],
+) -> tuple[dict[str, Any], ...]:
     _check_extra_values(ws, 41, len(OUTFLOW_MACHINE_HEADERS), issues)
     _check_headers(ws, 4, OUTFLOW_CHINESE_HEADERS, issues, code="header_modified")
     _check_headers(ws, 5, OUTFLOW_MACHINE_HEADERS, issues, code="machine_header_modified")
     _validate_fixed_period_rows(ws, issues)
     rows: list[dict[str, Any]] = []
+    baseline_by_key = {row.get("period_key"): row for row in baseline_rows}
     for row_number, (period_key, month, period) in enumerate(CANONICAL_PERIODS, 6):
         record: dict[str, Any] = {"period_key": period_key, "month": month, "period": period}
         for column, code in enumerate(OUTFLOW_COLUMNS[3:], 4):
-            record[code] = _nonnegative_number(ws.cell(row_number, column), issues, f"{period_key} {code}")
+            cell = ws.cell(row_number, column)
+            value, blank = _optional_nonnegative_number(cell, issues, f"{period_key} {code}")
+            if blank:
+                baseline_value = baseline_by_key.get(period_key, {}).get(code)
+                normalized = _normalize_numeric_value(baseline_value)
+                if not isinstance(normalized, (int, float)) or isinstance(normalized, bool):
+                    _error(
+                        issues,
+                        "outflow_inheritance_unavailable",
+                        f"{period_key} 的{OUTFLOW_FIELD_LABELS[code]}留白，但目前啟用的年度基準沒有可沿用數值；請補填。",
+                        ws.title,
+                        cell.coordinate,
+                    )
+                else:
+                    value = float(normalized)
+                    inherited_values.append(
+                        InheritedAnnualValue("outflow", period_key, code, value, cell.coordinate)
+                    )
+            record[code] = value
         rows.append(record)
     return tuple(rows)
 
@@ -590,7 +697,12 @@ def _parse_date(cell, issues: list[AnnualDataIssue]) -> str | None:
     return None
 
 
-def _parse_parameters_sheet(ws, issues: list[AnnualDataIssue]) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
+def _parse_parameters_sheet(
+    ws,
+    issues: list[AnnualDataIssue],
+    baseline_parameters: Mapping[str, Any],
+    baseline_metadata: Mapping[str, Mapping[str, Any]],
+) -> tuple[dict[str, float], dict[str, dict[str, Any]]]:
     _check_extra_values(ws, 9, len(PARAMETER_MACHINE_HEADERS), issues)
     _check_headers(ws, 4, PARAMETER_CHINESE_HEADERS, issues, code="header_modified")
     _check_headers(ws, 5, PARAMETER_MACHINE_HEADERS, issues, code="machine_header_modified")
@@ -621,10 +733,49 @@ def _parse_parameters_sheet(ws, issues: list[AnnualDataIssue]) -> tuple[dict[str
         effective_date = _parse_date(ws.cell(row, 5), issues)
         source_reference = _optional_text(ws.cell(row, 6), issues)
         note = _optional_text(ws.cell(row, 7), issues)
-        if source_reference is None:
-            _warning(issues, "parameter_source_missing", f"{code} 尚未填寫依據／來源；發布前請確認。", ws.title, f"F{row}")
-        if note is None:
-            _warning(issues, "parameter_note_missing", f"{code} 尚未填寫個別備註；本階段仍可預覽。", ws.title, f"G{row}")
+        baseline_value = _normalize_numeric_value(baseline_parameters.get(code))
+        baseline_date = baseline_metadata.get(code, {}).get("effective_start_date")
+        value_unchanged = (
+            value is not None
+            and isinstance(baseline_value, (int, float))
+            and not isinstance(baseline_value, bool)
+            and value == float(baseline_value)
+        )
+        if effective_date is None and value is not None:
+            if value_unchanged and isinstance(baseline_date, str) and baseline_date:
+                effective_date = baseline_date
+            elif value_unchanged:
+                _error(
+                    issues,
+                    "parameter_effective_date_inheritance_unavailable",
+                    f"{name}數值未變但目前版本沒有可沿用的適用起日；請補填日期。",
+                    ws.title,
+                    f"E{row}",
+                )
+            elif code in baseline_parameters:
+                _error(
+                    issues,
+                    "parameter_effective_date_required_for_change",
+                    f"{name}數值已變更，必須填寫新的適用起日。",
+                    ws.title,
+                    f"E{row}",
+                )
+            else:
+                _error(
+                    issues,
+                    "parameter_effective_date_required",
+                    f"{name}沒有可沿用的適用起日，必須填寫日期。",
+                    ws.title,
+                    f"E{row}",
+                )
+        if source_reference is None and value is not None and code in baseline_parameters and not value_unchanged:
+            _warning(
+                issues,
+                "parameter_changed_source_missing",
+                f"{name}數值已變更，但尚未填寫依據／來源；建立新版前請人工確認。",
+                ws.title,
+                f"F{row}",
+            )
         metadata[code] = {
             "parameter_name": name,
             "unit": unit,
@@ -682,6 +833,7 @@ def parse_annual_data_excel(
     source: bytes | bytearray | BinaryIO | str | os.PathLike[str],
     *,
     filename: str | None = None,
+    baseline: Any | None = None,
 ) -> AnnualDataParseResult:
     """Parse one explicitly supplied workbook and return all safe-to-collect issues."""
     issues: list[AnnualDataIssue] = []
@@ -712,12 +864,41 @@ def parse_annual_data_excel(
                 _error(issues, "sheet_order_modified", "四張固定工作表的順序不得修改。")
             return AnnualDataParseResult(source_sha256, None, tuple(issues))
 
+        if baseline is None:
+            baseline_version: dict[str, Any] = {}
+            baseline_hydrology: tuple[dict[str, Any], ...] = ()
+            baseline_outflow: tuple[dict[str, Any], ...] = ()
+            baseline_parameters: dict[str, Any] = {}
+            baseline_parameter_metadata: dict[str, dict[str, Any]] = {}
+        else:
+            try:
+                (
+                    baseline_version,
+                    baseline_hydrology,
+                    baseline_outflow,
+                    baseline_parameters,
+                    baseline_parameter_metadata,
+                ) = _baseline_parts(baseline)
+            except (TypeError, ValueError) as exc:
+                _error(issues, "invalid_baseline", f"目前啟用的年度基準無法用於沿用：{exc}")
+                return AnnualDataParseResult(source_sha256, None, tuple(issues))
+
         version = _parse_version_sheet(workbook["版本資訊"], issues)
         if any(issue.code == "unsupported_template_version" for issue in issues):
             return AnnualDataParseResult(source_sha256, None, tuple(issues))
-        hydrology = _parse_hydrology_sheet(workbook["水文Q值"], issues)
-        outflow = _parse_outflow_sheet(workbook["年度基準出流"], issues)
-        parameters, parameter_metadata = _parse_parameters_sheet(workbook["水庫參數"], issues)
+        inherited_values: list[InheritedAnnualValue] = []
+        hydrology = _parse_hydrology_sheet(
+            workbook["水文Q值"], issues, baseline_hydrology, inherited_values
+        )
+        outflow = _parse_outflow_sheet(
+            workbook["年度基準出流"], issues, baseline_outflow, inherited_values
+        )
+        parameters, parameter_metadata = _parse_parameters_sheet(
+            workbook["水庫參數"],
+            issues,
+            baseline_parameters,
+            baseline_parameter_metadata,
+        )
         if any(issue.severity is IssueSeverity.ERROR for issue in issues):
             return AnnualDataParseResult(source_sha256, None, tuple(issues))
 
@@ -730,6 +911,12 @@ def parse_annual_data_excel(
             outflow_demand=outflow,
             reservoir_parameters=parameters,
             parameter_metadata=parameter_metadata,
+            baseline_version_id=(
+                str(baseline_version["version_id"])
+                if baseline_version.get("version_id") is not None
+                else None
+            ),
+            inherited_values=tuple(inherited_values),
             source_filename=filename,
             source_sha256=source_sha256,
             fingerprint=fingerprint,

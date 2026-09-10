@@ -22,6 +22,7 @@
   3. **診斷與受控復原**：唯讀盤點 current、versions、audit 及殘留 evidence；支援 healthy-current audit 補建、既有版本重新啟用、首次 current 初始化，以及只有在 evidence 足以唯一判斷時的 missing／invalid current reconstruction 或 broken-target switch。
 - 2-4 功能實作完成，但公司 SMB 實機多人、鎖定與中斷 acceptance 仍留在 2-8；generic `formal_write_available`／`formal_operations_available` 仍維持 `False`。
 - 2-4 年度資料 UI 已完成收斂：一般畫面只呈現可用狀態、使用年度、實績截止旬與更新日期；「年度資料維護」依上傳、檢查差異、建立新版、啟用新版四個任務呈現；current、revision、audit、fingerprint、SHA-256 及 recovery 技術資訊保留在預設收合的進階區。
+- 2-4D 年度資料填報規則已收斂：公版升為 `2-4D.1`，Q 值與年度基準出流空白只沿用目前啟用版本的同旬同欄位，水庫參數依數值是否變更決定日期是否可沿用；解析後 candidate 與正式版本仍是完整、自包含資料。舊版公版會明確拒絕，不會套用新空白語意。
 - 2-5 尚未開始，正式推估保存仍不可用；本次 UI 收斂沒有開啟 generic `formal_write_available` 或 `formal_operations_available`。
 - 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非正式資料，不會永久更新共享正式資料。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
@@ -200,7 +201,7 @@ $env:LIYUTAN_ENABLE_ANNUAL_DATA_RECOVERY = '1'
 
 共享 reader 完整驗證成功時 `shared_storage_readable=True`。`annual_data_write_available` 與 `annual_recovery_available` 是互相獨立的年度專用能力；generic `formal_write_available=False` 與 `formal_operations_available=False` 仍固定不變，避免被尚未完成的 2-5 正式推估保存誤用。正式共享資料內容不得加入 Git；開發及自動化測試一律使用 pytest 暫存資料夾與合成資料。
 
-### 產生 2-4A 空白年度資料 Excel 公版
+### 產生 2-4D 空白年度資料 Excel 公版
 
 產生器必須由使用者明確指定輸出檔案，不會猜測或預設任何共享路徑；若檔案已存在，除非明確加上 `--overwrite`，否則會停止：
 
@@ -208,11 +209,11 @@ $env:LIYUTAN_ENABLE_ANNUAL_DATA_RECOVERY = '1'
 python scripts/create_annual_data_template.py --output "C:\明確指定位置\鯉魚潭年度資料匯入範本.xlsx"
 ```
 
-公版包含 `版本資訊`、`水文Q值`、`年度基準出流`、`水庫參數` 四張工作表。所有年度、Q 值、出流與參數業務數值均保持空白，只預填技術範本版本、水庫識別、水庫名稱、固定欄位、固定36旬、單位、填寫說明與資料驗證規則。Excel 是人工填寫與交換格式，不能直接當作正式資料來源；正式共享根目錄仍未開放寫入。
+公版版本為 `2-4D.1`，包含 `版本資訊`、`水文Q值`、`年度基準出流`、`水庫參數` 四張工作表。Q 值及年度基準出流可留白，解析時只會沿用目前啟用年度基準的同旬同欄位；沒有 active baseline 或對應值時即報錯。四項水庫參數數值必填；數值未變時日期空白可沿用目前日期，數值變更時日期必填；來源與備註空白表示清除，不沿用舊文字。Excel 是人工填寫與交換格式，不能直接當作正式資料來源。舊 template version 會明確拒絕，避免同一版本代表兩套空白語意。
 
 ### 2-4B Excel 驗證與差異預覽
 
-Streamlit 頁面上方提供獨立的「系統基準資料維護－Excel驗證與差異預覽」。使用者必須手動上傳 `.xlsx`；系統不會掃描或自動載入公司資料夾。解析器拒絕未知範本版本、巨集、外部連結、公式、缺少或額外工作表、修改固定機器代碼或旬鍵、未知資料列／欄位，以及不完整、非有限、負值或語意順序錯誤的業務資料。
+Streamlit 頁面上方提供獨立的年度資料維護與差異預覽。使用者必須手動上傳 `.xlsx`；系統不會掃描或自動載入公司資料夾。解析器拒絕未知範本版本、巨集、外部連結、公式、缺少或額外工作表、修改固定機器代碼或旬鍵、未知資料列／欄位，以及解析後仍不完整、非有限、負值或語意順序錯誤的業務資料。Q 值與出流空白的沿用數量會先以業務摘要顯示，逐格明細則預設收合；沿用後的完整值會參與 fingerprint、差異比較及 immutable version artifacts。
 
 驗證成功後只在記憶體中建立候選資料，先顯示適用年度、實績截止旬、完整性與分區差異摘要；檔案 SHA-256、候選 fingerprint 等技術資訊保留在進階收合區，warnings 仍逐項顯示位置與修正資訊。水庫參數的數值、適用起日、來源及備註均納入主要差異筆數與明細；舊版未保存這些 metadata 時會標示「舊版未記錄」，不會誤報完全相同。只有在 `system.json` 已成功驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認 versions inventory 完全為空時，介面才顯示可確認的第一版完整預覽；current 缺失但已有任何 valid 或 invalid version entry 時明確要求 recovery 判斷。相容模式、未設定或無法存取根目錄、`system.json` 尚未初始化，以及權限、損壞或版本不一致等讀取失敗，仍可顯示候選內容，但會明確標示無法確認正式環境是否存在舊版，且不產生看似可靠的新舊差異。所有畫面均標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」`formal_write_available` 與 `formal_operations_available` 仍為 `False`。
 
@@ -222,7 +223,7 @@ Streamlit 頁面上方提供獨立的「系統基準資料維護－Excel驗證�
 
 ### 2-4C1 年度不可變版本安全建立
 
-`annual_data_version_writer.py` 接受 2-4B 已驗證且由使用者確認 fingerprint 的 `AnnualDataCandidate`、完全相同的原始 Excel bytes／原始檔名、人工宣告的操作人與建立備註。建立前會重新解析 Excel，核對來源 SHA-256、candidate fingerprint、候選完整內容及 warnings；有 warnings 時必須由呼叫端明確確認，確認後的完整 warning 紀錄會保存於 `version.json`。操作人名稱只是人工宣告，不代表系統已驗證真實身分。
+`annual_data_version_writer.py` 接受已驗證且由使用者確認 fingerprint 的 `AnnualDataCandidate`、完全相同的原始 Excel bytes／原始檔名、人工宣告的操作人與建立備註。候選若使用 active baseline 解決空白，呼叫端必須同時提供預覽時已驗證的相同 baseline；建立前會以它重新解析 Excel，核對來源 SHA-256、candidate fingerprint、候選完整內容及 warnings。任何 resolved 結果變動都要求重新預覽與確認；有 warnings 時也必須明確確認。操作人名稱只是人工宣告，不代表系統已驗證真實身分。
 
 完整版本固定包含三個核心資料檔、`source/original.xlsx`、`version.json` 及最後寫入的 `COMMITTED.json`。原始 Excel bytes 不經另存，原始檔名只作 metadata，所有正式內容均列入 checksum。writer 只接受已存在且 `system.json` 通過 schema 與 `reservoir_id=liyutan` 驗證的指定根目錄；它在同一根目錄 staging 寫入、逐檔 flush／關閉／重讀核對、完整 schema 與 36 旬驗證後才 rename 到 `annual-data/versions/<version_id>`，並在發布後再次讀回驗證。驗證失敗資料移至 quarantine；中斷證據保留；既有版本永不覆蓋或合併。
 

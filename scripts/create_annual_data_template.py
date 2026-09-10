@@ -1,6 +1,6 @@
-"""Create the blank annual-data Excel exchange template for Li-Yu-Tan.
+"""Create the blank 2-4D annual-data Excel exchange template for Li-Yu-Tan.
 
-This stage 2-4A utility only creates a user-fillable exchange workbook. It
+This stage 2-4D utility only creates a user-fillable exchange workbook. It
 does not parse, validate, publish, or activate a formal annual-data version.
 """
 
@@ -10,7 +10,7 @@ import argparse
 import sys
 from pathlib import Path
 
-from openpyxl import Workbook
+from openpyxl import Workbook, load_workbook
 from openpyxl.comments import Comment
 from openpyxl.formatting.rule import FormulaRule
 from openpyxl.workbook.defined_name import DefinedName
@@ -19,7 +19,7 @@ from openpyxl.utils import get_column_letter
 from openpyxl.worksheet.datavalidation import DataValidation
 
 
-TEMPLATE_VERSION = "2-4A.1"
+TEMPLATE_VERSION = "2-4D.1"
 RESERVOIR_ID = "liyutan"
 RESERVOIR_NAME = "鯉魚潭水庫"
 SHEET_NAMES = ("版本資訊", "水文Q值", "年度基準出流", "水庫參數")
@@ -30,6 +30,22 @@ CANONICAL_PERIODS = tuple(
     for period in PERIOD_NAMES
 )
 Q_CODES_DESCENDING = tuple(f"q{quantile:02d}_cms" for quantile in range(95, 0, -5))
+VERSION_BUSINESS_CELLS = tuple(f"C{row}" for row in range(8, 13))
+HYDROLOGY_BUSINESS_CELLS = tuple(
+    f"{get_column_letter(column)}{row}"
+    for row in range(6, 42)
+    for column in range(4, 23)
+)
+OUTFLOW_BUSINESS_CELLS = tuple(
+    f"{get_column_letter(column)}{row}"
+    for row in range(6, 42)
+    for column in range(4, 7)
+)
+PARAMETER_BUSINESS_CELLS = tuple(
+    f"{get_column_letter(column)}{row}"
+    for row in range(6, 10)
+    for column in (3, 5, 6, 7)
+)
 
 TITLE_FILL = PatternFill("solid", fgColor="1F4E78")
 SECTION_FILL = PatternFill("solid", fgColor="D9EAF7")
@@ -82,7 +98,12 @@ def _set_headers(ws, chinese_headers: list[str], machine_headers: list[str]) -> 
     ws.row_dimensions[5].height = 31
 
 
-def _add_nonnegative_validation(ws, cell_range: str) -> None:
+def _add_nonnegative_validation(
+    ws,
+    cell_range: str,
+    *,
+    prompt: str = "請輸入非負數值；空白時依該工作表上方說明處理。",
+) -> None:
     validation = DataValidation(
         type="decimal",
         operator="greaterThanOrEqual",
@@ -91,7 +112,7 @@ def _add_nonnegative_validation(ws, cell_range: str) -> None:
     )
     validation.error = "請輸入大於或等於 0 的數值，或保留空白。"
     validation.errorTitle = "數值格式不正確"
-    validation.prompt = "請輸入非負數值；尚無資料時請保留空白。"
+    validation.prompt = prompt
     validation.promptTitle = "填寫非負數值"
     validation.showErrorMessage = True
     validation.showInputMessage = True
@@ -121,7 +142,7 @@ def _build_version_sheet(wb: Workbook) -> None:
         ws,
         3,
         5,
-        "本年度實績截止旬以前（含該旬）填本年度實際資料；截止旬以後填前一年度相同旬別資料。這項規則目前適用於「年度基準出流」。",
+        "必填：適用年度、實績截止旬、水文Q值資料來源／統計期間、年度基準出流資料來源。整體資料備註選填，空白表示本版本沒有整體備註。",
     )
     headers = ["欄位代碼", "中文名稱", "值", "單位／格式", "填寫說明"]
     for column, value in enumerate(headers, 1):
@@ -135,11 +156,11 @@ def _build_version_sheet(wb: Workbook) -> None:
         ("template_version", "範本版本", TEMPLATE_VERSION, "文字", "固定技術值，請勿修改。", False),
         ("reservoir_id", "水庫識別碼", RESERVOIR_ID, "文字", "固定技術值，請勿修改。", False),
         ("reservoir_name", "水庫名稱", RESERVOIR_NAME, "文字", "固定技術值，請勿修改。", False),
-        ("applicable_year", "適用年度", None, "西元年（整數）", "請填四位數西元年，不預填任何年度。", True),
-        ("actual_data_cutoff_period", "本年度實績截止旬", None, "固定36旬", "請由下拉選單選取；規則見本表上方說明。", True),
-        ("hydrology_source_period", "水文Q值資料來源／統計期間", None, "文字", "請填資料來源、測站、統計期間或可交接索引。", True),
-        ("annual_outflow_source", "年度基準出流資料來源", None, "文字", "請填來源文件或可交接索引。", True),
-        ("overall_note", "整體資料備註", None, "文字", "請記錄本年度資料範圍、限制或其他重要事項。", True),
+        ("applicable_year", "適用年度", None, "西元年（整數）", "請填四位數西元年，例如 2026。", True),
+        ("actual_data_cutoff_period", "本年度實績截止旬", None, "固定36旬", "請選擇本年度已有實績資料的最後一旬；該旬以前（含該旬）視為本年度實績。", True),
+        ("hydrology_source_period", "水文Q值資料來源／統計期間", None, "文字", "請填資料來源與統計期間；必要時可包含承辦單位或可交接索引。", True),
+        ("annual_outflow_source", "年度基準出流資料來源", None, "文字", "水利署水情會議、分署水源調配小組會議或其他決議等", True),
+        ("overall_note", "整體資料備註", None, "文字", "如有資料異常、特殊調整、適用限制或需交接事項請填寫；無則留白。", True),
     )
     for row, (code, name, value, unit, instruction, editable) in enumerate(fields, 5):
         for column, item in enumerate((code, name, value, unit, instruction), 1):
@@ -153,8 +174,8 @@ def _build_version_sheet(wb: Workbook) -> None:
     year_validation = DataValidation(
         type="whole", operator="between", formula1="2000", formula2="2100", allow_blank=True
     )
-    year_validation.error = "請輸入 2000 至 2100 之間的四位數西元年，或保留空白。"
-    year_validation.prompt = "未決定適用年度時請保留空白。"
+    year_validation.error = "此欄必填；請輸入 2000 至 2100 之間的四位數西元年。"
+    year_validation.prompt = "請填四位數西元年，例如 2026。"
     year_validation.showErrorMessage = True
     year_validation.showInputMessage = True
     ws.add_data_validation(year_validation)
@@ -164,14 +185,14 @@ def _build_version_sheet(wb: Workbook) -> None:
         type="list", formula1="annual_period_keys", allow_blank=True
     )
     cutoff_validation.error = "請從固定36旬下拉清單選取。"
-    cutoff_validation.prompt = "截止旬以前含該旬填本年度實際出流，其後填前一年度同旬出流。"
+    cutoff_validation.prompt = "請選擇本年度已有實績資料的最後一旬；該旬以前（含該旬）視為本年度實績。"
     cutoff_validation.showErrorMessage = True
     cutoff_validation.showInputMessage = True
     ws.add_data_validation(cutoff_validation)
     cutoff_validation.add("C9")
-    ws["C8"].comment = Comment("適用年度必須為四位數西元年；此範本刻意不預填年度。", COMMENT_AUTHOR)
+    ws["C8"].comment = Comment("此欄必填。請填四位數西元年，例如 2026。", COMMENT_AUTHOR)
     ws["C9"].comment = Comment(
-        "本年度實績截止旬以前（含該旬）填本年度實際出流；尚未發生的旬填前一年度相同旬別出流。",
+        "此欄必填。請選擇本年度已有實績資料的最後一旬；該旬以前（含該旬）視為本年度實績。",
         COMMENT_AUTHOR,
     )
     ws.freeze_panes = "A5"
@@ -189,13 +210,13 @@ def _build_hydrology_sheet(wb: Workbook) -> None:
         ws,
         2,
         max_column,
-        "Q 值為流量超越機率統計值，單位一律為 cms。黃色欄位由使用者填寫，固定旬別欄位請勿修改。",
+        "Q 值為流量超越機率統計值，單位一律為 cms。黃色欄位可填數值；空白欄位會沿用目前系統基準資料的同旬同項數值。",
     )
     _style_note(
         ws,
         3,
         max_column,
-        "每旬應符合 Q5 ≥ Q10 ≥ … ≥ Q95；本表依既有使用習慣由 Q95 排至 Q5。所有業務數值預設保持空白。",
+        "每旬應符合 Q5 ≥ Q10 ≥ … ≥ Q95；若沒有可沿用資料，系統會要求補填。固定旬別欄位請勿修改。",
         warning=True,
     )
     chinese_headers = ["固定旬鍵", "月份", "旬別"] + [
@@ -212,7 +233,11 @@ def _build_hydrology_sheet(wb: Workbook) -> None:
         for column in range(4, max_column + 1):
             ws.cell(row, column).number_format = "0.###"
     _apply_body_style(ws, 6, 41, max_column)
-    _add_nonnegative_validation(ws, f"D6:{get_column_letter(max_column)}41")
+    _add_nonnegative_validation(
+        ws,
+        f"D6:{get_column_letter(max_column)}41",
+        prompt="請輸入非負數值；空白會沿用目前系統基準資料的同旬同項數值。",
+    )
 
     comparisons = [
         f"${get_column_letter(column)}6>${get_column_letter(column + 1)}6"
@@ -227,7 +252,7 @@ def _build_hydrology_sheet(wb: Workbook) -> None:
         FormulaRule(formula=[formula], fill=PatternFill("solid", fgColor="F4CCCC")),
     )
     ws["D5"].comment = Comment(
-        "q95_cms 表示 Q95 流量，單位 cms。Q 值欄均需為非負數值，且每旬須符合 Q5 ≥ … ≥ Q95。",
+        "q95_cms 表示 Q95 流量，單位 cms。可填非負數值；空白會沿用目前系統基準資料，無可沿用資料時須補填。每旬仍須符合 Q5 ≥ … ≥ Q95。",
         COMMENT_AUTHOR,
     )
     ws.freeze_panes = "D6"
@@ -250,13 +275,13 @@ def _build_outflow_sheet(wb: Workbook) -> None:
         ws,
         2,
         6,
-        "本表正式名稱為「年度基準出流」，不是單純的前一年度資料。截止旬以前（含該旬）填本年度實際出流；尚未發生的旬填前一年度相同旬別出流。",
+        "本表正式名稱為「年度基準出流」。黃色欄位可填數值；空白欄位會沿用目前系統基準資料的同旬同項數值。",
     )
     _style_note(
         ws,
         3,
         6,
-        "抗旱、緊急調度及個別推估的臨時調整不直接改入本表，仍由推估流程中的日期覆寫或自訂出流處理。所有業務數值預設保持空白。",
+        "若沒有可沿用資料，系統會要求補填。抗旱、緊急調度及個別推估的臨時調整不直接改入本表。",
         warning=True,
     )
     chinese_headers = [
@@ -285,10 +310,14 @@ def _build_outflow_sheet(wb: Workbook) -> None:
         for column in range(4, 7):
             ws.cell(row, column).number_format = "0.###"
     _apply_body_style(ws, 6, 41, 6)
-    _add_nonnegative_validation(ws, "D6:F41")
-    ws["D5"].comment = Comment("上灌區需求，單位 cms；請填非負數值。", COMMENT_AUTHOR)
-    ws["E5"].comment = Comment("下灌區需求，單位 cms；請填非負數值。", COMMENT_AUTHOR)
-    ws["F5"].comment = Comment("公共出水，單位萬噸／日；請填非負數值。", COMMENT_AUTHOR)
+    _add_nonnegative_validation(
+        ws,
+        "D6:F41",
+        prompt="請輸入非負數值；空白會沿用目前系統基準資料的同旬同項數值。",
+    )
+    ws["D5"].comment = Comment("上灌區需求，單位 cms；空白會沿用目前系統基準資料的同旬同項數值。", COMMENT_AUTHOR)
+    ws["E5"].comment = Comment("下灌區需求，單位 cms；空白會沿用目前系統基準資料的同旬同項數值。", COMMENT_AUTHOR)
+    ws["F5"].comment = Comment("公共出水，單位萬噸／日；空白會沿用目前系統基準資料的同旬同項數值。", COMMENT_AUTHOR)
     ws.freeze_panes = "D6"
     ws.auto_filter.ref = "A5:F41"
     for column, width in {"A": 14, "B": 9, "C": 10, "D": 27, "E": 29, "F": 34}.items():
@@ -303,13 +332,13 @@ def _build_parameters_sheet(wb: Workbook) -> None:
         ws,
         2,
         7,
-        "正式年度基準變更：未來須建立新的完整年度版本；不得直接覆蓋既有正式年度版本。",
+        "四項參數數值均必填。數值未變時，適用起日空白可沿用目前版本；數值變更時，必須填寫新的適用起日。",
     )
     _style_note(
         ws,
         3,
         7,
-        "單次推估的臨時假設：不直接改入年度正式基準，應由個別推估設定處理。所有可填欄位預設保持空白。",
+        "依據／來源與備註選填；空白代表本版本不填或清除，不會沿用舊文字。單次推估的臨時假設不直接改入年度正式基準。",
         warning=True,
     )
     chinese_headers = ["參數代碼", "中文名稱", "數值", "單位", "適用起日", "依據／來源", "備註"]
@@ -336,7 +365,11 @@ def _build_parameters_sheet(wb: Workbook) -> None:
         ws.cell(row, 5).number_format = "yyyy-mm-dd"
         ws.row_dimensions[row].height = 31
     _apply_body_style(ws, 6, 9, 7)
-    _add_nonnegative_validation(ws, "C6:C9")
+    _add_nonnegative_validation(
+        ws,
+        "C6:C9",
+        prompt="此欄必填。請依正式業務依據輸入非負數值。",
+    )
     date_validation = DataValidation(
         type="date",
         operator="between",
@@ -344,18 +377,20 @@ def _build_parameters_sheet(wb: Workbook) -> None:
         formula2="DATE(9999,12,31)",
         allow_blank=True,
     )
-    date_validation.error = "請輸入有效日期，或保留空白。"
-    date_validation.prompt = "建議使用 yyyy-mm-dd 格式；尚未決定時請保留空白。"
+    date_validation.error = "請輸入有效日期；數值變更時此欄必填。"
+    date_validation.prompt = "數值未變時可留白沿用目前日期；數值變更時必須填新日期。"
     date_validation.showErrorMessage = True
     date_validation.showInputMessage = True
     ws.add_data_validation(date_validation)
     date_validation.add("E6:E9")
     ws["C5"].comment = Comment(
-        "四項參數數值均刻意留白；請依正式業務依據填入非負數值。", COMMENT_AUTHOR
+        "四項參數數值均必填；請依正式業務依據填入非負數值。", COMMENT_AUTHOR
     )
     ws["E5"].comment = Comment(
-        "適用起日請填日期；正式基準變更未來須建立新的完整年度版本。", COMMENT_AUTHOR
+        "數值未變時空白可沿用目前版本日期；數值變更時必須填寫新的適用起日。", COMMENT_AUTHOR
     )
+    ws["F5"].comment = Comment("選填；空白代表本版本不填或清除，不會沿用舊文字。", COMMENT_AUTHOR)
+    ws["G5"].comment = Comment("選填；空白代表本版本不填或清除，不會沿用舊文字。", COMMENT_AUTHOR)
     ws.freeze_panes = "C6"
     ws.auto_filter.ref = "A5:G9"
     for column, width in {"A": 37, "B": 30, "C": 18, "D": 14, "E": 18, "F": 38, "G": 42}.items():
@@ -368,7 +403,7 @@ def build_workbook() -> Workbook:
     workbook = Workbook()
     workbook.remove(workbook.active)
     workbook.properties.title = "鯉魚潭水庫年度資料匯入範本"
-    workbook.properties.subject = "第二階段 2-4A 空白年度資料 Excel 公版"
+    workbook.properties.subject = "第二階段 2-4D 年度資料填報 Excel 公版"
     workbook.properties.creator = "鯉魚潭水庫庫容推估系統"
     _build_version_sheet(workbook)
     _build_hydrology_sheet(workbook)
@@ -378,6 +413,69 @@ def build_workbook() -> Workbook:
         DefinedName("annual_period_keys", attr_text="'水文Q值'!$A$6:$A$41")
     )
     return workbook
+
+
+def build_migrated_workbook(source: str | Path) -> Workbook:
+    """Build the current canonical template and copy only prior business inputs."""
+    source_path = Path(source).expanduser()
+    if source_path.suffix.lower() != ".xlsx":
+        raise ValueError("來源檔案必須使用 .xlsx 副檔名。")
+    prior = load_workbook(source_path, data_only=False, read_only=False, keep_links=False)
+    try:
+        if tuple(prior.sheetnames) != SHEET_NAMES:
+            raise ValueError("來源活頁簿的固定工作表或順序不符，拒絕自動遷移。")
+        expected_version_codes = (
+            "template_version",
+            "reservoir_id",
+            "reservoir_name",
+            "applicable_year",
+            "actual_data_cutoff_period",
+            "hydrology_source_period",
+            "annual_outflow_source",
+            "overall_note",
+        )
+        actual_version_codes = tuple(
+            prior["版本資訊"].cell(row, 1).value for row in range(5, 13)
+        )
+        if actual_version_codes != expected_version_codes:
+            raise ValueError("來源活頁簿的版本資訊欄位代碼不符，拒絕自動遷移。")
+        if tuple(prior["水文Q值"].cell(5, column).value for column in range(1, 23)) != (
+            "period_key",
+            "month",
+            "period",
+            *Q_CODES_DESCENDING,
+        ):
+            raise ValueError("來源活頁簿的水文 Q 值欄位不符，拒絕自動遷移。")
+        if tuple(prior["年度基準出流"].cell(5, column).value for column in range(1, 7)) != (
+            "period_key",
+            "month",
+            "period",
+            "upstream_irrigation_cms",
+            "downstream_irrigation_cms",
+            "public_water_10k_ton_per_day",
+        ):
+            raise ValueError("來源活頁簿的年度基準出流欄位不符，拒絕自動遷移。")
+        expected_parameter_codes = (
+            "max_capacity_10k_ton",
+            "shilin_ecological_flow_cms",
+            "liyutan_ecological_release_cms",
+            "shilin_diversion_limit_cms",
+        )
+        if tuple(prior["水庫參數"].cell(row, 1).value for row in range(6, 10)) != expected_parameter_codes:
+            raise ValueError("來源活頁簿的水庫參數代碼不符，拒絕自動遷移。")
+
+        migrated = build_workbook()
+        for sheet_name, cells in (
+            ("版本資訊", VERSION_BUSINESS_CELLS),
+            ("水文Q值", HYDROLOGY_BUSINESS_CELLS),
+            ("年度基準出流", OUTFLOW_BUSINESS_CELLS),
+            ("水庫參數", PARAMETER_BUSINESS_CELLS),
+        ):
+            for coordinate in cells:
+                migrated[sheet_name][coordinate] = prior[sheet_name][coordinate].value
+        return migrated
+    finally:
+        prior.close()
 
 
 def write_template(output: str | Path, *, overwrite: bool = False) -> Path:
@@ -394,9 +492,31 @@ def write_template(output: str | Path, *, overwrite: bool = False) -> Path:
     return output_path
 
 
+def write_migrated_template(
+    source: str | Path,
+    output: str | Path,
+    *,
+    overwrite: bool = False,
+) -> Path:
+    """Write a canonical workbook populated only with prior business values."""
+    source_path = Path(source).expanduser()
+    output_path = Path(output).expanduser()
+    if source_path.resolve() == output_path.resolve():
+        raise ValueError("遷移來源與輸出不可是同一檔案；請先建立備份再輸出。")
+    if output_path.suffix.lower() != ".xlsx":
+        raise ValueError("輸出檔案必須使用 .xlsx 副檔名。")
+    if output_path.exists() and not overwrite:
+        raise FileExistsError(f"目標檔案已存在；如需覆蓋請明確加上 --overwrite：{output_path}")
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    workbook = build_migrated_workbook(source_path)
+    workbook.save(output_path)
+    workbook.close()
+    return output_path
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="建立鯉魚潭水庫 2-4A 空白年度資料 Excel 公版。"
+        description="建立鯉魚潭水庫 2-4D 空白年度資料 Excel 公版。"
     )
     parser.add_argument(
         "--output",
@@ -409,17 +529,27 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="明確允許覆蓋已存在的輸出檔案。",
     )
+    parser.add_argument(
+        "--migrate-from",
+        type=Path,
+        help="以現行 canonical template 為底，只遷移指定舊檔的業務輸入值。",
+    )
     return parser
 
 
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     try:
-        output = write_template(args.output, overwrite=args.overwrite)
+        output = (
+            write_migrated_template(args.migrate_from, args.output, overwrite=args.overwrite)
+            if args.migrate_from is not None
+            else write_template(args.output, overwrite=args.overwrite)
+        )
     except (FileExistsError, OSError, ValueError) as exc:
         print(f"錯誤：{exc}", file=sys.stderr)
         return 1
-    print(f"已建立空白年度資料 Excel 公版：{output}")
+    action = "已建立新版年度資料 Excel" if args.migrate_from is not None else "已建立空白年度資料 Excel 公版"
+    print(f"{action}：{output}")
     return 0
 
 

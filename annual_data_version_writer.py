@@ -129,6 +129,8 @@ def _source_references(candidate: AnnualDataCandidate) -> list[str]:
         for metadata in candidate.parameter_metadata.values()
         if metadata.get("source_reference") is not None
     )
+    if candidate.baseline_version_id is not None:
+        references.append(f"annual-baseline-version:{candidate.baseline_version_id}")
     return list(dict.fromkeys(references))
 
 
@@ -178,6 +180,7 @@ def _validated_candidate(
     source_filename: str,
     confirmed_candidate_fingerprint: str,
     warnings_confirmed: bool,
+    baseline,
 ) -> AnnualDataCandidate:
     if not isinstance(candidate, AnnualDataCandidate):
         raise AnnualDataVersionPublishError("invalid_candidate", "必須提供已驗證的年度資料候選。")
@@ -205,7 +208,11 @@ def _validated_candidate(
         raise AnnualDataVersionPublishError(
             "confirmed_fingerprint_changed", "候選 fingerprint 已變更，必須重新預覽與確認。"
         )
-    parsed = parse_annual_data_excel(source_excel_bytes, filename=source_filename)
+    parsed = parse_annual_data_excel(
+        source_excel_bytes,
+        filename=source_filename,
+        baseline=baseline,
+    )
     if not parsed.ok or parsed.candidate is None:
         codes = ", ".join(issue.code for issue in parsed.errors)
         raise AnnualDataVersionPublishError(
@@ -237,6 +244,7 @@ def publish_annual_data_version(
     note: str,
     confirmed_candidate_fingerprint: str,
     warnings_confirmed: bool = False,
+    baseline=None,
     created_at: dt.datetime | None = None,
     version_uuid: uuid.UUID | str | None = None,
     version_id: str | None = None,
@@ -273,12 +281,18 @@ def publish_annual_data_version(
         source_filename = validate_original_filename(source_filename, "原始 Excel 檔名")
     except StorageValidationError as exc:
         raise AnnualDataVersionPublishError("unsafe_source_filename", str(exc)) from exc
+    if candidate.baseline_version_id is not None and baseline is None:
+        raise AnnualDataVersionPublishError(
+            "active_baseline_unavailable",
+            "預覽時使用的年度基準未提供，必須重新預覽與確認。",
+        )
     reparsed = _validated_candidate(
         candidate,
         source_excel_bytes,
         source_filename,
         confirmed_candidate_fingerprint,
         warnings_confirmed,
+        baseline,
     )
     now = _utc_now(created_at)
     if version_id is None:

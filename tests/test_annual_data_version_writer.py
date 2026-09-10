@@ -1,3 +1,4 @@
+import copy
 import dataclasses
 import datetime as dt
 import uuid
@@ -23,7 +24,7 @@ from shared_storage_schema import (
     sha256_bytes,
     validate_annual_bundle,
 )
-from test_annual_data_excel import _filled_workbook, _workbook_bytes
+from test_annual_data_excel import _current_from_candidate, _filled_workbook, _workbook_bytes
 
 
 FIXED_TIME = dt.datetime(2027, 1, 2, 3, 4, 5, 678901, tzinfo=dt.timezone.utc)
@@ -55,7 +56,9 @@ def _candidate(raw: bytes):
 
 
 def _publish(root: Path, raw: bytes, **overrides):
-    candidate = overrides.pop("candidate", _candidate(raw))
+    candidate = overrides.pop("candidate", None)
+    if candidate is None:
+        candidate = _candidate(raw)
     arguments = {
         "root": root,
         "candidate": candidate,
@@ -135,6 +138,26 @@ def test_parameter_metadata_and_candidate_metadata_round_trip(tmp_path):
     ]
 
 
+def test_active_baseline_version_is_preserved_in_existing_source_references_metadata(tmp_path):
+    baseline_candidate = _candidate(_workbook_bytes())
+    baseline = _current_from_candidate(baseline_candidate)
+    workbook = _filled_workbook()
+    workbook["水文Q值"]["D6"] = None
+    raw = _workbook_bytes(workbook)
+    parsed = parse_annual_data_excel(raw, filename="synthetic.xlsx", baseline=baseline)
+    assert parsed.ok
+
+    result = _publish(
+        _root(tmp_path),
+        raw,
+        candidate=parsed.candidate,
+        baseline=baseline,
+    )
+    version = deserialize_json((result.version_path / "version.json").read_bytes())
+
+    assert "annual-baseline-version:annual-current-baseline" in version["source_references"]
+
+
 def test_source_excel_or_candidate_change_requires_new_preview(tmp_path):
     raw = _workbook_bytes()
     candidate = _candidate(raw)
@@ -184,21 +207,32 @@ def test_candidate_without_source_filename_cannot_be_published(tmp_path):
 
 
 def test_warnings_require_confirmation_and_full_warning_records_are_saved(tmp_path):
+    baseline_candidate = _candidate(_workbook_bytes())
+    baseline = _current_from_candidate(baseline_candidate)
     workbook = _filled_workbook()
+    workbook["水庫參數"]["C6"] = 11999
+    workbook["水庫參數"]["E6"] = "2027-02-01"
     workbook["水庫參數"]["F6"] = None
-    workbook["水庫參數"]["G7"] = None
     raw = _workbook_bytes(workbook)
-    candidate = _candidate(raw)
-    assert len(candidate.warnings) == 2
+    parsed = parse_annual_data_excel(raw, filename="synthetic.xlsx", baseline=baseline)
+    assert parsed.ok
+    candidate = parsed.candidate
+    assert len(candidate.warnings) == 1
     root = _root(tmp_path)
 
     with pytest.raises(AnnualDataVersionPublishError, match="明確確認") as caught:
-        _publish(root, raw, candidate=candidate)
+        _publish(root, raw, candidate=candidate, baseline=baseline)
     assert caught.value.code == "warnings_not_confirmed"
     with pytest.raises(AnnualDataVersionPublishError, match="明確確認"):
-        _publish(root, raw, candidate=candidate, warnings_confirmed=1)
+        _publish(root, raw, candidate=candidate, warnings_confirmed=1, baseline=baseline)
 
-    result = _publish(root, raw, candidate=candidate, warnings_confirmed=True)
+    result = _publish(
+        root,
+        raw,
+        candidate=candidate,
+        warnings_confirmed=True,
+        baseline=baseline,
+    )
     warnings = deserialize_json((result.version_path / "version.json").read_bytes())["confirmed_warnings"]
     assert warnings == [
         {
@@ -210,6 +244,41 @@ def test_warnings_require_confirmation_and_full_warning_records_are_saved(tmp_pa
         }
         for warning in candidate.warnings
     ]
+
+
+def test_inherited_candidate_requires_same_explicit_baseline_for_publish_revalidation(tmp_path):
+    baseline_candidate = _candidate(_workbook_bytes())
+    baseline = _current_from_candidate(baseline_candidate)
+    workbook = _filled_workbook()
+    workbook["水文Q值"]["D6"] = None
+    raw = _workbook_bytes(workbook)
+    parsed = parse_annual_data_excel(raw, filename="synthetic.xlsx", baseline=baseline)
+    assert parsed.ok
+    candidate = parsed.candidate
+
+    with pytest.raises(AnnualDataVersionPublishError, match="重新預覽") as missing:
+        _publish(_root(tmp_path / "missing"), raw, candidate=candidate)
+    assert missing.value.code == "active_baseline_unavailable"
+
+    changed_baseline = copy.deepcopy(baseline)
+    changed_baseline["hydrology"][0]["q95_cms"] += 1
+    with pytest.raises(AnnualDataVersionPublishError, match="fingerprint") as changed:
+        _publish(
+            _root(tmp_path / "changed"),
+            raw,
+            candidate=candidate,
+            baseline=changed_baseline,
+        )
+    assert changed.value.code == "reparsed_fingerprint_changed"
+
+    published = _publish(
+        _root(tmp_path / "same"),
+        raw,
+        candidate=candidate,
+        baseline=baseline,
+    )
+    parsed_bundle = validate_annual_bundle(_disk_bundle(published.version_path))
+    assert float(parsed_bundle["hydrology"][0]["q95_cms"]) == baseline["hydrology"][0]["q95_cms"]
 
 
 @pytest.mark.parametrize(

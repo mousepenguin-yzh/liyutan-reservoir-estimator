@@ -28,6 +28,7 @@ from shared_storage_schema import (
     SCHEMA_VERSION,
     deserialize_json,
     serialize_json,
+    validate_annual_bundle,
 )
 from test_shared_storage_reader import ANNUAL_ID, _build_root
 from test_shared_storage_reader import _write_bundle
@@ -243,7 +244,7 @@ def test_shared_preview_still_works_while_annual_write_flag_is_off(tmp_path, mon
 def test_invalid_annual_upload_keeps_actionable_validation_feedback(tmp_path, monkeypatch):
     root = _build_root(tmp_path)
     raw = _mutated_bytes(
-        lambda workbook: setattr(workbook["水文Q值"]["D6"], "value", None)
+        lambda workbook: setattr(workbook["水文Q值"]["D6"], "value", "非數值")
     )
     monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
     monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
@@ -262,7 +263,7 @@ def test_invalid_annual_upload_keeps_actionable_validation_feedback(tmp_path, mo
         for item in app.dataframe
         if {"代碼", "位置", "說明"} <= set(item.value.columns)
     )
-    assert "required_number_missing" in set(issues["代碼"])
+    assert "invalid_number" in set(issues["代碼"])
     assert issues["位置"].astype(str).str.contains("水文Q值").any()
     assert issues["說明"].astype(str).str.len().gt(0).all()
     assert next(button for button in app.button if button.label == "建立新版").disabled
@@ -979,7 +980,6 @@ def test_warning_candidate_requires_separate_warning_confirmation(tmp_path, monk
     raw = _mutated_bytes(
         lambda workbook: (
             setattr(workbook["水庫參數"]["F6"], "value", None),
-            setattr(workbook["水庫參數"]["G7"], "value", None),
         )
     )
     monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
@@ -1006,7 +1006,7 @@ def test_warning_candidate_requires_separate_warning_confirmation(tmp_path, monk
     assert any("逐項確認上述提醒" in checkbox.label for checkbox in app.checkbox)
 
 
-def test_warning_and_missing_difference_values_use_grouped_business_language(
+def test_changed_parameter_source_warning_uses_grouped_business_language(
     tmp_path, monkeypatch
 ):
     def clear_parameter_sources_and_notes(workbook):
@@ -1028,7 +1028,7 @@ def test_warning_and_missing_difference_values_use_grouped_business_language(
     ).run(timeout=30)
 
     assert not app.exception
-    assert "驗證完成，有 8 項資料尚未填寫" in _messages(app.warning)
+    assert "驗證完成，有 4 項資料尚未填寫" in _messages(app.warning)
     warning_frame = next(
         item.value
         for item in app.dataframe
@@ -1040,17 +1040,16 @@ def test_warning_and_missing_difference_values_use_grouped_business_language(
         "鯉魚潭最低生態放流量",
         "士林堰引水上限",
     ]
-    assert set(warning_frame["尚未填寫"]) == {"依據／來源、個別備註"}
+    assert set(warning_frame["尚未填寫"]) == {"依據／來源"}
     assert list(warning_frame["Excel 位置"]) == [
-        "水庫參數 F6、G6",
-        "水庫參數 F7、G7",
-        "水庫參數 F8、G8",
-        "水庫參數 F9、G9",
+        "水庫參數 F6",
+        "水庫參數 F7",
+        "水庫參數 F8",
+        "水庫參數 F9",
     ]
     warning_text = warning_frame.to_string(index=False)
     for machine_term in (
-        "parameter_source_missing",
-        "parameter_note_missing",
+        "parameter_changed_source_missing",
         "max_capacity_10k_ton",
     ):
         assert machine_term not in warning_text
@@ -1072,9 +1071,102 @@ def test_warning_and_missing_difference_values_use_grouped_business_language(
     technical_codes = next(
         item.value for item in technical.dataframe if "代碼" in item.value.columns
     )
-    assert {"parameter_source_missing", "parameter_note_missing"} <= set(
-        technical_codes["代碼"]
+    assert set(technical_codes["代碼"]) == {"parameter_changed_source_missing"}
+
+
+def test_inherited_values_have_business_summary_details_and_resolved_difference(
+    tmp_path, monkeypatch
+):
+    def leave_cells_blank(workbook):
+        workbook["水文Q值"]["D6"] = None
+        workbook["水文Q值"]["D7"] = None
+        workbook["年度基準出流"]["D6"] = None
+
+    root = _build_root(tmp_path)
+    raw = _mutated_bytes(leave_cells_blank)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    monkeypatch.delenv(ENABLE_ANNUAL_DATA_WRITES_ENV, raising=False)
+
+    app = _run_app()
+    app = _annual_uploader(app).upload(
+        "inherited.xlsx",
+        raw,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ).run(timeout=30)
+
+    assert not app.exception
+    assert "本次共有 3 個欄位沿用目前系統基準資料" in _messages(app.info)
+    metric_values = {(item.label, item.value) for item in app.metric}
+    assert ("水文 Q 值", "2 項") in metric_values
+    assert ("年度基準出流", "1 項") in metric_values
+    inherited_frame = next(
+        item.value
+        for item in app.dataframe
+        if {"資料區", "旬別", "項目／欄位", "沿用值"} <= set(item.value.columns)
     )
+    assert list(inherited_frame["旬別"]) == ["01-上旬", "01-中旬", "01-上旬"]
+    assert list(inherited_frame["項目／欄位"]) == [
+        "Q95（cms）",
+        "Q95（cms）",
+        "上灌區需求（cms）",
+    ]
+    assert list(inherited_frame["沿用值"]) == ["1.1", "1.1", "2.7"]
+    visible = inherited_frame.to_string(index=False)
+    for machine_term in (
+        "q95_cms",
+        "upstream_irrigation_cms",
+    ):
+        assert machine_term not in visible
+
+
+def test_inherited_preview_and_publish_save_the_same_resolved_complete_values(
+    tmp_path, monkeypatch
+):
+    def leave_cells_blank(workbook):
+        workbook["水文Q值"]["D6"] = None
+        workbook["年度基準出流"]["D6"] = None
+
+    root = _build_root(tmp_path)
+    raw = _mutated_bytes(leave_cells_blank)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_ANNUAL_DATA_WRITES_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+
+    app = _run_app()
+    app = _annual_uploader(app).upload(
+        "inherited-publish.xlsx",
+        raw,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ).run(timeout=30)
+    _set_widget_value(app.text_input, "人工填報操作人", "年度維護測試人")
+    _set_widget_value(app.text_area, "建立新版備註", "確認沿用值完整保存")
+    _set_widget_value(
+        app.checkbox,
+        "我已確認上述內容與差異，建立新版；建立後尚不會立即套用。",
+        True,
+    )
+    app = app.run(timeout=30)
+    create = next(button for button in app.button if button.label == "建立新版" and not button.disabled)
+    app = create.click().run(timeout=30)
+
+    assert not app.exception
+    pending = app.session_state.annual_pending_published_version
+    version_path = root / "annual-data" / "versions" / pending["version_id"]
+    bundle = {
+        item.relative_to(version_path).as_posix(): item.read_bytes()
+        for item in version_path.rglob("*")
+        if item.is_file()
+    }
+    validated = validate_annual_bundle(bundle)
+    assert float(validated["hydrology"][0]["q95_cms"]) == 1.1
+    assert float(validated["outflow_demand"][0]["upstream_irrigation_cms"]) == 2.7
+    assert validated["source_excel"] == {
+        "original_filename": "inherited-publish.xlsx",
+        "sha256": pending["source_sha256"],
+    }
+    assert bundle["source/original.xlsx"] == raw
+
 
 
 def test_source_filename_change_cannot_reuse_prior_confirmation(tmp_path, monkeypatch):
