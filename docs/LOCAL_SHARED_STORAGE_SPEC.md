@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅。2-4 功能實作完成；公司 SMB 實機 acceptance 留在 2-8，2-5 正式推估保存尚未開始。
+狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅。2-4 功能實作完成；公司 SMB 實機 acceptance 留在 2-8，2-5 正式推估保存尚未開始。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -155,7 +155,7 @@ U:\經管科\水庫庫容推估系統\鯉魚潭\
   "created_at": "2026-12-15T02:30:00Z",
   "operator_display_name": "人工填報名稱",
   "note": "年度資料更新原因與範圍",
-  "template_version": "2-4A.1",
+  "template_version": "2-4D.1",
   "reservoir_id": "liyutan",
   "reservoir_name": "鯉魚潭水庫",
   "actual_data_cutoff_period": "<固定旬鍵>",
@@ -191,6 +191,8 @@ U:\經管科\水庫庫容推估系統\鯉魚潭\
 2-4B candidate 另保存解析當時使用的原始 filename，作為 provenance 而不納入業務內容 fingerprint；單純改名不改變 fingerprint。2-4C1 發布時仍必須核對呼叫端 filename 與 candidate 記錄完全一致，缺少記錄或名稱變更都要拒絕發布並要求重新預覽／確認；`version.json.source_excel.original_filename` 只能取自通過核對的 candidate provenance。
 
 `parameter_metadata` 必須恰好包含四個固定參數代碼，每項恰好保存 `effective_start_date`、`source_reference` 與 `note`；日期採 `YYYY-MM-DD`，後兩者為非空白文字或 `null`。`confirmed_warnings` 保存使用者已確認的完整 warning 結構，而非只有布林值；沒有 warning 時為空陣列。`source_references` 依水文來源、年度基準出流來源及各已填參數來源的順序穩定去重。
+
+2-4D 的 Excel template version 固定升為 `2-4D.1`；舊版會明確拒絕，不以新空白語意解析。Excel 中 Q 值與年度基準出流的空白，只能從目前啟用年度版本的同旬同欄位解決；不遞迴搜尋 historical versions，無 active baseline 或缺少對應值即報錯。水庫參數數值必填；數值未變時日期可沿用目前版本，數值變更時日期必填；來源與備註空白保存為 `null`，不沿用舊文字，且變更數值但未填來源會產生須人工確認的 warning。`overall_note` 空白同樣保存為 `null`。candidate fingerprint、差異比較與正式 artifacts 一律使用 resolved 完整值，原始 Excel bytes 則原樣保存，因此正式版本讀取不依賴舊版；解析時使用的 baseline version ID 以 `annual-baseline-version:<id>` 記入既有 `source_references` metadata。這項收斂不更動 shared-storage schema、current／revision、audit、lock、activation、repair 或 recovery semantics。
 
 ### 5.3 `hydrology_q.csv`
 

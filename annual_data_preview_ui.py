@@ -82,8 +82,11 @@ SECTION_FIELD_LABELS = {
     ),
 }
 WARNING_MISSING_LABELS = {
-    "parameter_source_missing": "依據／來源",
-    "parameter_note_missing": "個別備註",
+    "parameter_changed_source_missing": "依據／來源",
+}
+INHERITED_SECTION_LABELS = {
+    "hydrology": "水文 Q 值",
+    "outflow": "年度基準出流",
 }
 
 
@@ -191,6 +194,33 @@ def _render_warning_summary(warnings) -> None:
         hide_index=True,
         width="stretch",
     )
+
+
+def _render_inherited_values(candidate: AnnualDataCandidate) -> None:
+    inherited = candidate.inherited_values
+    if not inherited:
+        return
+    section_counts = {
+        section: sum(item.section == section for item in inherited)
+        for section in INHERITED_SECTION_LABELS
+    }
+    st.info(f"本次共有 {len(inherited)} 個欄位沿用目前系統基準資料。")
+    columns = st.columns(2)
+    for column, section in zip(columns, INHERITED_SECTION_LABELS, strict=True):
+        column.metric(INHERITED_SECTION_LABELS[section], f"{section_counts[section]} 項")
+    with st.expander("查看沿用資料明細", expanded=False):
+        rows = []
+        for item in inherited:
+            ui_section = "水文Q值" if item.section == "hydrology" else "年度基準出流"
+            rows.append(
+                {
+                    "資料區": INHERITED_SECTION_LABELS[item.section],
+                    "旬別": item.period_key,
+                    "項目／欄位": SECTION_FIELD_LABELS[ui_section].get(item.field, item.field),
+                    "沿用值": _display_value(item.value),
+                }
+            )
+        st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
 def render_annual_data_diagnostics(
@@ -411,6 +441,8 @@ def _candidate_from_version_data(data: dict) -> AnnualDataCandidate:
         outflow_demand=tuple(data["outflow_demand"]),
         reservoir_parameters=dict(data["reservoir_parameters"]),
         parameter_metadata=dict(version["parameter_metadata"]),
+        baseline_version_id=None,
+        inherited_values=(),
         source_filename=version["source_excel"]["original_filename"],
         source_sha256=version["source_excel"]["sha256"],
         fingerprint=version["candidate_fingerprint"],
@@ -1043,6 +1075,7 @@ def _render_publish_workflow(
     difference,
     capability: AnnualDataWriteCapability,
     service: AnnualDataMaintenanceService,
+    baseline,
 ) -> None:
     st.divider()
     st.subheader("建立新版")
@@ -1094,6 +1127,7 @@ def _render_publish_workflow(
                 note=note,
                 confirmed_candidate_fingerprint=candidate.fingerprint,
                 warnings_confirmed=warnings_confirmed,
+                baseline=baseline,
             )
         except AnnualDataVersionPublishError as exc:
             st.error("建立新版失敗，未變更系統目前使用的年度資料。")
@@ -1322,7 +1356,16 @@ def render_annual_data_maintenance(
             st.button("建立新版", disabled=True, key="annual_create_no_upload")
         else:
             source_bytes = uploaded.getvalue()
-            parsed = parse_annual_data_excel(source_bytes, filename=uploaded.name)
+            baseline_state, baseline, message, message_kind = _baseline_context(
+                result,
+                shared_mode_enabled=shared_mode_enabled,
+                diagnostics=diagnostics,
+            )
+            parsed = parse_annual_data_excel(
+                source_bytes,
+                filename=uploaded.name,
+                baseline=baseline if baseline_state == "available" else None,
+            )
             st.caption(f"上傳檔案：{uploaded.name}")
             with st.expander("上傳檔案技術驗證資訊（進階）", expanded=False):
                 st.metric("原始檔案 SHA-256", parsed.source_sha256 or "無法計算")
@@ -1342,6 +1385,8 @@ def render_annual_data_maintenance(
                         width="stretch",
                     )
             if parsed.errors:
+                if message:
+                    getattr(st, message_kind)(message)
                 st.error("Excel 驗證失敗；未建立候選資料，請依下列位置人工修正原檔。")
                 st.dataframe(
                     pd.DataFrame(
@@ -1374,6 +1419,8 @@ def render_annual_data_maintenance(
                     technical_columns[0].metric("水文／出流旬數", "36／36")
                     technical_columns[1].metric("Q欄／參數數", "19／4")
                     technical_columns[2].metric("候選 fingerprint", candidate.fingerprint)
+                    if candidate.baseline_version_id:
+                        st.caption(f"沿用基準 version：{candidate.baseline_version_id}")
                 st.markdown(
                     f"年度基準出流來源分界：**{candidate.actual_data_cutoff_period} 以前（含該旬）**"
                     "使用本年度實際資料；其後使用前一年度相同旬別資料。"
@@ -1387,13 +1434,9 @@ def render_annual_data_maintenance(
                     _render_warning_summary(parsed.warnings)
                 else:
                     st.caption("沒有驗證提醒。")
+                _render_inherited_values(candidate)
 
                 st.subheader("檢查差異")
-                baseline_state, baseline, message, message_kind = _baseline_context(
-                    result,
-                    shared_mode_enabled=shared_mode_enabled,
-                    diagnostics=diagnostics,
-                )
                 if message:
                     getattr(st, message_kind)(message)
                 if baseline_state == "available":
@@ -1419,6 +1462,7 @@ def render_annual_data_maintenance(
                     difference,
                     capability,
                     service,
+                    baseline if baseline_state == "available" else None,
                 )
 
         _render_activation_workflow(result, capability, service, current_candidate)
