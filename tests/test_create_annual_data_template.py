@@ -5,11 +5,15 @@ from openpyxl import load_workbook
 
 from scripts.create_annual_data_template import (
     CANONICAL_PERIODS,
+    HYDROLOGY_BUSINESS_CELLS,
+    OUTFLOW_BUSINESS_CELLS,
+    PARAMETER_BUSINESS_CELLS,
     Q_CODES_DESCENDING,
     RESERVOIR_ID,
     RESERVOIR_NAME,
     SHEET_NAMES,
     TEMPLATE_VERSION,
+    VERSION_BUSINESS_CELLS,
     build_workbook,
     main,
     write_migrated_template,
@@ -206,7 +210,95 @@ def test_migration_uses_new_canonical_structure_and_copies_only_business_values(
     ]
     assert "沿用目前系統基準資料" in migrated["水文Q值"]["D5"].comment.text
     assert len(migrated["水文Q值"].data_validations.dataValidation) == 1
+
+    prior = load_workbook(source, data_only=False)
+    for sheet_name, cells in (
+        ("版本資訊", VERSION_BUSINESS_CELLS),
+        ("水文Q值", HYDROLOGY_BUSINESS_CELLS),
+        ("年度基準出流", OUTFLOW_BUSINESS_CELLS),
+        ("水庫參數", PARAMETER_BUSINESS_CELLS),
+    ):
+        assert [migrated[sheet_name][cell].value for cell in cells] == [
+            prior[sheet_name][cell].value for cell in cells
+        ]
+    prior.close()
     migrated.close()
+
+
+def _swap_fixed_period_rows(workbook, sheet_name: str, first_row: int, second_row: int) -> None:
+    ws = workbook[sheet_name]
+    first = [ws.cell(first_row, column).value for column in range(1, 4)]
+    second = [ws.cell(second_row, column).value for column in range(1, 4)]
+    for column, value in enumerate(second, 1):
+        ws.cell(first_row, column, value)
+    for column, value in enumerate(first, 1):
+        ws.cell(second_row, column, value)
+
+
+def test_migration_rejects_swapped_hydrology_period_rows_without_output(tmp_path):
+    source = tmp_path / "swapped-hydrology.xlsx"
+    output = tmp_path / "migrated.xlsx"
+    old = build_workbook()
+    _swap_fixed_period_rows(old, "水文Q值", 6, 7)
+    old.save(source)
+    old.close()
+
+    with pytest.raises(ValueError, match="水文Q值.*固定旬別"):
+        write_migrated_template(source, output)
+
+    assert not output.exists()
+
+
+def test_migration_rejects_swapped_outflow_period_rows_without_output(tmp_path):
+    source = tmp_path / "swapped-outflow.xlsx"
+    output = tmp_path / "migrated.xlsx"
+    old = build_workbook()
+    _swap_fixed_period_rows(old, "年度基準出流", 6, 7)
+    old.save(source)
+    old.close()
+
+    with pytest.raises(ValueError, match="年度基準出流.*固定旬別"):
+        write_migrated_template(source, output)
+
+    assert not output.exists()
+
+
+def test_migration_rejects_modified_parameter_machine_header_without_output(tmp_path):
+    source = tmp_path / "modified-parameter-header.xlsx"
+    output = tmp_path / "migrated.xlsx"
+    old = build_workbook()
+    old["水庫參數"]["F5"] = "changed_source_header"
+    old.save(source)
+    old.close()
+
+    with pytest.raises(ValueError, match="水庫參數欄位不符"):
+        write_migrated_template(source, output)
+
+    assert not output.exists()
+
+
+@pytest.mark.parametrize(
+    ("cell", "changed_value"),
+    (
+        ("A6", "changed_parameter_code"),
+        ("B7", "變更後的參數名稱"),
+        ("D8", "不同單位"),
+    ),
+)
+def test_migration_rejects_modified_parameter_identity_layout_without_output(
+    tmp_path, cell, changed_value
+):
+    source = tmp_path / f"modified-parameter-layout-{cell}.xlsx"
+    output = tmp_path / "migrated.xlsx"
+    old = build_workbook()
+    old["水庫參數"][cell] = changed_value
+    old.save(source)
+    old.close()
+
+    with pytest.raises(ValueError, match="水庫參數固定代碼、名稱或單位不符"):
+        write_migrated_template(source, output)
+
+    assert not output.exists()
 
 
 def test_missing_output_argument_writes_nothing(tmp_path, monkeypatch):

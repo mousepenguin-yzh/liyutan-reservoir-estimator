@@ -30,6 +30,30 @@ CANONICAL_PERIODS = tuple(
     for period in PERIOD_NAMES
 )
 Q_CODES_DESCENDING = tuple(f"q{quantile:02d}_cms" for quantile in range(95, 0, -5))
+HYDROLOGY_MACHINE_HEADERS = ("period_key", "month", "period", *Q_CODES_DESCENDING)
+OUTFLOW_MACHINE_HEADERS = (
+    "period_key",
+    "month",
+    "period",
+    "upstream_irrigation_cms",
+    "downstream_irrigation_cms",
+    "public_water_10k_ton_per_day",
+)
+PARAMETER_MACHINE_HEADERS = (
+    "parameter_code",
+    "parameter_name",
+    "value",
+    "unit",
+    "effective_start_date",
+    "source_reference",
+    "note",
+)
+PARAMETER_DEFINITIONS = (
+    ("max_capacity_10k_ton", "滿庫容量", "萬噸"),
+    ("shilin_ecological_flow_cms", "士林堰生態流量", "cms"),
+    ("liyutan_ecological_release_cms", "鯉魚潭最低生態放流量", "cms"),
+    ("shilin_diversion_limit_cms", "士林堰引水上限", "cms"),
+)
 VERSION_BUSINESS_CELLS = tuple(f"C{row}" for row in range(8, 13))
 HYDROLOGY_BUSINESS_CELLS = tuple(
     f"{get_column_letter(column)}{row}"
@@ -222,7 +246,7 @@ def _build_hydrology_sheet(wb: Workbook) -> None:
     chinese_headers = ["固定旬鍵", "月份", "旬別"] + [
         f"Q{quantile}（cms）" for quantile in range(95, 0, -5)
     ]
-    _set_headers(ws, chinese_headers, ["period_key", "month", "period", *Q_CODES_DESCENDING])
+    _set_headers(ws, chinese_headers, list(HYDROLOGY_MACHINE_HEADERS))
 
     for row, (period_key, month, period) in enumerate(CANONICAL_PERIODS, 6):
         ws.cell(row, 1, period_key)
@@ -292,15 +316,7 @@ def _build_outflow_sheet(wb: Workbook) -> None:
         "下灌區需求（cms）",
         "公共出水（萬噸／日）",
     ]
-    machine_headers = [
-        "period_key",
-        "month",
-        "period",
-        "upstream_irrigation_cms",
-        "downstream_irrigation_cms",
-        "public_water_10k_ton_per_day",
-    ]
-    _set_headers(ws, chinese_headers, machine_headers)
+    _set_headers(ws, chinese_headers, list(OUTFLOW_MACHINE_HEADERS))
     for row, (period_key, month, period) in enumerate(CANONICAL_PERIODS, 6):
         ws.cell(row, 1, period_key)
         ws.cell(row, 2, month)
@@ -342,23 +358,8 @@ def _build_parameters_sheet(wb: Workbook) -> None:
         warning=True,
     )
     chinese_headers = ["參數代碼", "中文名稱", "數值", "單位", "適用起日", "依據／來源", "備註"]
-    machine_headers = [
-        "parameter_code",
-        "parameter_name",
-        "value",
-        "unit",
-        "effective_start_date",
-        "source_reference",
-        "note",
-    ]
-    _set_headers(ws, chinese_headers, machine_headers)
-    parameters = (
-        ("max_capacity_10k_ton", "滿庫容量", "萬噸"),
-        ("shilin_ecological_flow_cms", "士林堰生態流量", "cms"),
-        ("liyutan_ecological_release_cms", "鯉魚潭最低生態放流量", "cms"),
-        ("shilin_diversion_limit_cms", "士林堰引水上限", "cms"),
-    )
-    for row, (code, name, unit) in enumerate(parameters, 6):
+    _set_headers(ws, chinese_headers, list(PARAMETER_MACHINE_HEADERS))
+    for row, (code, name, unit) in enumerate(PARAMETER_DEFINITIONS, 6):
         for column, value in enumerate((code, name, None, unit, None, None, None), 1):
             ws.cell(row, column, value).fill = FIXED_FILL if column in (1, 2, 4) else INPUT_FILL
         ws.cell(row, 3).number_format = "0.###"
@@ -415,6 +416,28 @@ def build_workbook() -> Workbook:
     return workbook
 
 
+def _validate_period_row_identity(prior: Workbook, sheet_name: str) -> None:
+    actual_periods = tuple(
+        tuple(prior[sheet_name].cell(row, column).value for column in range(1, 4))
+        for row in range(6, 42)
+    )
+    if actual_periods == CANONICAL_PERIODS:
+        return
+
+    mismatch_index = next(
+        index
+        for index, (actual, expected) in enumerate(zip(actual_periods, CANONICAL_PERIODS))
+        if actual != expected
+    )
+    row = mismatch_index + 6
+    expected = CANONICAL_PERIODS[mismatch_index]
+    actual = actual_periods[mismatch_index]
+    raise ValueError(
+        f"來源活頁簿的「{sheet_name}」第 {row} 列固定旬別不符"
+        f"（預期 {expected!r}，實際 {actual!r}），拒絕自動遷移。"
+    )
+
+
 def build_migrated_workbook(source: str | Path) -> Workbook:
     """Build the current canonical template and copy only prior business inputs."""
     source_path = Path(source).expanduser()
@@ -439,30 +462,35 @@ def build_migrated_workbook(source: str | Path) -> Workbook:
         )
         if actual_version_codes != expected_version_codes:
             raise ValueError("來源活頁簿的版本資訊欄位代碼不符，拒絕自動遷移。")
-        if tuple(prior["水文Q值"].cell(5, column).value for column in range(1, 23)) != (
-            "period_key",
-            "month",
-            "period",
-            *Q_CODES_DESCENDING,
-        ):
+        if tuple(
+            prior["水文Q值"].cell(5, column).value
+            for column in range(1, len(HYDROLOGY_MACHINE_HEADERS) + 1)
+        ) != HYDROLOGY_MACHINE_HEADERS:
             raise ValueError("來源活頁簿的水文 Q 值欄位不符，拒絕自動遷移。")
-        if tuple(prior["年度基準出流"].cell(5, column).value for column in range(1, 7)) != (
-            "period_key",
-            "month",
-            "period",
-            "upstream_irrigation_cms",
-            "downstream_irrigation_cms",
-            "public_water_10k_ton_per_day",
-        ):
+        _validate_period_row_identity(prior, "水文Q值")
+        if tuple(
+            prior["年度基準出流"].cell(5, column).value
+            for column in range(1, len(OUTFLOW_MACHINE_HEADERS) + 1)
+        ) != OUTFLOW_MACHINE_HEADERS:
             raise ValueError("來源活頁簿的年度基準出流欄位不符，拒絕自動遷移。")
-        expected_parameter_codes = (
-            "max_capacity_10k_ton",
-            "shilin_ecological_flow_cms",
-            "liyutan_ecological_release_cms",
-            "shilin_diversion_limit_cms",
+        _validate_period_row_identity(prior, "年度基準出流")
+        if tuple(
+            prior["水庫參數"].cell(5, column).value
+            for column in range(1, len(PARAMETER_MACHINE_HEADERS) + 1)
+        ) != PARAMETER_MACHINE_HEADERS:
+            raise ValueError("來源活頁簿的水庫參數欄位不符，拒絕自動遷移。")
+        actual_parameter_layout = tuple(
+            (
+                prior["水庫參數"].cell(row, 1).value,
+                prior["水庫參數"].cell(row, 2).value,
+                prior["水庫參數"].cell(row, 4).value,
+            )
+            for row in range(6, 10)
         )
-        if tuple(prior["水庫參數"].cell(row, 1).value for row in range(6, 10)) != expected_parameter_codes:
-            raise ValueError("來源活頁簿的水庫參數代碼不符，拒絕自動遷移。")
+        if actual_parameter_layout != PARAMETER_DEFINITIONS:
+            raise ValueError(
+                "來源活頁簿的水庫參數固定代碼、名稱或單位不符，拒絕自動遷移。"
+            )
 
         migrated = build_workbook()
         for sheet_name, cells in (
