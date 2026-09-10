@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as dt
 import hashlib
+import re
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import pandas as pd
@@ -29,6 +30,13 @@ from annual_data_activation import (
     AnnualDataAlreadyCurrentError,
 )
 from annual_data_excel import (
+    HYDROLOGY_CHINESE_HEADERS,
+    HYDROLOGY_MACHINE_HEADERS,
+    OUTFLOW_CHINESE_HEADERS,
+    OUTFLOW_MACHINE_HEADERS,
+    PARAMETER_CHINESE_HEADERS,
+    PARAMETER_DEFINITIONS,
+    PARAMETER_MACHINE_HEADERS,
     PREVIEW_NOTICE,
     AnnualDataCandidate,
     compare_annual_data,
@@ -56,6 +64,27 @@ CURRENT_REPAIR_RESULT_KEY = "annual_current_repair_result"
 CURRENT_REPAIR_PARTIAL_KEY = "annual_current_repair_partial_result"
 TAIPEI_TIMEZONE_NAME = "Asia/Taipei"
 UNREADABLE_DATE_LABEL = "無法判讀"
+UNFILLED_VALUE_LABEL = "未填寫"
+NOT_APPLICABLE_DELTA_LABEL = "—"
+PARAMETER_LABELS = {code: name for code, name, _unit in PARAMETER_DEFINITIONS}
+PARAMETER_CODES_BY_EXCEL_ROW = {
+    row: code for row, (code, _name, _unit) in enumerate(PARAMETER_DEFINITIONS, start=6)
+}
+SECTION_FIELD_LABELS = {
+    "水文Q值": dict(
+        zip(HYDROLOGY_MACHINE_HEADERS, HYDROLOGY_CHINESE_HEADERS, strict=True)
+    ),
+    "年度基準出流": dict(
+        zip(OUTFLOW_MACHINE_HEADERS, OUTFLOW_CHINESE_HEADERS, strict=True)
+    ),
+    "水庫參數": dict(
+        zip(PARAMETER_MACHINE_HEADERS, PARAMETER_CHINESE_HEADERS, strict=True)
+    ),
+}
+WARNING_MISSING_LABELS = {
+    "parameter_source_missing": "依據／來源",
+    "parameter_note_missing": "個別備註",
+}
 
 
 def format_annual_created_date(created_at: object) -> str:
@@ -72,6 +101,96 @@ def format_annual_created_date(created_at: object) -> str:
         return timestamp.astimezone(ZoneInfo(TAIPEI_TIMEZONE_NAME)).date().isoformat()
     except (OverflowError, ValueError, ZoneInfoNotFoundError):
         return UNREADABLE_DATE_LABEL
+
+
+def _display_value(value: object, *, delta: bool = False) -> str:
+    if value is None:
+        return NOT_APPLICABLE_DELTA_LABEL if delta else UNFILLED_VALUE_LABEL
+    try:
+        if bool(pd.isna(value)):
+            return NOT_APPLICABLE_DELTA_LABEL if delta else UNFILLED_VALUE_LABEL
+    except (TypeError, ValueError):
+        pass
+    if isinstance(value, float) and value.is_integer():
+        return str(int(value))
+    return str(value)
+
+
+def _business_difference_rows(
+    difference,
+    section: str,
+    *,
+    changed_only: bool,
+    candidate_only: bool = False,
+) -> list[dict[str, object]]:
+    field_labels = SECTION_FIELD_LABELS.get(section, {})
+    rows = []
+    for row in difference.rows(section, changed_only=changed_only):
+        item = PARAMETER_LABELS.get(row["資料鍵"], row["資料鍵"])
+        content = field_labels.get(row["欄位"], row["欄位"])
+        if candidate_only:
+            rows.append(
+                {
+                    "項目": item,
+                    "內容": content,
+                    "候選值": _display_value(row["新值"]),
+                }
+            )
+            continue
+        rows.append(
+            {
+                "項目": item,
+                "內容": content,
+                "舊值": _display_value(row["舊值"]),
+                "新值": _display_value(row["新值"]),
+                "差異": _display_value(row["差值"], delta=True),
+            }
+        )
+    return rows
+
+
+def _warning_rows_for_ui(warnings) -> list[dict[str, str]]:
+    grouped: dict[tuple[str, str | None], dict[str, list[str]]] = {}
+    for issue in warnings:
+        row_match = re.search(r"\d+", issue.cell or "")
+        parameter_code = (
+            PARAMETER_CODES_BY_EXCEL_ROW.get(int(row_match.group()))
+            if issue.sheet == "水庫參數"
+            and issue.code in WARNING_MISSING_LABELS
+            and row_match
+            else None
+        )
+        item = PARAMETER_LABELS.get(parameter_code, issue.sheet or "年度資料")
+        key = (item, issue.sheet)
+        group = grouped.setdefault(key, {"missing": [], "cells": []})
+        missing = WARNING_MISSING_LABELS.get(issue.code, "需要確認的資料")
+        if missing not in group["missing"]:
+            group["missing"].append(missing)
+        cell = issue.cell or "請查看原始檔案"
+        if cell not in group["cells"]:
+            group["cells"].append(cell)
+    return [
+        {
+            "項目": item,
+            "尚未填寫": "、".join(group["missing"]),
+            "Excel 位置": (
+                f"{sheet} {'、'.join(group['cells'])}" if sheet else "、".join(group["cells"])
+            ),
+        }
+        for (item, sheet), group in grouped.items()
+    ]
+
+
+def _render_warning_summary(warnings) -> None:
+    st.warning(
+        f"驗證完成，有 {len(warnings)} 項資料尚未填寫。\n\n"
+        "這些欄位不影響預覽，但建立新版前建議確認。"
+    )
+    st.dataframe(
+        pd.DataFrame(_warning_rows_for_ui(warnings)),
+        hide_index=True,
+        width="stretch",
+    )
 
 
 def render_annual_data_diagnostics(
@@ -859,10 +978,12 @@ def _render_candidate_preview(candidate, *, heading: str) -> None:
         column.metric(labels[section], f"{preview.section_totals[section]} 項")
     for section in ("基本資訊", "水文Q值", "年度基準出流", "水庫參數"):
         with st.expander(f"{labels[section]}候選內容", expanded=False):
-            rows = [
-                {"資料鍵": row["資料鍵"], "欄位": row["欄位"], "候選值": row["新值"]}
-                for row in preview.rows(section, changed_only=False)
-            ]
+            rows = _business_difference_rows(
+                preview,
+                section,
+                changed_only=False,
+                candidate_only=True,
+            )
             st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
 
 
@@ -892,7 +1013,11 @@ def _render_difference(difference, *, heading: str, checkbox_key: str | None = N
         )
     for section in ("基本資訊", "水文Q值", "年度基準出流", "水庫參數"):
         with st.expander(f"{labels[section]}差異明細", expanded=False):
-            rows = difference.rows(section, changed_only=not show_all)
+            rows = _business_difference_rows(
+                difference,
+                section,
+                changed_only=not show_all,
+            )
             if rows:
                 st.dataframe(pd.DataFrame(rows), hide_index=True, width="stretch")
             else:
@@ -920,7 +1045,7 @@ def _render_publish_workflow(
     service: AnnualDataMaintenanceService,
 ) -> None:
     st.divider()
-    st.subheader("3. 建立新版")
+    st.subheader("建立新版")
     st.warning("建立新版後，尚不會立即套用到系統。")
     if st.session_state.get(RECOVERY_REQUIRED_KEY):
         st.warning("上次年度資料操作需要維護人員確認；處理完成前不能建立或啟用新版。")
@@ -936,19 +1061,6 @@ def _render_publish_workflow(
         facts = st.columns(2)
         facts[0].metric("候選 fingerprint", candidate.fingerprint)
         facts[1].metric("來源 SHA-256", parsed.source_sha256)
-    if parsed.warnings:
-        st.markdown("提醒明細：")
-        st.dataframe(
-            pd.DataFrame(
-                [
-                    {"代碼": item.code, "位置": item.location, "說明": item.message}
-                    for item in parsed.warnings
-                ]
-            ),
-            hide_index=True,
-            width="stretch",
-        )
-
     identity = hashlib.sha256(
         f"{candidate.fingerprint}\0{candidate.source_sha256}\0{source_filename}".encode("utf-8")
     ).hexdigest()
@@ -1031,13 +1143,10 @@ def _render_activation_workflow(
 ) -> None:
     pending = st.session_state.get(PENDING_VERSION_KEY)
     if not pending:
-        st.subheader("4. 啟用新版")
-        st.button("啟用新版", disabled=True, key="annual_activate_no_pending")
-        st.caption("尚未建立可啟用的新版。")
         return
 
     st.divider()
-    st.subheader("4. 啟用新版")
+    st.subheader("啟用新版")
     target_id = pending["version_id"]
     st.info(
         "啟用後，之後新開啟的推估會使用這份年度資料。"
@@ -1189,7 +1298,7 @@ def render_annual_data_maintenance(
     )
     service = service or AnnualDataMaintenanceService()
     with st.expander("🧾 年度資料維護", expanded=False):
-        st.subheader("1. 上傳年度資料")
+        st.subheader("上傳年度資料")
         st.info(
             "這個功能只在初次建立或日後更新系統基準資料時使用；"
             "一般每旬推估不需要重新填寫或上傳年度 Excel。"
@@ -1217,6 +1326,21 @@ def render_annual_data_maintenance(
             st.caption(f"上傳檔案：{uploaded.name}")
             with st.expander("上傳檔案技術驗證資訊（進階）", expanded=False):
                 st.metric("原始檔案 SHA-256", parsed.source_sha256 or "無法計算")
+                if parsed.warnings:
+                    st.dataframe(
+                        pd.DataFrame(
+                            [
+                                {
+                                    "代碼": issue.code,
+                                    "位置": issue.location,
+                                    "說明": issue.message,
+                                }
+                                for issue in parsed.warnings
+                            ]
+                        ),
+                        hide_index=True,
+                        width="stretch",
+                    )
             if parsed.errors:
                 st.error("Excel 驗證失敗；未建立候選資料，請依下列位置人工修正原檔。")
                 st.dataframe(
@@ -1260,21 +1384,11 @@ def render_annual_data_maintenance(
                     f"- 整體備註：{candidate.overall_note or '未填寫'}"
                 )
                 if parsed.warnings:
-                    st.warning(f"驗證完成，但有 {len(parsed.warnings)} 項提醒；建立新版前請逐項確認。")
-                    st.dataframe(
-                        pd.DataFrame(
-                            [
-                                {"代碼": issue.code, "位置": issue.location, "說明": issue.message}
-                                for issue in parsed.warnings
-                            ]
-                        ),
-                        hide_index=True,
-                        width="stretch",
-                    )
+                    _render_warning_summary(parsed.warnings)
                 else:
                     st.caption("沒有驗證提醒。")
 
-                st.subheader("2. 檢查差異")
+                st.subheader("檢查差異")
                 baseline_state, baseline, message, message_kind = _baseline_context(
                     result,
                     shared_mode_enabled=shared_mode_enabled,

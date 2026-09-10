@@ -172,6 +172,9 @@ def test_annual_write_capability_uses_separate_default_off_flag(tmp_path, monkey
     assert app.session_state.formal_write_available is False
     assert app.session_state.formal_operations_available is False
     assert not (root / "staging").exists()
+    maintenance = _expander(app, "🧾 年度資料維護")
+    assert [item.value for item in maintenance.subheader] == ["上傳年度資料"]
+    assert not any(button.label == "啟用新版" for button in maintenance.button)
 
 
 def test_shared_preview_still_works_while_annual_write_flag_is_off(tmp_path, monkeypatch):
@@ -190,21 +193,49 @@ def test_shared_preview_still_works_while_annual_write_flag_is_off(tmp_path, mon
     assert "年度資料驗證成功" in _messages(app.success)
     maintenance = _expander(app, "🧾 年度資料維護")
     assert {item.value for item in maintenance.subheader} >= {
-        "1. 上傳年度資料",
-        "2. 檢查差異",
-        "3. 建立新版",
-        "4. 啟用新版",
+        "上傳年度資料",
+        "檢查差異",
+        "建立新版",
     }
+    assert not any(item.value.startswith(("1. ", "2. ", "3. ", "4. ")) for item in maintenance.subheader)
     assert {"水文資料", "出流資料", "水庫參數"} <= {
         metric.label for metric in maintenance.metric
     }
+    show_all = next(
+        item
+        for item in maintenance.checkbox
+        if item.label == "顯示完整資料（取消勾選時只顯示有變動項目）"
+    )
+    show_all.set_value(True)
+    app = app.run(timeout=30)
+    maintenance = _expander(app, "🧾 年度資料維護")
+    detail_frames = [
+        item.value
+        for item in maintenance.dataframe
+        if {"項目", "內容", "舊值", "新值", "差異"} <= set(item.value.columns)
+    ]
+    assert len(detail_frames) == 4
+    detail_items = {value for frame in detail_frames for value in frame["項目"]}
+    detail_fields = {value for frame in detail_frames for value in frame["內容"]}
+    assert "滿庫容量" in detail_items
+    assert {"數值", "適用起日", "依據／來源"} <= detail_fields
+    assert "Q95（cms）" in detail_fields
+    assert "上灌區需求（cms）" in detail_fields
+    assert "—" in {value for frame in detail_frames for value in frame["差異"]}
+    machine_terms = {
+        "max_capacity_10k_ton",
+        "value",
+        "effective_start_date",
+        "source_reference",
+    }
+    assert machine_terms.isdisjoint(detail_items | detail_fields)
     technical = _expander(app, "上傳檔案技術驗證資訊（進階）")
     assert technical.proto.expanded is False
     assert "原始檔案 SHA-256" in {metric.label for metric in technical.metric}
     assert app.session_state.annual_data_write_available is False
     create = next(button for button in app.button if button.label == "建立新版")
-    activate = next(button for button in app.button if button.label == "啟用新版")
-    assert create.disabled and activate.disabled
+    assert create.disabled
+    assert not any(button.label == "啟用新版" for button in app.button)
     assert (root / "annual-data" / "current.json").read_bytes() == current_before
     assert not (root / "staging").exists()
 
@@ -316,7 +347,7 @@ def test_filesystem_audit_missing_shows_recovery_and_disables_create_activate(
     assert "找不到對應此次 current transition" in _messages(app.error)
     assert app.session_state.annual_data_write_available is False
     assert next(button for button in app.button if button.label == "建立新版").disabled
-    assert next(button for button in app.button if button.label == "啟用新版").disabled
+    assert not any(button.label == "啟用新版" for button in app.button)
 
 
 def test_recovery_action_is_visible_but_disabled_when_recovery_flag_is_off(
@@ -890,6 +921,9 @@ def test_create_then_activate_are_independent_actions_and_workspace_is_not_repla
         _workbook_bytes(),
         "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     ).run(timeout=30)
+    maintenance = _expander(app, "🧾 年度資料維護")
+    assert "啟用新版" not in {item.value for item in maintenance.subheader}
+    assert not any(button.label == "啟用新版" for button in maintenance.button)
     _set_widget_value(app.text_input, "人工填報操作人", "年度維護測試人")
     _set_widget_value(app.text_area, "建立新版備註", "建立後必須保持未啟用")
     _set_widget_value(
@@ -907,6 +941,9 @@ def test_create_then_activate_are_independent_actions_and_workspace_is_not_repla
     assert (root / "annual-data" / "versions" / version_id).is_dir()
     assert (root / "annual-data" / "current.json").read_bytes() == current_before
     assert "新版已建立，但尚未套用" in _messages(app.success)
+    maintenance = _expander(app, "🧾 年度資料維護")
+    assert "啟用新版" in {item.value for item in maintenance.subheader}
+    assert any(button.label == "啟用新版" for button in maintenance.button)
 
     _set_widget_value(
         app.text_area,
@@ -967,6 +1004,77 @@ def test_warning_candidate_requires_separate_warning_confirmation(tmp_path, monk
     assert create.disabled
     assert not (root / "staging").exists()
     assert any("逐項確認上述提醒" in checkbox.label for checkbox in app.checkbox)
+
+
+def test_warning_and_missing_difference_values_use_grouped_business_language(
+    tmp_path, monkeypatch
+):
+    def clear_parameter_sources_and_notes(workbook):
+        for row in range(6, 10):
+            workbook["水庫參數"].cell(row, 6).value = None
+            workbook["水庫參數"].cell(row, 7).value = None
+
+    root = _build_root(tmp_path)
+    raw = _mutated_bytes(clear_parameter_sources_and_notes)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    monkeypatch.delenv(ENABLE_ANNUAL_DATA_WRITES_ENV, raising=False)
+
+    app = _run_app()
+    app = _annual_uploader(app).upload(
+        "warnings.xlsx",
+        raw,
+        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ).run(timeout=30)
+
+    assert not app.exception
+    assert "驗證完成，有 8 項資料尚未填寫" in _messages(app.warning)
+    warning_frame = next(
+        item.value
+        for item in app.dataframe
+        if {"項目", "尚未填寫", "Excel 位置"} <= set(item.value.columns)
+    )
+    assert list(warning_frame["項目"]) == [
+        "滿庫容量",
+        "士林堰生態流量",
+        "鯉魚潭最低生態放流量",
+        "士林堰引水上限",
+    ]
+    assert set(warning_frame["尚未填寫"]) == {"依據／來源、個別備註"}
+    assert list(warning_frame["Excel 位置"]) == [
+        "水庫參數 F6、G6",
+        "水庫參數 F7、G7",
+        "水庫參數 F8、G8",
+        "水庫參數 F9、G9",
+    ]
+    warning_text = warning_frame.to_string(index=False)
+    for machine_term in (
+        "parameter_source_missing",
+        "parameter_note_missing",
+        "max_capacity_10k_ton",
+    ):
+        assert machine_term not in warning_text
+
+    detail_frames = [
+        item.value
+        for item in app.dataframe
+        if {"項目", "內容", "舊值", "新值", "差異"} <= set(item.value.columns)
+    ]
+    parameter_frame = next(
+        frame for frame in detail_frames if "滿庫容量" in set(frame["項目"])
+    )
+    assert "未填寫" in set(parameter_frame["新值"])
+    assert "—" in set(parameter_frame["差異"])
+    assert "max_capacity_10k_ton" not in parameter_frame.to_string(index=False)
+    assert {"數值", "依據／來源", "備註"} <= set(parameter_frame["內容"])
+
+    technical = _expander(app, "上傳檔案技術驗證資訊（進階）")
+    technical_codes = next(
+        item.value for item in technical.dataframe if "代碼" in item.value.columns
+    )
+    assert {"parameter_source_missing", "parameter_note_missing"} <= set(
+        technical_codes["代碼"]
+    )
 
 
 def test_source_filename_change_cannot_reuse_prior_confirmation(tmp_path, monkeypatch):
@@ -1349,7 +1457,7 @@ def test_missing_current_with_invalid_version_is_recovery_required_not_first_ver
     assert "這是第一個候選系統基準版本" not in _messages(app.info)
     assert app.session_state.annual_data_write_available is False
     assert next(button for button in app.button if button.label == "建立新版").disabled
-    assert next(button for button in app.button if button.label == "啟用新版").disabled
+    assert not any(button.label == "啟用新版" for button in app.button)
 
 
 def test_damaged_active_baseline_is_not_misreported_as_first_version(tmp_path, monkeypatch):
