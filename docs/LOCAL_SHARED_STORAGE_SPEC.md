@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅。2-4 功能實作完成；公司 SMB 實機 acceptance 留在 2-8。
+狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅。2-4 功能實作完成；公司 SMB 實機 acceptance 留在 2-8，2-5 正式推估保存尚未開始。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -632,7 +632,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 - 未來公版 Excel 必須有範本版本欄位、固定工作表／欄名、明確單位、36 旬完整性驗證、重複旬與缺漏提示、非數字／負值／未知欄位錯誤提示。
 - 2-4A 已提供可重複執行的空白公版產生器；公版固定包含 `版本資訊`、`水文Q值`、`年度基準出流`、`水庫參數`，並以穩定機器代碼搭配中文名稱。所有業務數值留白，不能視為已發布或已啟用的年度資料。
 - 上傳後必須先顯示解析與差異預覽，再由使用者確認轉成新的正式 JSON／CSV 版本；不得直接覆蓋啟用版本。
-- 2-4B 已提供獨立、無 Streamlit 相依的 Excel 解析器，以及「系統基準資料維護－Excel驗證與差異預覽」介面。解析成功只建立記憶體候選資料及標準 JSON／CSV bytes；上傳內容不套用至目前推估工作區。
+- 2-4B 已提供獨立、無 Streamlit 相依的 Excel 解析器，以及預設收合的「年度資料維護」介面。解析成功只建立記憶體候選資料及標準 JSON／CSV bytes；上傳內容不套用至目前推估工作區。
 - 2-4B 預覽固定標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」；只有 `system.json` 已完整驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認 versions inventory 完全為空時，才能顯示第一版完整預覽。current 缺失但已有任何 valid 或 invalid version entry 時要求 recovery 判斷；相容模式、根目錄未設定／不存在／無權限、`system.json` 尚未初始化、讀取失敗、資料損壞或版本不一致時，只能顯示候選內容並說明無法確認正式環境是否存在舊版，不得產生不可靠的新舊差異。
 - 水庫參數的數值、適用起日、來源及備註都屬主要差異比較內容。候選位置固定為 `AnnualDataCandidate.parameter_metadata[parameter_code]`，其中包含 `effective_start_date`、`source_reference` 與 `note`；供後續正式版本比較的相容位置為年度版本物件同層的 `parameter_metadata`。舊版未提供 metadata 時，預覽顯示「舊版未記錄」並計入變更。本約定不代表 2-4B 已修改正式 schema 或實作寫入。
 - 2-4C1 已將上述 parameter metadata 納入正式 `version.json` 與 reader round-trip；writer 重新解析原始 Excel 後才建立完整 bundle，並將原始 bytes 固定保存為 `source/original.xlsx`。
@@ -684,12 +684,12 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 - 2-4B（已完成）：Excel 解析、完整內容驗證、記憶體候選資料、穩定 fingerprint、目前啟用年度版本差異預覽，以及在系統資料已驗證、annual current 確實缺少且 diagnostics 確認 versions inventory 完全為空時的第一版完整預覽。current 缺失但已有任何 valid 或 invalid version entry 時不宣稱第一版；無法讀取或尚未初始化共享資料時只顯示候選內容，不宣稱沒有舊版。這不等同正式發布或啟用。
 - 2-4C1（已完成）：將已確認的 2-4B candidate 與原始 Excel 重新驗證後，於指定且已初始化的根目錄完成 staging、逐檔 checksum、`COMMITTED.json` 最後寫入、完整 schema／36旬驗證、quarantine 及同磁碟 rename，發布不可變但未啟用的年度版本。自動化測試只使用 pytest `tmp_path` 與合成 Excel。
 - 2-4C2a（已完成）：對既有完整年度版本實作 Windows/SMB OS-level 排他鎖、鎖內 revision/current ID conflict、first-current 與 already-current 語意、`annual-data/current.json` 同目錄原子切換、一事件一檔 audit，以及 current 已切換但 audit 不完整時不 rollback 的 recovery-required 狀態。自動化測試只使用 pytest `tmp_path`、synthetic bundles、fake locks 與 fault injection。
-- 2-4C2b1（已完成）：Streamlit 保留 2-4B preview，在年度專用預設關閉旗標與安全 capability 下，以操作人、獨立備註、warnings／內容兩層確認建立 immutable version；建立不自動啟用。啟用是第二次人工動作，使用當次畫面的 exact observed revision/current、software provenance 與 Windows/SMB production lock；conflict 不重試。已開啟工作區遇 current A→B 只顯示 persistent stale 提示，使用者明確 reload 前不修改 hydrology、demand、水庫參數、session overrides 或結果。
+- 2-4C2b1（已完成）：Streamlit 保留 2-4B preview，在年度專用預設關閉旗標與安全 capability 下，以操作人、獨立備註、warnings／內容兩層確認依序「建立新版」及「啟用新版」；建立不自動啟用。一般畫面只顯示業務摘要與新版影響，fingerprint、SHA-256、exact observed revision/current、software provenance 等移入進階收合區；Windows/SMB production lock 與 conflict 不重試規則不變。已開啟工作區只顯示新版通知，使用者明確 reload 前不修改 hydrology、demand、水庫參數、session overrides 或結果。
 - 2-4C2b2a（已完成）：獨立唯讀 diagnostics／inventory，精確辨識 original／recovery transition evidence 與 missing／ambiguous。
 - 2-4C2b2b1（已完成）：healthy current 的 recovery audit 補建，以及以既有 activation 安全核心重新啟用合法 historical／orphan version。
 - 2-4C2b2b2（已完成）：first-current initialization、唯一 audit chain reconstruction、broken-target 人工 switch、獨立 repair audit、invalid current bytes evidence 與 current 成功/audit 失敗後的可補建狀態。staging／quarantine／一般 temp 隔離或清理仍待 2-8 人工維運規則。
 
-2-4 功能實作完成。writer 永不自動切換；activation、重新啟用或 repair 成功也不直接覆蓋已開啟工作區。任何 recovery 都不猜 target、不清理 evidence。尚未在公司實際 SMB 環境驗證，本 PR 未存取正式共享根目錄或受控測試共享根目錄；該 acceptance 明確留在 2-8，`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
+2-4 功能與年度資料 UI 收斂已完成。writer 永不自動切換；activation、重新啟用或 repair 成功也不直接覆蓋已開啟工作區。任何 recovery 都不猜 target、不清理 evidence。尚未在公司實際 SMB 環境驗證，本 PR 未存取正式共享根目錄或受控測試共享根目錄；該 acceptance 明確留在 2-8。2-5 正式推估保存尚未開始，`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
 
 驗收：
 

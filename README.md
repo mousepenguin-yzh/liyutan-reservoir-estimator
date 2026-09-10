@@ -21,6 +21,8 @@
   2. **年度版本安全啟用與版本切換**：人工再次確認後，透過 Windows/SMB 排他鎖、observed-state conflict check、atomic current publication 與 append-only audit 啟用或切換完整版本。
   3. **診斷與受控復原**：唯讀盤點 current、versions、audit 及殘留 evidence；支援 healthy-current audit 補建、既有版本重新啟用、首次 current 初始化，以及只有在 evidence 足以唯一判斷時的 missing／invalid current reconstruction 或 broken-target switch。
 - 2-4 功能實作完成，但公司 SMB 實機多人、鎖定與中斷 acceptance 仍留在 2-8；generic `formal_write_available`／`formal_operations_available` 仍維持 `False`。
+- 2-4 年度資料 UI 已完成收斂：一般畫面只呈現可用狀態、使用年度、實績截止旬與更新日期；「年度資料維護」依上傳、檢查差異、建立新版、啟用新版四個任務呈現；current、revision、audit、fingerprint、SHA-256 及 recovery 技術資訊保留在預設收合的進階區。
+- 2-5 尚未開始，正式推估保存仍不可用；本次 UI 收斂沒有開啟 generic `formal_write_available` 或 `formal_operations_available`。
 - 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非正式資料，不會永久更新共享正式資料。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
@@ -212,7 +214,7 @@ python scripts/create_annual_data_template.py --output "C:\明確指定位置\�
 
 Streamlit 頁面上方提供獨立的「系統基準資料維護－Excel驗證與差異預覽」。使用者必須手動上傳 `.xlsx`；系統不會掃描或自動載入公司資料夾。解析器拒絕未知範本版本、巨集、外部連結、公式、缺少或額外工作表、修改固定機器代碼或旬鍵、未知資料列／欄位，以及不完整、非有限、負值或語意順序錯誤的業務資料。
 
-驗證成功後只在記憶體中建立候選資料，顯示檔案 SHA-256、候選 fingerprint、完整性、warnings，以及與目前已啟用年度版本的舊值、新值與差值。水庫參數的數值、適用起日、來源及備註均納入主要差異筆數與明細；舊版未保存這些 metadata 時會標示「舊版未記錄」，不會誤報完全相同。只有在 `system.json` 已成功驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認 versions inventory 完全為空時，介面才顯示可確認的第一版完整預覽；current 缺失但已有任何 valid 或 invalid version entry 時明確要求 recovery 判斷。相容模式、未設定或無法存取根目錄、`system.json` 尚未初始化，以及權限、損壞或版本不一致等讀取失敗，仍可顯示候選內容，但會明確標示無法確認正式環境是否存在舊版，且不產生看似可靠的新舊差異。所有畫面均標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」`formal_write_available` 與 `formal_operations_available` 仍為 `False`。
+驗證成功後只在記憶體中建立候選資料，先顯示適用年度、實績截止旬、完整性與分區差異摘要；檔案 SHA-256、候選 fingerprint 等技術資訊保留在進階收合區，warnings 仍逐項顯示位置與修正資訊。水庫參數的數值、適用起日、來源及備註均納入主要差異筆數與明細；舊版未保存這些 metadata 時會標示「舊版未記錄」，不會誤報完全相同。只有在 `system.json` 已成功驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認 versions inventory 完全為空時，介面才顯示可確認的第一版完整預覽；current 缺失但已有任何 valid 或 invalid version entry 時明確要求 recovery 判斷。相容模式、未設定或無法存取根目錄、`system.json` 尚未初始化，以及權限、損壞或版本不一致等讀取失敗，仍可顯示候選內容，但會明確標示無法確認正式環境是否存在舊版，且不產生看似可靠的新舊差異。所有畫面均標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」`formal_write_available` 與 `formal_operations_available` 仍為 `False`。
 
 供後續 2-4C 使用的候選資料位置約定為 `AnnualDataCandidate.parameter_metadata[parameter_code]`，每項包含 `effective_start_date`、`source_reference` 與 `note`。若未來正式年度版本保存這些欄位，比較器接受同層的 `parameter_metadata` 映射；本階段不更動正式 schema，也不寫入任何版本。
 
@@ -236,11 +238,11 @@ Streamlit 頁面上方提供獨立的「系統基準資料維護－Excel驗證�
 
 ### 2-4C2b1 Streamlit 年度建立／啟用與工作區保護
 
-2-4C2b1 將既有 2-4B preview 接到 2-4C1 publisher；操作人、建立備註、candidate fingerprint、原始檔名／SHA-256、差異與 warnings 均在畫面顯示，warnings 與正式建立各有獨立確認。建立成功只保存 pending immutable version 資訊並明示「尚未啟用」，不會自動呼叫 activation。啟用區再次顯示 target、年度、observed current/revision、差異、獨立啟用備註、未經登入驗證提示與確認框，再把該次畫面實際觀察值原樣傳給 2-4C2a；revision conflict 不自動重試。
+2-4C2b1 將既有 2-4B preview 接到 2-4C1 publisher；操作人、建立備註、差異與 warnings 維持顯示及獨立確認，candidate fingerprint、原始檔名／SHA-256 等技術資訊移入進階收合區。一般維護流程使用「建立新版」與「啟用新版」；建立成功明示「尚未套用」，不會自動呼叫 activation。啟用區以業務語言說明新開啟推估與既有工作區的影響，observed current/revision、target 與 software provenance 保留在進階收合區；送往 2-4C2a 的 exact observed state 與 revision conflict 不重試規則完全不變。
 
 啟用的 software provenance 由 `software_provenance.py` 以唯讀 `git rev-parse HEAD` 與 `git status --porcelain --untracked-files=normal` 取得；repository 固定為本 repository，`app_version` 自動衍生為 `git-<12字元commit>`。無可靠 40 字元 SHA 時停用啟用；dirty 狀態會警示並如實寫入 audit，但本階段不另立禁止政策。
 
-已開啟工作區記住其 loaded annual version。其他電腦把 current A 切至 B 後，rerun 只顯示 A→B stale 警示，不會改 hydrology、demand、水庫參數或使用者輸入。使用者可暫時保留 A（警示持續），或明確按「重新載入新版系統基準資料 B」；後者完整套用 B、清除水文／出流年度 session overrides、使舊演算結果失效並更新 workspace version。activation 成功本身不直接改工作區。
+已開啟工作區記住其 loaded annual version。其他電腦啟用新版後，rerun 只顯示「系統基準資料已有新版」，不會改 hydrology、demand、水庫參數或使用者輸入。使用者可選擇「暫時使用目前資料」（通知持續），或明確按「重新載入新版」；後者完整套用新版、清除水文／出流年度 session overrides、使舊演算結果失效並更新 workspace version。activation 成功本身不直接改工作區。
 
 `current_switched_audit_incomplete` 會留下 session recovery-required banner、停止再次建立／啟用且不 rollback。diagnostics 另會在每次 rerun 由 filesystem 尋找與 current 的 `(N-1, A) → (N, B)` 完全匹配的合法 activation/recovery/repair evidence；零份、矛盾或多個可能狀態即使 session key 已消失仍會重新判定。後續受控 action 由 2-4C2b2b1/b2b2 處理；evidence cleanup 不自動執行。公司實際 SMB acceptance 留在 2-8，generic `formal_write_available` 與 `formal_operations_available` 仍為 `False`。
 

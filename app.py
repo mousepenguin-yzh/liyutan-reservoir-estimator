@@ -17,6 +17,7 @@ import plotly.graph_objects as go
 import json
 from annual_data_diagnostics import diagnose_annual_data
 from annual_data_preview_ui import (
+    format_annual_created_date,
     render_annual_data_diagnostics,
     render_annual_data_maintenance,
 )
@@ -177,10 +178,10 @@ def apply_shared_annual_data(
     annual = result.annual
     if not preserve_hydrology:
         st.session_state.hydrology_df = shared_hydrology_frame(annual.hydrology)
-        st.session_state.hydrology_source_status = f"共享正式版本 {annual.version['version_id']}"
+        st.session_state.hydrology_source_status = "系統基準資料"
     if not preserve_demand:
         st.session_state.demand_df = shared_demand_frame(annual.outflow_demand)
-        st.session_state.demand_source_status = f"共享正式版本 {annual.version['version_id']}"
+        st.session_state.demand_source_status = "系統基準資料"
     parameters = annual.reservoir_parameters
     st.session_state.max_capacity = float(parameters["max_capacity_10k_ton"])
     st.session_state.shilin_eco_flow = float(parameters["shilin_ecological_flow_cms"])
@@ -207,13 +208,8 @@ def render_shared_annual_workspace_interlock(result) -> None:
     pending_id = st.session_state.get("pending_shared_annual_version_id")
     if not st.session_state.get("workspace_annual_stale") or not loaded_id or not pending_id:
         return
-    st.error(
-        f"目前工作區仍使用年度版本 {loaded_id}；共享正式 current 已更新為 {pending_id}。"
-    )
-    st.warning(
-        "目前工作區不是最新 current；可繼續查看或進行非正式試算，但後續正式推估保存"
-        "必須禁止。正式推估保存（2-5）尚未實作。"
-    )
+    st.warning("⚠️ 系統基準資料已有新版")
+    st.info("目前開啟的推估仍使用原資料，不會自動變更。")
     if st.session_state.hydrology_session_upload or st.session_state.demand_session_upload:
         st.warning(
             "重新載入新版會清除目前的水文／出流年度資料工作階段上傳，"
@@ -221,7 +217,7 @@ def render_shared_annual_workspace_interlock(result) -> None:
         )
     controls = st.columns(2)
     if controls[0].button(
-        f"重新載入新版系統基準資料 {pending_id}",
+        "重新載入新版",
         type="primary",
         key=f"reload_shared_annual_{pending_id}",
     ):
@@ -229,14 +225,14 @@ def render_shared_annual_workspace_interlock(result) -> None:
             reload_shared_annual_workspace(result)
             st.rerun()
         else:
-            st.error("共享 current 已再次變更或目前無法完整讀取，請先重新整理後再操作。")
+            st.error("系統基準資料已再次更新或目前無法完整讀取，請先重新整理後再操作。")
     if controls[1].button(
-        "暫時保留目前工作區",
+        "暫時使用目前資料",
         key=f"retain_shared_annual_{loaded_id}_{pending_id}",
     ):
         st.session_state.workspace_annual_retain_acknowledged = True
     if st.session_state.get("workspace_annual_retain_acknowledged"):
-        st.info(f"已暫時保留工作區版本 {loaded_id}；A → B 不一致警示會持續顯示。")
+        st.info("本次推估會暫時沿用目前資料；新版通知會持續顯示。")
 
 
 # ==========================================
@@ -875,20 +871,6 @@ st.title("💧 鯉魚潭水庫庫容推估系統")
 
 render_shared_annual_workspace_interlock(shared_storage_result)
 
-render_annual_data_diagnostics(
-    annual_diagnostics,
-    shared_mode_enabled=shared_storage_mode_enabled,
-    result=shared_storage_result,
-    recovery_capability=annual_recovery_capability,
-)
-
-render_annual_data_maintenance(
-    shared_storage_result,
-    shared_mode_enabled=shared_storage_mode_enabled,
-    diagnostics=annual_diagnostics,
-    capability=annual_write_capability,
-)
-
 if not shared_storage_mode_enabled:
     st.info(
         "ℹ️ 目前為相容模式：共享資料功能尚未啟用，沿用既有內建年度資料。"
@@ -901,49 +883,31 @@ if not shared_storage_mode_enabled:
         )
 elif shared_storage_result.ok:
     annual = shared_storage_result.annual
-    st.success("✅ 已連線到共享正式資料，年度資料完整驗證成功。")
-    annual_write_label = "受控開放" if annual_write_capability.available else "關閉"
-    st.caption(
-        "共享資料狀態：可讀（完整驗證成功）｜"
-        f"年度資料正式寫入：{annual_write_label}｜"
-        "generic 正式寫入：不可用｜正式推估保存：不可用"
-    )
-    st.caption(f"共享資料讀取時間：{shared_storage_result.read_at}")
-    source_cols = st.columns(4)
-    source_cols[0].metric("水庫", shared_storage_result.system["display_name"])
-    source_cols[1].metric("年度資料版本", annual.version["version_id"])
-    source_cols[2].metric("資料適用年度", str(annual.version["applicable_year"]))
-    if shared_storage_result.official is None:
-        source_cols[3].metric("最近正式推估", "尚無正式推估")
+    if annual_diagnostics is not None and annual_diagnostics.overall_severity.value == "healthy":
+        st.success("✅ 系統基準資料正常")
     else:
-        source_cols[3].metric("最近正式推估", shared_storage_result.official.version_id)
-        st.caption(
-            f"最近正式推估建立時間：{shared_storage_result.official.created_at}｜"
-            f"批次：{shared_storage_result.official.batch_name}"
+        st.success("✅ 系統基準資料可正常使用")
+        st.info(
+            "系統有維護資訊需要留意；需要時請開啟「⚙️ 系統維護與進階診斷」。"
         )
+    source_cols = st.columns(3)
+    source_cols[0].metric("使用年度", str(annual.version["applicable_year"]))
+    source_cols[1].metric("實績資料更新至", annual.version["actual_data_cutoff_period"])
+    source_cols[2].metric(
+        "資料更新日期",
+        format_annual_created_date(annual.version.get("created_at")),
+    )
     if source_decision.mode is DataSourceMode.SESSION_UPLOAD:
         st.warning(
-            "⚠️ 本次試算目前使用工作階段上傳資料，屬非正式資料；"
-            "不可冒充共享正式版本，後續正式功能必須維持停用。"
+            "⚠️ 本次推估目前使用臨時上傳資料，不是系統基準資料；"
+            "關閉工作階段後不會保留。"
         )
-    else:
-        loaded_workspace_id = st.session_state.get("loaded_shared_annual_version_id")
-        if st.session_state.get("workspace_annual_stale"):
-            st.warning(
-                f"本次試算工作區仍使用共享正式年度版本 {loaded_workspace_id}，"
-                f"不是目前 current {annual.version['version_id']}。"
-            )
-        else:
-            st.info(f"本次試算目前使用的資料來源：{source_decision.label}")
 else:
-    storage_error = shared_storage_result.error
-    st.error(
-        f"❌ 正式資料來源不可用（{storage_error.code.value}）：{storage_error.message}"
-    )
+    st.error("🔴 系統基準資料目前無法安全使用")
+    st.error("請由系統維護人員處理，並開啟「⚙️ 系統維護與進階診斷」查看原因。")
     if source_decision.mode in {DataSourceMode.BUILTIN_FALLBACK, DataSourceMode.SESSION_UPLOAD}:
         st.warning(
-            f"🚨 非正式／備援資料模式：本次試算使用{source_decision.label}，"
-            "不代表共享正式資料；後續正式保存及年度更新功能不可用。"
+            f"目前改用{source_decision.label}進行臨時試算；這不是系統基準資料。"
         )
     else:
         st.warning(
@@ -955,14 +919,32 @@ else:
             st.session_state.hydrology_session_upload = False
             st.session_state.demand_session_upload = False
             st.rerun()
-        st.stop()
+
+render_annual_data_maintenance(
+    shared_storage_result,
+    shared_mode_enabled=shared_storage_mode_enabled,
+    diagnostics=annual_diagnostics,
+    capability=annual_write_capability,
+)
+
+render_annual_data_diagnostics(
+    annual_diagnostics,
+    shared_mode_enabled=shared_storage_mode_enabled,
+    result=shared_storage_result,
+    recovery_capability=annual_recovery_capability,
+)
+
+if (
+    shared_storage_mode_enabled
+    and not shared_storage_result.ok
+    and source_decision.mode is DataSourceMode.UNAVAILABLE
+):
+    st.stop()
 
 if st.session_state.get("workspace_annual_stale"):
-    st.caption(
-        "本次試算目前使用的資料來源："
-        f"共享正式年度版本 {st.session_state.loaded_shared_annual_version_id}"
-        "（不是目前 current）"
-    )
+    st.caption("本次推估暫時沿用開啟時的系統基準資料。")
+elif source_decision.mode is DataSourceMode.OFFICIAL:
+    st.caption("本次推估使用：系統基準資料")
 else:
     st.caption(f"本次試算目前使用的資料來源：{source_decision.label}")
 
@@ -1394,7 +1376,7 @@ with tab_inflow:
         st.markdown("#### ⚙️ 工作階段水文資料套用與還原")
         
         # 顯示狀態字卡
-        if st.session_state.hydrology_source_status.startswith("共享正式版本"):
+        if st.session_state.hydrology_source_status == "系統基準資料":
             st.success(f"📊 當前水文資料：🟢 **{st.session_state.hydrology_source_status}**")
         elif st.session_state.hydrology_source_status.startswith("內建備援"):
             st.warning(f"📊 當前水文資料：🚨 **{st.session_state.hydrology_source_status}**")
@@ -1467,7 +1449,7 @@ with tab_inflow:
                 
             # 重設按鈕常駐顯示
             if st.session_state.get("workspace_annual_stale"):
-                st.caption("共享 current 已變更；請先使用頁面上方的完整重新載入，避免混用年度版本。")
+                st.caption("系統基準資料已有新版；請先使用頁面上方的「重新載入新版」。")
             if st.button(
                 "🔄 還原目前基準水文資料",
                 use_container_width=True,
@@ -1476,9 +1458,7 @@ with tab_inflow:
             ):
                 if shared_storage_mode_enabled and shared_storage_result.ok:
                     st.session_state.hydrology_df = shared_hydrology_frame(shared_storage_result.annual.hydrology)
-                    st.session_state.hydrology_source_status = (
-                        f"共享正式版本 {shared_storage_result.annual.version['version_id']}"
-                    )
+                    st.session_state.hydrology_source_status = "系統基準資料"
                 else:
                     st.session_state.hydrology_df = embedded_hydrology_frame()
                     st.session_state.hydrology_source_status = (
@@ -1853,7 +1833,7 @@ with tab_outflow:
     with st.expander("🛠️ 前一年度出流需求工作階段上傳（不會正式更新）", expanded=False):
         st.markdown("#### ⚙️ 工作階段出流需求套用與還原")
         
-        if st.session_state.demand_source_status.startswith("共享正式版本"):
+        if st.session_state.demand_source_status == "系統基準資料":
             st.success(f"📊 當前出流需求：🟢 **{st.session_state.demand_source_status}**")
         elif st.session_state.demand_source_status.startswith("內建備援"):
             st.warning(f"📊 當前出流需求：🚨 **{st.session_state.demand_source_status}**")
@@ -1925,7 +1905,7 @@ with tab_outflow:
                 
             # 重設按鈕常駐顯示
             if st.session_state.get("workspace_annual_stale"):
-                st.caption("共享 current 已變更；請先使用頁面上方的完整重新載入，避免混用年度版本。")
+                st.caption("系統基準資料已有新版；請先使用頁面上方的「重新載入新版」。")
             if st.button(
                 "🔄 還原目前基準出流需求",
                 use_container_width=True,
@@ -1934,9 +1914,7 @@ with tab_outflow:
             ):
                 if shared_storage_mode_enabled and shared_storage_result.ok:
                     st.session_state.demand_df = shared_demand_frame(shared_storage_result.annual.outflow_demand)
-                    st.session_state.demand_source_status = (
-                        f"共享正式版本 {shared_storage_result.annual.version['version_id']}"
-                    )
+                    st.session_state.demand_source_status = "系統基準資料"
                 else:
                     st.session_state.demand_df = embedded_demand_frame()
                     st.session_state.demand_source_status = (
