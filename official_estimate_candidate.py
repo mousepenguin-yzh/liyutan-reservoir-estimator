@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import datetime as dt
 import json
-import re
 import uuid
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
@@ -68,8 +67,17 @@ _DAILY_COLUMN_MAP = {
     "end_capacity_10k_ton": "本日末庫容 (萬噸)",
     "net_capacity_change_10k_ton": "當日庫容淨變化 (萬噸)",
 }
-_CUSTOM_SOURCE_TOKENS = ("手動", "貼上", "自訂", "覆寫", "調整", "複製", "上傳")
-_QUANTILE_SOURCE_RE = re.compile(r"^Q(?:0?[5-9]|[1-8][0-9]|9[05])$", re.IGNORECASE)
+_CUSTOM_SOURCE_TOKENS = (
+    "人工",
+    "手動",
+    "貼上",
+    "自訂",
+    "覆寫",
+    "調整",
+    "複製",
+    "上傳",
+    "研判",
+)
 
 
 def _fail(message: str) -> None:
@@ -220,27 +228,39 @@ def candidate_is_current(
     return current == candidate.context_fingerprint
 
 
-def _has_custom_or_adjusted_data(batch: Mapping[str, Any], selected_ids: Sequence[str]) -> bool:
-    if batch.get("overrides_enabled") and batch.get("date_overrides"):
+def _value_has_custom_source_or_note(value: Any) -> bool:
+    if not isinstance(value, Mapping):
+        return False
+    if str(value.get("note", "")).strip():
         return True
+    source = str(value.get("source_type", "")).strip()
+    return any(token in source for token in _CUSTOM_SOURCE_TOKENS)
+
+
+def _collection_values(collection: Any) -> Sequence[Any]:
+    if isinstance(collection, Mapping):
+        return tuple(collection.values())
+    if isinstance(collection, Sequence) and not isinstance(collection, (str, bytes, bytearray)):
+        return collection
+    return ()
+
+
+def _has_custom_or_adjusted_data(batch: Mapping[str, Any], selected_ids: Sequence[str]) -> bool:
+    if batch.get("date_overrides"):
+        return True
+    for value in _collection_values(batch.get("shared_inflows", {})):
+        if _value_has_custom_source_or_note(value):
+            return True
     selected = set(selected_ids)
     for scenario in batch.get("scenarios", []):
         if scenario.get("scenario_id") not in selected:
             continue
-        for value in scenario.get("inflows", {}).values():
-            if not isinstance(value, Mapping):
-                continue
-            source = str(value.get("source_type", "")).strip()
-            if value.get("note") or not _QUANTILE_SOURCE_RE.fullmatch(source):
+        for value in _collection_values(scenario.get("inflows", {})):
+            if _value_has_custom_source_or_note(value):
                 return True
     for collection_name in ("outflows", "daily_outflows"):
-        collection = batch.get(collection_name, {})
-        values = collection.values() if isinstance(collection, Mapping) else ()
-        for value in values:
-            if not isinstance(value, Mapping):
-                continue
-            source = str(value.get("source_type", ""))
-            if value.get("note") or any(token in source for token in _CUSTOM_SOURCE_TOKENS):
+        for value in _collection_values(batch.get(collection_name, {})):
+            if _value_has_custom_source_or_note(value):
                 return True
     return bool(str(batch.get("note", "")).strip())
 

@@ -24,9 +24,9 @@
 - 2-4 年度資料 UI 已完成收斂：一般畫面只呈現可用狀態、使用年度、實績截止旬與更新日期；「年度資料維護」依上傳、檢查差異、建立新版、啟用新版四個任務呈現；current、revision、audit、fingerprint、SHA-256 及 recovery 技術資訊保留在預設收合的進階區。
 - 2-4D 年度資料填報規則已收斂：公版升為 `2-4D.1`，Q 值與年度基準出流空白只沿用目前啟用版本的同旬同欄位，水庫參數依數值是否變更決定日期是否可沿用；解析後 candidate 與正式版本仍是完整、自包含資料。舊版公版會明確拒絕，不會套用新空白語意。
 - 2-5A 正式推估資料契約已收斂：V2 batch 明確保存並使用年度士林攔河堰最大引水量；official manifest/inputs/CSV 使用 `inputs_fingerprint`、previous/derived lineage、summary/daily 一致性與 clean source tree 資格驗證。
-- 2-5B 正式保存預覽與 bundle candidate 已完成：Step 5 可從目前 V2 batch 的有效成功情境選取內容、填寫人工操作人與必填備註，並在記憶體建立且完整驗證 official-format candidate；不接受跨 batch 比較清單、built-in／未驗證年度資料、stale result 或 dirty source tree。
+- 2-5B 正式保存預覽與 bundle candidate 已完成：Step 5 可從目前 V2 batch 的有效成功情境選取內容、填寫人工操作人與必填備註，並在記憶體建立且完整驗證 official-format candidate；工作階段上傳可保存當次真正使用的值，但其背後仍須有健康、已載入、未過期且版本一致的共享年度基準；不接受跨 batch 比較清單、built-in／未驗證年度資料、stale result 或 dirty source tree。
 - 2-5C 正式發布流程尚未開始；目前沒有真正的「正式保存」按鈕，也不建立 staging、不寫入 `official-estimates`、不切換 current、不寫 audit，generic `formal_write_available`／`formal_operations_available` 仍維持 `False`。因此不要把 2-5 整體視為完成。
-- 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非正式資料，不會永久更新共享正式資料。
+- 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非年度基準資料，不會永久更新 annual-data；若底層共享年度基準健康且版本一致，當次真正使用的上傳值可以納入正式推估 candidate。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
 - staging、quarantine 與一般 temp evidence 的隔離／清理仍不自動執行，屬 2-8 人工維運與實機 acceptance 範圍。
@@ -159,7 +159,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 - 「系統基準資料」或「年度基準資料」是所有新推估共用的預設基礎，包括 Q 值、年度基準出流及水庫參數；一般每旬推估不需要重新填寫年度 Excel。
 - 「正式推估版本」是某一次推估的完整條件與結果；單次自訂入流、出流、抗旱調度或臨時參數只屬該次推估，不會反向修改系統基準。關係可表為：`系統基準資料＋本次推估調整＋計算結果＝正式推估版本`。
 - 執行推估、查看結果與加入 Step 5 跨批次比較都只是工作中嘗試，不會自動建立正式版本。現在 Step 5 可由目前 V2 batch 的有效成功結果產生「正式保存預覽」與記憶體 candidate；candidate ID 不代表正式保存。未來 2-5C 的正式保存仍須明確確認並另建不可變版本；同一開啟 batch 可沿用 `batch_id` 再存新版。
-- 只有正常且已驗證的共享年度基準、目前設定下重新計算成功的選定情境，以及 `source_tree_dirty=False` 的程式版本具正式保存資格。built-in fallback、相容模式、共享資料異常、未計算／失敗／過期結果或 dirty tree 均不具資格。
+- 只有正常且已驗證、已載入、未 stale 且版本一致的共享年度基準、目前設定下重新計算成功的選定情境，以及 `source_tree_dirty=False` 的程式版本具正式保存資格。`SESSION_UPLOAD` 本身不取消資格：只要上述共享基準仍成立，candidate 會保存當次真正使用的完整上傳／調整值；built-in fallback、相容模式、共享資料異常、未計算／失敗／過期結果或 dirty tree 均不具資格。
 - V2 `settings_fingerprint` 只判斷工作階段結果是否因設定變更而過期；正式 manifest 與 CSV 使用以完整 official inputs 計算的 `inputs_fingerprint`，兩者不可混用。
 - 正式年度資料採新增版本，不直接覆蓋。
 - 正式年度 JSON／CSV 與必要來源附件應保存於公司內網共享資料夾。
@@ -211,7 +211,7 @@ $env:LIYUTAN_ENABLE_ANNUAL_DATA_RECOVERY = '1'
 | --- | --- | --- |
 | 相容模式內建年度資料 | 過渡用途 | 僅在共享功能開關未啟用時沿用既有網站行為；不讀取共享路徑，也不具正式寫入資格 |
 | 共享正式年度資料 | 正式 | `system.json`、current、版本目錄、完整 Q5～Q95、出流需求、水庫參數、manifest 與 checksum 全部通過後才整組使用 |
-| 工作階段上傳資料 | 非正式 | 只影響目前 Streamlit 工作階段；畫面持續警示，不能冒充共享正式版本 |
+| 工作階段上傳資料 | 當次工作資料 | 只影響目前 Streamlit 工作階段，不能冒充或修改共享年度基準；底層共享年度基準健康且版本一致時，當次實際值可納入正式推估 candidate |
 | 內建備援資料 | 非正式 | 已啟用共享模式但讀取失敗後，只有使用者明確點選備援按鈕才會啟用 |
 
 共享 reader 完整驗證成功時 `shared_storage_readable=True`。`annual_data_write_available` 與 `annual_recovery_available` 是互相獨立的年度專用能力；2-5B 預覽不依賴 generic 寫入能力，`formal_write_available=False` 與 `formal_operations_available=False` 仍固定不變，避免被尚未完成的 2-5C 正式發布流程誤用。正式共享資料內容不得加入 Git；開發及自動化測試一律使用 pytest 暫存資料夾與合成資料。
@@ -293,7 +293,7 @@ python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_st
 python -m pytest -q
 ```
 
-測試另涵蓋 Excel 公版重新載入、2-4B 四表解析、固定欄位與36旬完整性、Q5～Q95 映射與順序、出流與參數驗證、公式／巨集／未知結構拒絕、fingerprint、參數 metadata、可確認第一版與既有版本差異，以及 2-4C1 原始 Excel 重驗、warnings 確認、完整 bundle、逐檔 checksum、staging／quarantine／rename、中斷注入、不可覆蓋及未啟用保證。2-4C2a 測試涵蓋首次／再次／切回啟用、雙欄位 observed conflict、already-current、損壞 target/current、fake lock 互斥與 timeout、current 原子切換中斷點、audit schema／唯一檔名／不可覆寫，以及 current 已切換但 audit 未完成的 recovery-required 狀態。共享資料測試另涵蓋完整載入、未初始化／不可讀狀態、無正式推估、路徑與權限錯誤、manifest、checksum、current 競爭變更、Streamlit 工作區隔離與必須明確選擇的非正式備援模式。2-5B 測試涵蓋單一／多情境 candidate、資格拒絕、selected-only inputs/CSV、runtime state 排除、跨 batch registry 隔離、projection 日期完整性、正式 bundle round-trip、preview context 失效，以及 Streamlit 實際建立／撤銷 session candidate。自動化測試只使用 pytest `tmp_path` 及合成資料，不存取 `U:`。
+測試另涵蓋 Excel 公版重新載入、2-4B 四表解析、固定欄位與36旬完整性、Q5～Q95 映射與順序、出流與參數驗證、公式／巨集／未知結構拒絕、fingerprint、參數 metadata、可確認第一版與既有版本差異，以及 2-4C1 原始 Excel 重驗、warnings 確認、完整 bundle、逐檔 checksum、staging／quarantine／rename、中斷注入、不可覆蓋及未啟用保證。2-4C2a 測試涵蓋首次／再次／切回啟用、雙欄位 observed conflict、already-current、損壞 target/current、fake lock 互斥與 timeout、current 原子切換中斷點、audit schema／唯一檔名／不可覆寫，以及 current 已切換但 audit 未完成的 recovery-required 狀態。共享資料測試另涵蓋完整載入、未初始化／不可讀狀態、無正式推估、路徑與權限錯誤、manifest、checksum、current 競爭變更、Streamlit 工作區隔離與必須明確選擇的非正式備援模式。2-5B 測試涵蓋單一／多情境 candidate、資格拒絕、健康共享年度基準下的 session upload 資格、selected-only inputs/CSV、runtime state 排除、跨 batch registry 隔離、projection 日期完整性、自訂／調整來源辨識、正式 bundle round-trip、preview context 失效，以及 Streamlit 實際建立／撤銷 session candidate。自動化測試只使用 pytest `tmp_path` 及合成資料，不存取 `U:`。
 
 Repository 亦包含 `.github/workflows/tests.yml`，每次 push 與 Pull Request 都會使用 Python 3.12 執行 compileall 與完整 pytest 測試。
 

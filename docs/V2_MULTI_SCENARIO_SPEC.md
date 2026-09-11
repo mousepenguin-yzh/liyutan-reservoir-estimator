@@ -292,7 +292,7 @@ V2的核心不是固定三情境，而是：
 
 Phase 2-5A 進一步固定：Step 5 是可跨不同 `batch_id` 累積的比較產品，不是正式保存來源。未來正式版本只能由目前正在工作的 V2 batch 與該 batch 中使用者選定、在目前設定下重新計算成功的情境建立；不得把 Step 5 整份比較清單包成單一正式版本。
 
-Phase 2-5B 已在 Step 5 另設「正式保存準備」，但資料邊界仍與跨批次比較區分離。可選項只取 `current_session_results()` 中屬於目前 batch、狀態為 success 且 V2 `settings_fingerprint` 仍有效的情境。使用者填寫人工操作人與必填備註、按「產生正式保存預覽」後，domain builder 直接收到目前 `v2_batch` 與目前 result mapping，不接收 `v2_comparison_results`。它建立 session-only official bundle candidate、裁掉展示用歷史列、移除 runtime result state 與未選情境，再由正式 bundle validator 完整重驗。任何 batch、結果、情境選取、操作人、備註、年度版本或 software provenance 改變都會使舊 candidate 失效。此預覽不寫入共享資料，也不代表正式保存；2-5C 尚未開始。
+Phase 2-5B 已在 Step 5 另設「正式保存準備」，但資料邊界仍與跨批次比較區分離。可選項只取 `current_session_results()` 中屬於目前 batch、狀態為 success 且 V2 `settings_fingerprint` 仍有效的情境。使用者填寫人工操作人與必填備註、按「產生正式保存預覽」後，domain builder 直接收到目前 `v2_batch` 與目前 result mapping，不接收 `v2_comparison_results`。它建立 session-only official bundle candidate、裁掉展示用歷史列、移除 runtime result state 與未選情境，再由正式 bundle validator 完整重驗。資格判斷依底層共享年度基準是否健康、已載入、未 stale 且版本一致，而不以 `source_decision.mode` 是否為 `OFFICIAL` 取代這些條件；因此健康基準上的 `SESSION_UPLOAD` 可把當次實際使用值納入 candidate，沒有有效共享基準時仍拒絕。任何 batch、結果、情境選取、操作人、備註、年度版本或 software provenance 改變都會使舊 candidate 失效。此預覽不寫入共享資料，也不代表正式保存；2-5C 尚未開始。
 
 ### 7.3 比較項目與命名
 

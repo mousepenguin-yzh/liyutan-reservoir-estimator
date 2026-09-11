@@ -315,7 +315,7 @@ repair audit 在 current replace 前先完成同月份 unique temp、flush/fsync
 
 「執行推估」與「正式保存」是兩個獨立動作。使用者可在同一工作批次反覆調整與演算，任何現有執行推估、查看結果或加入 Step 5 比較的動作都不得自動建立正式紀錄。未來只有明確按下正式保存並再次確認後，才可建立新的 `estimate_version_id`。同一天、同一旬可有多個正式版本；同一個尚未關閉的工作批次再次正式保存時沿用 `batch_id`，但必須產生新的 `estimate_version_id`，不得修改或覆蓋舊版本。
 
-正式版本的來源只能是目前正在工作的 V2 batch 與其中由使用者選定的正式情境，不是 Step 5 可累積不同 batch 的比較清單。只有正常且完整驗證的共享年度基準具正式保存資格；相容模式、built-in fallback、共享資料異常、無法確認年度版本，或 software provenance 顯示 `source_tree_dirty=true` 時均必須拒絕。工作階段對入流、出流、情境、日期調整及其他推估條件的變更可以成為正式輸入，但正式版本保存的是實際計算使用的完整值與來源，且不得反向修改 annual-data。
+正式版本的來源只能是目前正在工作的 V2 batch 與其中由使用者選定的正式情境，不是 Step 5 可累積不同 batch 的比較清單。只有正常且完整驗證、已載入、未 stale 且與 current 版本一致的共享年度基準具正式保存資格；此判斷看底層 baseline 狀態，不要求當次 `source_decision.mode` 必須是 `OFFICIAL`。因此健康共享基準上的 `SESSION_UPLOAD` 可以建立 candidate，並保存當次真正使用的完整值與來源；共享基準不存在／無效時，即使有 session upload 也不可建立。相容模式、built-in fallback、共享資料異常、無法確認年度版本，或 software provenance 顯示 `source_tree_dirty=true` 時均必須拒絕。工作階段對入流、出流、情境、日期調整及其他推估條件的變更可以成為正式輸入，但不得反向修改 annual-data。
 
 2-5B 已在 Step 5 加入「正式保存準備」。介面只列出目前 V2 batch 在目前設定下重新計算成功的情境；操作人與備註必填，主要動作固定稱為「產生正式保存預覽」。操作人是人工填報，未經登入驗證。按下後 `official_estimate_candidate.py` 直接使用 2-5A `validate_official_save_eligibility()`，從目前 batch 與目前 result mapping 建立 `manifest.json`、`inputs.json`、`scenario_summaries.csv`、`daily_results.csv` 及 `COMMITTED.json` 的記憶體 bytes，隨即以 `validate_official_bundle()` 完整重驗。builder 介面不接受 Step 5 comparison registry，因此跨 batch 比較清單不能成為 candidate 來源。
 

@@ -5,6 +5,7 @@ import pandas as pd
 import pytest
 
 from official_estimate_candidate import (
+    _has_custom_or_adjusted_data,
     build_official_estimate_candidate,
     candidate_is_current,
 )
@@ -196,6 +197,33 @@ def test_preview_marks_explicit_batch_adjustment_metadata():
     candidate = _build(batch, results, [batch["scenarios"][0]["scenario_id"]])
 
     assert candidate.preview["has_custom_or_adjusted_data"] is True
+
+
+def test_shared_inflow_manual_adjustment_is_detected():
+    batch = _batch(1)
+    batch["shared_inflows"] = {PERIODS[0]: _cell(12, "人工調整")}
+
+    assert _has_custom_or_adjusted_data(
+        batch, [batch["scenarios"][0]["scenario_id"]]
+    )
+
+
+@pytest.mark.parametrize("source", ["人工調整", "工作階段上傳"])
+def test_daily_outflow_manual_or_upload_adjustment_is_detected(source):
+    batch = _batch(1)
+    batch["daily_outflows"][0]["source_type"] = source
+
+    assert _has_custom_or_adjusted_data(
+        batch, [batch["scenarios"][0]["scenario_id"]]
+    )
+
+
+def test_annual_default_values_are_not_marked_as_adjusted():
+    batch = _batch(1)
+
+    assert not _has_custom_or_adjusted_data(
+        batch, [batch["scenarios"][0]["scenario_id"]]
+    )
 
 
 def test_no_scenario_cannot_build_candidate():

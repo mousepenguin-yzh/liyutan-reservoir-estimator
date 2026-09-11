@@ -2648,7 +2648,10 @@ with tab_products:
         else None
     )
     shared_annual_data_validated = bool(
-        source_decision.mode is DataSourceMode.OFFICIAL
+        shared_storage_mode_enabled
+        and shared_storage_result is not None
+        and shared_storage_result.ok
+        and shared_storage_result.annual is not None
         and st.session_state.get("shared_snapshot_valid")
         and not st.session_state.get("workspace_annual_stale")
         and loaded_annual_version_id
