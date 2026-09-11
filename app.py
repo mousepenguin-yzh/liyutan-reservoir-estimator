@@ -25,6 +25,11 @@ from annual_data_maintenance import (
     annual_data_recovery_capability,
     annual_data_write_capability,
 )
+from official_estimate_candidate import (
+    OfficialEstimateCandidate,
+    build_official_estimate_candidate,
+    candidate_is_current,
+)
 from shared_storage_reader import (
     DataSourceMode,
     compatibility_data_source,
@@ -32,6 +37,8 @@ from shared_storage_reader import (
     load_shared_storage,
     shared_storage_enabled,
 )
+from shared_storage_schema import StorageValidationError, validate_official_save_eligibility
+from software_provenance import load_software_provenance
 from v2_workflow import (
     SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario, apply_q_inflows,
     apply_shared_paste, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows,
@@ -373,6 +380,183 @@ def interpolate_historical_capacities_v2(disp_start: datetime.date, proj_start: 
                 ratio = step / days_diff
                 daily_caps[curr_d] = round(val1 + (val2 - val1) * ratio, 2)
     return daily_caps
+
+
+def render_official_save_preparation(
+    batch,
+    current_results,
+    *,
+    annual_data_version_id,
+    shared_annual_data_validated,
+    previous_official_version_id,
+    derived_from_official_version_id,
+):
+    """Render the Phase 2-5B in-memory preview workflow only."""
+    st.markdown("### 正式保存準備")
+    st.info("目前僅產生正式保存預覽，尚未寫入正式資料。")
+
+    batch_id = batch.get("batch_id", "no-batch") if isinstance(batch, dict) else "no-batch"
+    scenarios = batch.get("scenarios", []) if isinstance(batch, dict) else []
+    scenario_lookup = {
+        scenario["scenario_id"]: scenario
+        for scenario in scenarios
+        if isinstance(scenario, dict) and scenario.get("scenario_id")
+    }
+    successful_ids = [
+        scenario["scenario_id"]
+        for scenario in scenarios
+        if scenario.get("scenario_id") in current_results
+        and current_results[scenario["scenario_id"]].get("status") == "success"
+    ]
+    selected_ids = st.multiselect(
+        "選擇本批次要納入正式保存預覽的情境",
+        options=successful_ids,
+        format_func=lambda scenario_id: scenario_lookup[scenario_id]["name"],
+        key=f"official_preview_selected_{batch_id}",
+        help="只列出目前 batch 在現有設定下已成功重新計算的情境。",
+    )
+    operator = st.text_input(
+        "操作人（必填）",
+        key="official_preview_operator",
+        help="此欄為人工填報，並非登入身分驗證。",
+    )
+    note = st.text_area(
+        "備註（必填）",
+        key=f"official_preview_note_{batch_id}",
+    )
+
+    provenance = load_software_provenance()
+    software = provenance.software if provenance.ok else None
+    context = {
+        "annual_data_version_id": annual_data_version_id,
+        "shared_annual_data_validated": shared_annual_data_validated,
+        "operator_display_name": operator,
+        "note": note,
+        "software": software,
+        "previous_official_version_id": previous_official_version_id,
+        "derived_from_official_version_id": derived_from_official_version_id,
+    }
+
+    existing = st.session_state.get("official_estimate_candidate")
+    if existing is not None and (
+        not isinstance(existing, OfficialEstimateCandidate)
+        or not isinstance(batch, dict)
+        or not candidate_is_current(existing, batch, current_results, selected_ids, **context)
+    ):
+        st.session_state.pop("official_estimate_candidate", None)
+        st.session_state.official_candidate_stale_notice = True
+        existing = None
+    if st.session_state.get("official_candidate_stale_notice"):
+        st.warning("正式保存預覽已失效，請重新產生。")
+
+    eligibility_error = None
+    if not isinstance(batch, dict):
+        eligibility_error = "目前沒有可用的 V2 batch。"
+    elif not successful_ids:
+        eligibility_error = "目前 batch 沒有已成功完成且仍有效的情境結果。"
+    elif not selected_ids:
+        eligibility_error = "請至少選擇一個本批次的成功情境。"
+    elif not operator.strip():
+        eligibility_error = "請填寫操作人；此為人工填報，並非登入驗證。"
+    elif not note.strip():
+        eligibility_error = "請填寫備註。"
+    elif not provenance.ok:
+        eligibility_error = "無法確認目前軟體的 Git 版本資訊，不可產生正式保存預覽。"
+    else:
+        try:
+            validate_official_save_eligibility(
+                batch,
+                current_results,
+                selected_ids,
+                annual_data_version_id=annual_data_version_id,
+                shared_annual_data_validated=shared_annual_data_validated,
+                software=software,
+            )
+        except StorageValidationError as exc:
+            eligibility_error = str(exc)
+
+    if eligibility_error:
+        st.warning(f"目前不符合正式保存預覽資格：{eligibility_error}")
+    else:
+        st.success("目前選取內容符合正式保存預覽資格。")
+
+    if st.button(
+        "產生正式保存預覽",
+        type="primary",
+        disabled=eligibility_error is not None,
+        help=eligibility_error,
+        key=f"build_official_candidate_{batch_id}",
+    ):
+        try:
+            existing = build_official_estimate_candidate(
+                batch,
+                current_results,
+                selected_ids,
+                **context,
+            )
+        except (StorageValidationError, TypeError, ValueError, KeyError) as exc:
+            st.session_state.pop("official_estimate_candidate", None)
+            st.error(f"無法產生正式保存預覽：{exc}")
+            existing = None
+        else:
+            st.session_state.official_estimate_candidate = existing
+            st.session_state.official_candidate_stale_notice = False
+
+    if existing is None:
+        return
+
+    preview = existing.preview
+    projection_end = datetime.date.fromisoformat(preview["projection_end_date"])
+    display_end = projection_end - datetime.timedelta(days=1)
+    st.markdown("#### 正式保存預覽")
+    details = st.columns(2)
+    details[0].write(
+        f"**推估期間：** {preview['projection_start_date']} 至 {display_end.isoformat()}"
+    )
+    details[1].write(f"**年度資料版本：** {preview['annual_data_version_id']}")
+    details[0].write(
+        "**當次自訂／調整資料：** "
+        + ("有" if preview["has_custom_or_adjusted_data"] else "無明確調整標記")
+    )
+    details[1].write(f"**操作人：** {preview['operator_display_name']}（人工填報）")
+    st.write(f"**備註：** {preview['note']}")
+    if preview["derived_from_official_version_id"]:
+        st.write(
+            "**衍生來源正式版本：** "
+            f"{preview['derived_from_official_version_id']}"
+        )
+
+    summary_frame = pd.DataFrame(
+        [
+            {
+                "情境": scenario["scenario_name"],
+                "最終庫容（萬噸）": scenario["final_capacity_10k_ton"],
+                "最低庫容（萬噸）": scenario["minimum_capacity_10k_ton"],
+                "溢流量（萬噸）": scenario["spill_volume_10k_ton"],
+                "農業減供量（萬噸）": scenario[
+                    "agricultural_reduction_volume_10k_ton"
+                ],
+                "乾庫天數": scenario["dry_days"],
+            }
+            for scenario in preview["scenarios"]
+        ]
+    )
+    st.dataframe(summary_frame, hide_index=True, use_container_width=True)
+    st.caption("此候選內容只保存在目前 Streamlit session；重新啟動後會消失。")
+
+    with st.expander("進階資訊"):
+        st.code(f"candidate estimate_version_id: {preview['version_id']}")
+        st.code(f"inputs_fingerprint: {preview['inputs_fingerprint']}")
+        st.code(f"Git commit: {preview['software']['git_commit']}")
+        st.write(
+            "previous_official_version_id：",
+            preview["previous_official_version_id"] or "null",
+        )
+        st.write(
+            "derived_from_official_version_id：",
+            preview["derived_from_official_version_id"] or "null",
+        )
+        st.json(preview["files"])
 
 # ==========================================
 # 2. 第二階段核心邏輯：動態旬流量檢索、多重解碼與解析
@@ -2423,7 +2607,8 @@ with tab_products:
                 st.session_state.v2_comparison_results, st.session_state.scenarios = remove_comparison_results(
                     st.session_state.v2_comparison_results, st.session_state.scenarios, remove_result_ids)
                 st.rerun()
-    successful_v2 = {sid: item for sid, item in current_session_results(st.session_state).items()
+    current_v2_results = current_session_results(st.session_state)
+    successful_v2 = {sid: item for sid, item in current_v2_results.items()
                      if item["status"] == "success"}
     if successful_v2:
         st.markdown("### V2 批次加入跨批次比較")
@@ -2453,6 +2638,45 @@ with tab_products:
             st.rerun()
         st.caption(f"標準化比較庫目前共 {len(st.session_state.v2_comparison_results)} 筆，可與其他批次累積比較。")
         st.markdown("---")
+
+    loaded_annual_version_id = st.session_state.get("loaded_shared_annual_version_id")
+    current_shared_annual_version_id = (
+        shared_storage_result.annual.version["version_id"]
+        if shared_storage_result is not None
+        and shared_storage_result.ok
+        and shared_storage_result.annual is not None
+        else None
+    )
+    shared_annual_data_validated = bool(
+        shared_storage_mode_enabled
+        and shared_storage_result is not None
+        and shared_storage_result.ok
+        and shared_storage_result.annual is not None
+        and st.session_state.get("shared_snapshot_valid")
+        and not st.session_state.get("workspace_annual_stale")
+        and loaded_annual_version_id
+        and loaded_annual_version_id == current_shared_annual_version_id
+    )
+    previous_official_version_id = (
+        shared_storage_result.official.version_id
+        if shared_storage_result is not None
+        and shared_storage_result.ok
+        and shared_storage_result.official is not None
+        else None
+    )
+    render_official_save_preparation(
+        st.session_state.get("v2_batch"),
+        current_v2_results,
+        annual_data_version_id=loaded_annual_version_id,
+        shared_annual_data_validated=shared_annual_data_validated,
+        previous_official_version_id=previous_official_version_id,
+        # Phase 2-6 will populate this when a batch is opened from an old
+        # official version.  Phase 2-5B only keeps the interface available.
+        derived_from_official_version_id=st.session_state.get(
+            "v2_derived_from_official_version_id"
+        ),
+    )
+    st.markdown("---")
     
     # 情境暫存機制控制區
     if "sim_results" in st.session_state:
