@@ -1,4 +1,5 @@
 import contextlib
+import datetime as dt
 import shutil
 from pathlib import Path
 
@@ -6,6 +7,7 @@ from streamlit.testing.v1 import AppTest
 
 import annual_data_maintenance as maintenance_module
 import annual_data_preview_ui as preview_ui
+import software_provenance as provenance_module
 from annual_data_activation import (
     AnnualDataActivationConflictError,
     AnnualDataActivationRecoveryRequiredError,
@@ -40,6 +42,7 @@ from test_shared_storage_schema import (
 )
 from test_annual_data_excel import _mutated_bytes, _workbook_bytes
 from software_provenance import SoftwareProvenanceResult
+from test_official_estimate_candidate import _ready as _ready_official_candidate
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -158,6 +161,118 @@ def test_enabled_valid_shared_data_shows_official_state_and_opens_workspace(
     assert app.session_state.shared_storage_readable is True
     assert app.session_state.formal_write_available is False
     assert app.session_state.formal_operations_available is False
+
+
+def test_phase_25b_preview_controls_are_visible_but_never_enable_formal_writes(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path, official=True)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+
+    app = _run_app()
+
+    assert not app.exception
+    assert "目前僅產生正式保存預覽，尚未寫入正式資料。" in _messages(app.info)
+    assert any(
+        item.label == "選擇本批次要納入正式保存預覽的情境"
+        for item in app.multiselect
+    )
+    assert any(item.label == "操作人（必填）" for item in app.text_input)
+    assert any(item.label == "備註（必填）" for item in app.text_area)
+    preview_button = next(
+        item for item in app.button if item.label == "產生正式保存預覽"
+    )
+    assert preview_button.disabled
+    assert app.session_state.formal_write_available is False
+    assert app.session_state.formal_operations_available is False
+    assert "official_estimate_candidate" not in app.session_state
+
+
+def test_phase_25b_builds_memory_candidate_and_invalidates_it_after_note_change(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path, official=True)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    monkeypatch.setattr(
+        provenance_module,
+        "load_software_provenance",
+        lambda: SoftwareProvenanceResult(
+            True,
+            software={
+                "repository": "mousepenguin-yzh/liyutan-reservoir-estimator",
+                "git_commit": "c" * 40,
+                "app_version": "git-cccccccccccc",
+                "source_tree_dirty": False,
+            },
+        ),
+    )
+    app = _run_app()
+    batch, results = _ready_official_candidate()
+    app.session_state.display_start_date = dt.date.fromisoformat(batch["display_start_date"])
+    app.session_state.start_date = dt.date.fromisoformat(batch["projection_start_date"])
+    app.session_state.end_date = dt.date.fromisoformat(batch["projection_end_date"])
+    app.session_state.init_capacity = float(batch["initial_capacity"])
+    app.session_state.hist_capacity = batch["historical_capacities"]
+    app.session_state.max_capacity = float(batch["reservoir_parameters"]["max_capacity"])
+    app.session_state.shilin_eco_flow = float(
+        batch["reservoir_parameters"]["shilin_eco_flow"]
+    )
+    app.session_state.liyutan_eco_flow = float(
+        batch["reservoir_parameters"]["liyutan_eco_flow"]
+    )
+    app.session_state.shilin_diversion_limit = float(
+        batch["reservoir_parameters"]["shilin_diversion_limit"]
+    )
+    app.session_state.override_list = []
+    app.session_state.enable_override = False
+    app.session_state.v2_outflows_authoritative = True
+    widget_version = (
+        app.session_state.v2_widget_version
+        if "v2_widget_version" in app.session_state
+        else 0
+    )
+    app.session_state.v2_widget_version = widget_version + 1
+    app.session_state.v2_batch = batch
+    app.session_state.v2_batch_results = results
+    app.session_state.v2_result_fingerprint = batch["results_fingerprint"]
+    app.session_state.v2_results_stale = False
+    app = app.run(timeout=30)
+
+    scenario_id = batch["scenarios"][0]["scenario_id"]
+    _set_widget_value(
+        app.multiselect,
+        "選擇本批次要納入正式保存預覽的情境",
+        [scenario_id],
+    )
+    _set_widget_value(app.text_input, "操作人（必填）", "王承辦")
+    _set_widget_value(app.text_area, "備註（必填）", "AppTest 預覽")
+    app = app.run(timeout=30)
+    preview_button = next(
+        item for item in app.button if item.label == "產生正式保存預覽"
+    )
+    assert not preview_button.disabled
+    app = preview_button.click().run(timeout=30)
+
+    assert not app.exception
+    candidate = app.session_state.official_estimate_candidate
+    assert set(candidate.files) == {
+        "manifest.json",
+        "inputs.json",
+        "scenario_summaries.csv",
+        "daily_results.csv",
+        "COMMITTED.json",
+    }
+    assert candidate.validated_bundle["manifest"]["official_scenario_ids"] == [scenario_id]
+    assert app.session_state.formal_write_available is False
+    assert app.session_state.formal_operations_available is False
+
+    _set_widget_value(app.text_area, "備註（必填）", "修改後備註")
+    app = app.run(timeout=30)
+
+    assert "official_estimate_candidate" not in app.session_state
+    assert "正式保存預覽已失效，請重新產生。" in _messages(app.warning)
 
 
 def test_annual_write_capability_uses_separate_default_off_flag(tmp_path, monkeypatch):
