@@ -1063,7 +1063,8 @@ with tab_inflow:
                 "historical_capacities": st.session_state.hist_capacity,
                 "reservoir_parameters": {"max_capacity": st.session_state.max_capacity,
                     "shilin_eco_flow": st.session_state.shilin_eco_flow,
-                    "liyutan_eco_flow": st.session_state.liyutan_eco_flow},
+                    "liyutan_eco_flow": st.session_state.liyutan_eco_flow,
+                    "shilin_diversion_limit": st.session_state.shilin_diversion_limit},
                 "periods": v2_periods, "shared_period_count": min(2, len(v2_periods)),
                 "shared_inflows": {}, "scenarios": v2_scenarios, "outflows": {},
                 "daily_outflows": [], "date_overrides": [], "overrides_enabled": False,
@@ -1196,7 +1197,8 @@ with tab_inflow:
                 "projection_start_date": st.session_state.start_date.isoformat(), "projection_end_date": st.session_state.end_date.isoformat(),
                 "initial_capacity": st.session_state.init_capacity, "historical_capacities": st.session_state.hist_capacity,
                 "reservoir_parameters": {"max_capacity": st.session_state.max_capacity, "shilin_eco_flow": st.session_state.shilin_eco_flow,
-                    "liyutan_eco_flow": st.session_state.liyutan_eco_flow}})
+                    "liyutan_eco_flow": st.session_state.liyutan_eco_flow,
+                    "shilin_diversion_limit": st.session_state.shilin_diversion_limit}})
             json_text, export_error = safe_export_batch(batch)
             if json_text:
                 st.download_button("下載完整設定 JSON", json_text, f"liyutan-{batch['batch_id']}.json", "application/json")
@@ -1215,6 +1217,7 @@ with tab_inflow:
                         st.session_state.max_capacity = float(params["max_capacity"])
                         st.session_state.shilin_eco_flow = float(params["shilin_eco_flow"])
                         st.session_state.liyutan_eco_flow = float(params["liyutan_eco_flow"])
+                        st.session_state.shilin_diversion_limit = float(params["shilin_diversion_limit"])
                         st.session_state.override_list = [{**ov, "start": datetime.date.fromisoformat(ov["start"]),
                             "end": datetime.date.fromisoformat(ov["end"])} for ov in candidate["date_overrides"]]
                         st.session_state.enable_override = candidate["overrides_enabled"]
@@ -1952,9 +1955,11 @@ if "v2_batch" in st.session_state and "df_daily_outflow" in locals():
 # -----------------
 with tab_simulation:
     st.subheader("🧮 鯉魚潭水庫庫容推估結果")
-    st.markdown("""
-    本模組依據 **「士林堰引水隧道上限33cms，上游灌區優先滿足，下游灌區剩餘分配」** 之調度原則，進行逐日水庫庫容演算。
-    """)
+    st.markdown(
+        f"本模組依據 **「士林堰引水隧道上限 "
+        f"{st.session_state.shilin_diversion_limit:g} cms、上游灌區優先滿足、"
+        "下游灌區剩餘分配」** 之調度原則，進行逐日水庫庫容演算。"
+    )
     
     if proj_unique_periods.empty:
         st.warning("⚠️ 請先返回第一階段，設定正確的模擬日期區間。")
@@ -2016,6 +2021,7 @@ with tab_simulation:
             max_capacity = st.session_state.max_capacity
             shilin_eco = st.session_state.shilin_eco_flow
             liyutan_eco = st.session_state.liyutan_eco_flow
+            shilin_diversion_limit = st.session_state.shilin_diversion_limit
             
             # 歷史區間插值
             has_history = st.session_state.display_start_date < st.session_state.start_date
@@ -2107,7 +2113,7 @@ with tab_simulation:
                     
                     shilin_river_release_cms = min(I_cms, max(shilin_eco, actual_U_cms))
                     available_diversion_cms = max(0.0, I_cms - shilin_river_release_cms)
-                    actual_diversion_cms = min(33.0, available_diversion_cms)
+                    actual_diversion_cms = min(shilin_diversion_limit, available_diversion_cms)
                     actual_diversion_vol = round(actual_diversion_cms * 8.64, 2)
                     
                     liyutan_river_release_cms = max(liyutan_eco, actual_D_cms)

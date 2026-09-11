@@ -1,5 +1,6 @@
 import copy
 import datetime as dt
+import json
 
 import pandas as pd
 import pytest
@@ -28,7 +29,8 @@ def batch():
     return {"schema": SCHEMA_NAME, "schema_version": SCHEMA_VERSION, "batch_id": "batch-1",
         "batch_name": "測試", "display_start_date": "2026-08-01", "projection_start_date": "2026-08-01",
         "projection_end_date": "2026-09-01", "initial_capacity": 8000,
-        "reservoir_parameters": {"max_capacity": 11584, "shilin_eco_flow": 2.7, "liyutan_eco_flow": .3},
+        "reservoir_parameters": {"max_capacity": 11584, "shilin_eco_flow": 2.7,
+                                 "liyutan_eco_flow": .3, "shilin_diversion_limit": 33.0},
         "periods": PERIODS, "shared_period_count": 0, "shared_inflows": {}, "scenarios": scenarios,
         "outflows": {key: {"upstream_irrigation_cms": 2.7, "downstream_irrigation_cms": .3,
                             "public_water_10k_ton_per_day": 60} for key in PERIODS},
@@ -122,10 +124,28 @@ def test_all_scenarios_share_outflow_and_failure_is_isolated():
 
 def test_single_scenario_matches_legacy_formula_reference():
     daily, out = profiles(2)
-    frame, summary = run_water_balance(daily, {PERIODS[0]: 10}, out, 8000, 11584, 2.7, .3)
+    frame, summary = run_water_balance(daily, {PERIODS[0]: 10}, out, 8000, 11584, 2.7, .3, 33.0)
     # Legacy app.py: diversion=(10-max(2.7,2.7))*8.64=63.07; out=60+2.592=62.59.
     assert frame["本日末庫容 (萬噸)"].tolist() == [8000.48, 8000.96]
     assert summary["final_capacity"] == 8000.96
+
+
+def test_diversion_limit_is_explicit_and_changes_calculation():
+    daily, out = profiles(1)
+    inflows = {PERIODS[0]: 80.0}
+    low, _ = run_water_balance(daily, inflows, out, 8000, 11584, 2.7, .3, 5.0)
+    high, _ = run_water_balance(daily, inflows, out, 8000, 11584, 2.7, .3, 12.0)
+    assert low.iloc[0]["實際引水流量 (cms)"] == 5.0
+    assert high.iloc[0]["實際引水流量 (cms)"] == 12.0
+    assert high.iloc[0]["本日末庫容 (萬噸)"] > low.iloc[0]["本日末庫容 (萬噸)"]
+
+
+def test_legacy_v2_json_without_diversion_limit_loads_with_33_compatibility_default():
+    legacy = batch()
+    legacy["reservoir_parameters"].pop("shilin_diversion_limit")
+    restored = import_batch(json.dumps(legacy, ensure_ascii=False))
+    assert restored["reservoir_parameters"]["shilin_diversion_limit"] == 33.0
+    assert json.loads(export_batch(restored))["reservoir_parameters"]["shilin_diversion_limit"] == 33.0
 
 
 def test_ui_state_delete_template_and_outflow_changes_invalidate_results():
@@ -191,10 +211,10 @@ def test_v2_history_and_representative_boundaries_match_independent_legacy_refer
         return rows
 
     for initial, inflow in [(11580, 80), (500, 1)]:  # spill and agricultural reduction / empty boundary
-        actual, _ = run_water_balance(profile, {key: inflow for key in keys}, out, initial, 11584, 2.7, .3)
+        actual, _ = run_water_balance(profile, {key: inflow for key in keys}, out, initial, 11584, 2.7, .3, 33.0)
         expected = legacy_reference(initial, inflow)
         assert list(zip(actual["本日末庫容 (萬噸)"], actual["溢流量 (萬噸)"], actual["農業削減量 (cms)"])) == expected
-    projection, _ = run_water_balance(profile, {key: 10 for key in keys}, out, 8000, 11584, 2.7, .3)
+    projection, _ = run_water_balance(profile, {key: 10 for key in keys}, out, 8000, 11584, 2.7, .3, 33.0)
     history = {dt.date(2026, 1, 15): 7900, dt.date(2026, 1, 16): 7920,
                dt.date(2026, 1, 17): 7950, dt.date(2026, 1, 18): 8000}
     combined = prepend_history(projection, dt.date(2026, 1, 15), dt.date(2026, 1, 19), history, 8000)

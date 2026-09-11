@@ -18,6 +18,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from v2_workflow import settings_fingerprint as v2_settings_fingerprint
 from v2_workflow import validate_batch as validate_v2_batch
 
 
@@ -65,7 +66,7 @@ SUMMARY_COLUMNS = (
     "scenario_name",
     "scenario_order",
     "calculation_status",
-    "settings_fingerprint",
+    "inputs_fingerprint",
     "final_capacity_10k_ton",
     "minimum_capacity_10k_ton",
     "spill_volume_10k_ton",
@@ -76,7 +77,7 @@ DAILY_RESULT_COLUMNS = (
     "version_id",
     "batch_id",
     "scenario_id",
-    "settings_fingerprint",
+    "inputs_fingerprint",
     "date",
     "natural_inflow_cms",
     "upstream_demand_cms",
@@ -105,6 +106,28 @@ ANNUAL_DATA_FILES = (
 ANNUAL_REQUIRED_FILES = ("version.json", *ANNUAL_DATA_FILES, "COMMITTED.json")
 OFFICIAL_DATA_FILES = ("inputs.json", "scenario_summaries.csv", "daily_results.csv")
 OFFICIAL_REQUIRED_FILES = ("manifest.json", *OFFICIAL_DATA_FILES, "COMMITTED.json")
+OFFICIAL_BATCH_FIELDS = (
+    "schema",
+    "schema_version",
+    "batch_id",
+    "batch_name",
+    "display_start_date",
+    "projection_start_date",
+    "projection_end_date",
+    "initial_capacity",
+    "historical_capacities",
+    "reservoir_parameters",
+    "periods",
+    "shared_period_count",
+    "shared_inflows",
+    "scenarios",
+    "outflows",
+    "daily_outflows",
+    "date_overrides",
+    "overrides_enabled",
+    "created_at",
+    "note",
+)
 
 _SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 _GIT_SHA_RE = re.compile(r"^[0-9a-f]{40}$")
@@ -1091,6 +1114,16 @@ def validate_annual_bundle(files: Mapping[str, bytes]) -> dict:
 
 def validate_official_inputs(data: Any) -> dict:
     item = _schema(data, OFFICIAL_INPUTS_SCHEMA, "inputs.json")
+    fields = (
+        "schema",
+        "schema_version",
+        "annual_data_version_id",
+        "batch_id",
+        "official_scenario_ids",
+        "reservoir_parameters",
+        "batch",
+    )
+    _exact_fields(item, fields, "inputs.json")
     _required(
         item,
         (
@@ -1107,8 +1140,10 @@ def validate_official_inputs(data: Any) -> dict:
     batch_id = _string(item["batch_id"], "inputs.json.batch_id")
     official_ids = _unique_strings(item["official_scenario_ids"], "inputs.json.official_scenario_ids")
     outer_parameters = validate_reservoir_parameters(item["reservoir_parameters"])
+    raw_batch = _mapping(item["batch"], "inputs.json.batch")
+    _exact_fields(raw_batch, OFFICIAL_BATCH_FIELDS, "inputs.json.batch")
     try:
-        batch = validate_v2_batch(item["batch"])
+        batch = validate_v2_batch(raw_batch)
     except (ValueError, TypeError, KeyError, AttributeError) as exc:
         raise StorageValidationError(f"inputs.json.batch 未通過 V2 完整驗證：{exc}") from exc
     if batch["batch_id"] != batch_id:
@@ -1121,10 +1156,16 @@ def validate_official_inputs(data: Any) -> dict:
     if scenario_ids != official_ids:
         _fail("inputs.json.batch.scenarios 必須依 official_scenario_ids 完整且不得夾帶其他情境")
     inner_parameters = _mapping(batch["reservoir_parameters"], "inputs.json.batch.reservoir_parameters")
+    _exact_fields(
+        inner_parameters,
+        ("max_capacity", "shilin_eco_flow", "liyutan_eco_flow", "shilin_diversion_limit"),
+        "inputs.json.batch.reservoir_parameters",
+    )
     parameter_pairs = (
         ("max_capacity_10k_ton", "max_capacity"),
         ("shilin_ecological_flow_cms", "shilin_eco_flow"),
         ("liyutan_ecological_release_cms", "liyutan_eco_flow"),
+        ("shilin_diversion_limit_cms", "shilin_diversion_limit"),
     )
     for outer_field, inner_field in parameter_pairs:
         if inner_field not in inner_parameters:
@@ -1148,8 +1189,90 @@ def official_inputs_fingerprint(inputs: Any) -> str:
     return deterministic_fingerprint(validated)
 
 
+def validate_official_save_eligibility(
+    batch: Any,
+    results: Any,
+    official_scenario_ids: Any,
+    *,
+    annual_data_version_id: Any,
+    shared_annual_data_validated: bool,
+    software: Any,
+) -> dict:
+    """Validate the domain preconditions for a future explicit formal save.
+
+    This function neither builds nor writes a formal bundle.  It intentionally
+    consumes the current V2 batch/result set, so a Step 5 cross-batch comparison
+    registry cannot be mistaken for the source of an official version.
+    """
+    if shared_annual_data_validated is not True:
+        _fail("只有正常且已驗證的共享年度基準資料具正式保存資格")
+    annual_version_id = validate_safe_id(
+        annual_data_version_id, "正式保存資格 annual_data_version_id"
+    )
+    validated_software = validate_software_metadata(software, "正式保存資格 software")
+    if validated_software["source_tree_dirty"]:
+        _fail("source tree dirty，不具正式保存資格")
+    try:
+        validated_batch = validate_v2_batch(batch)
+    except (ValueError, TypeError, KeyError, AttributeError) as exc:
+        raise StorageValidationError(f"目前 V2 batch 未通過完整驗證：{exc}") from exc
+    selected_ids = _unique_strings(
+        official_scenario_ids, "正式保存資格 official_scenario_ids"
+    )
+    batch_ids = {scenario["scenario_id"] for scenario in validated_batch["scenarios"]}
+    if not set(selected_ids) <= batch_ids:
+        _fail("正式情境必須全部來自目前正在工作的 V2 batch")
+    if not isinstance(results, Mapping):
+        _fail("正式保存資格缺少目前 V2 batch 的計算結果")
+    current_fingerprint = v2_settings_fingerprint(validated_batch)
+    if validated_batch.get("results_fingerprint") != current_fingerprint:
+        _fail("目前 V2 batch 的計算結果已過期或尚未在目前設定下重新計算")
+    for scenario_id in selected_ids:
+        result = results.get(scenario_id)
+        if not isinstance(result, Mapping) or result.get("status") != "success":
+            _fail(f"正式情境 {scenario_id} 尚未計算成功")
+        data = result.get("data")
+        empty = getattr(data, "empty", None)
+        lacks_rows = (
+            data is None
+            or empty is True
+            or (empty is None and hasattr(data, "__len__") and len(data) == 0)
+        )
+        if lacks_rows:
+            _fail(f"正式情境 {scenario_id} 缺少完整逐日結果")
+        if not isinstance(result.get("summary"), Mapping):
+            _fail(f"正式情境 {scenario_id} 缺少成功摘要")
+    return {
+        "batch": validated_batch,
+        "results": results,
+        "official_scenario_ids": selected_ids,
+        "annual_data_version_id": annual_version_id,
+        "software": validated_software,
+        "v2_settings_fingerprint": current_fingerprint,
+    }
+
+
 def validate_official_manifest(data: Any) -> dict:
     item = _schema(data, OFFICIAL_ESTIMATE_SCHEMA, "manifest.json")
+    fields = (
+        "schema",
+        "schema_version",
+        "version_id",
+        "batch_id",
+        "batch_name",
+        "previous_official_version_id",
+        "derived_from_official_version_id",
+        "annual_data_version_id",
+        "inputs_fingerprint",
+        "official_scenario_ids",
+        "created_at",
+        "operator_display_name",
+        "note",
+        "software",
+        "batch_schema_version",
+        "files",
+    )
+    _exact_fields(item, fields, "manifest.json")
     _required(
         item,
         (
@@ -1157,8 +1280,9 @@ def validate_official_manifest(data: Any) -> dict:
             "batch_id",
             "batch_name",
             "previous_official_version_id",
+            "derived_from_official_version_id",
             "annual_data_version_id",
-            "settings_fingerprint",
+            "inputs_fingerprint",
             "official_scenario_ids",
             "created_at",
             "operator_display_name",
@@ -1175,25 +1299,25 @@ def validate_official_manifest(data: Any) -> dict:
     _optional_safe_id(
         item["previous_official_version_id"], "manifest.json.previous_official_version_id"
     )
+    _optional_safe_id(
+        item["derived_from_official_version_id"],
+        "manifest.json.derived_from_official_version_id",
+    )
+    for relationship_field in (
+        "previous_official_version_id",
+        "derived_from_official_version_id",
+    ):
+        if item[relationship_field] == item["version_id"]:
+            _fail(f"manifest.json.{relationship_field} 不得指向本版本")
     validate_safe_id(item["annual_data_version_id"], "manifest.json.annual_data_version_id")
-    _sha256(item["settings_fingerprint"], "manifest.json.settings_fingerprint")
+    _sha256(item["inputs_fingerprint"], "manifest.json.inputs_fingerprint")
     _unique_strings(item["official_scenario_ids"], "manifest.json.official_scenario_ids")
     _timestamp(item["created_at"], "manifest.json.created_at")
     _string(item["operator_display_name"], "manifest.json.operator_display_name")
     _string(item["note"], "manifest.json.note")
-    software = _mapping(item["software"], "manifest.json.software")
-    _required(
-        software,
-        ("repository", "git_commit", "app_version", "source_tree_dirty"),
-        "manifest.json.software",
-    )
-    _string(software["repository"], "manifest.json.software.repository")
-    git_commit = _string(software["git_commit"], "manifest.json.software.git_commit")
-    if not _GIT_SHA_RE.fullmatch(git_commit):
-        _fail("manifest.json.software.git_commit 必須是 40 字元小寫 commit SHA")
-    _string(software["app_version"], "manifest.json.software.app_version")
-    if not isinstance(software["source_tree_dirty"], bool):
-        _fail("manifest.json.software.source_tree_dirty 必須是 boolean")
+    software = validate_software_metadata(item["software"], "manifest.json.software")
+    if software["source_tree_dirty"]:
+        _fail("manifest.json.software.source_tree_dirty 為 true，不具正式保存資格")
     if _integer(item["batch_schema_version"], "manifest.json.batch_schema_version", 1) != BATCH_SCHEMA_VERSION:
         _fail("manifest.json.batch_schema_version 不支援")
     _file_manifest(item["files"], OFFICIAL_DATA_FILES, "manifest.json")
@@ -1221,8 +1345,8 @@ def validate_scenario_summaries(rows: Sequence[Mapping[str, Any]], manifest: Map
         orders.add(order)
         if row["calculation_status"] != "success":
             _fail("所有正式情境的 calculation_status 必須是 success")
-        if row["settings_fingerprint"] != manifest["settings_fingerprint"]:
-            _fail("scenario_summaries.csv settings fingerprint 與 manifest 不一致")
+        if row["inputs_fingerprint"] != manifest["inputs_fingerprint"]:
+            _fail("scenario_summaries.csv inputs fingerprint 與 manifest 不一致")
         for column in SUMMARY_COLUMNS[7:-1]:
             _csv_number(row[column], f"scenario_summaries.csv {column}")
         _csv_integer(row["dry_days"], "scenario_summaries.csv dry_days")
@@ -1251,8 +1375,8 @@ def validate_daily_results(
         scenario_id = row["scenario_id"]
         if scenario_id not in per_scenario:
             _fail("daily_results.csv 混入 official_scenario_ids 以外的情境")
-        if row["settings_fingerprint"] != manifest["settings_fingerprint"]:
-            _fail("daily_results.csv settings fingerprint 與 manifest 不一致")
+        if row["inputs_fingerprint"] != manifest["inputs_fingerprint"]:
+            _fail("daily_results.csv inputs fingerprint 與 manifest 不一致")
         date = _date(row["date"], "daily_results.csv date")
         if date not in expected_dates:
             _fail("daily_results.csv 日期超出推估期間")
@@ -1269,6 +1393,50 @@ def validate_daily_results(
     return validated
 
 
+def validate_summary_daily_consistency(
+    summaries: Sequence[Mapping[str, Any]], daily_results: Sequence[Mapping[str, Any]]
+) -> None:
+    """Verify every persisted summary against its authoritative daily rows."""
+    rows_by_scenario: dict[str, list[Mapping[str, Any]]] = {}
+    for row in daily_results:
+        rows_by_scenario.setdefault(str(row["scenario_id"]), []).append(row)
+    for summary in summaries:
+        scenario_id = str(summary["scenario_id"])
+        rows = sorted(rows_by_scenario.get(scenario_id, []), key=lambda row: str(row["date"]))
+        if not rows:
+            _fail(f"scenario_summaries.csv 情境 {scenario_id} 沒有逐日結果可供核對")
+        end_capacities = [float(row["end_capacity_10k_ton"]) for row in rows]
+        expected = {
+            "final_capacity_10k_ton": end_capacities[-1],
+            "minimum_capacity_10k_ton": min(end_capacities),
+            "spill_volume_10k_ton": sum(float(row["spill_volume_10k_ton"]) for row in rows),
+            "agricultural_reduction_volume_10k_ton": sum(
+                float(row["agricultural_reduction_cms"]) * 8.64 for row in rows
+            ),
+        }
+        tolerances = {
+            "final_capacity_10k_ton": 0.011,
+            "minimum_capacity_10k_ton": 0.011,
+            "spill_volume_10k_ton": max(0.011, len(rows) * 0.006),
+            # Daily reduction is currently persisted to 0.01 cms while the
+            # in-memory summary accumulates before display rounding.
+            "agricultural_reduction_volume_10k_ton": max(0.05, len(rows) * 0.044),
+        }
+        for field, expected_value in expected.items():
+            actual_value = float(summary[field])
+            if not math.isclose(actual_value, expected_value, rel_tol=1e-9, abs_tol=tolerances[field]):
+                _fail(
+                    f"scenario_summaries.csv 情境 {scenario_id} 的 {field} "
+                    "與 daily_results.csv 不一致"
+                )
+        expected_dry_days = sum(value <= 0.0 for value in end_capacities)
+        if int(summary["dry_days"]) != expected_dry_days:
+            _fail(
+                f"scenario_summaries.csv 情境 {scenario_id} 的 dry_days "
+                "與 daily_results.csv 不一致"
+            )
+
+
 def validate_official_bundle(files: Mapping[str, bytes]) -> dict:
     bundle = _normalize_bundle(files, OFFICIAL_REQUIRED_FILES, "正式推估版本")
     manifest = validate_official_manifest(deserialize_json(bundle["manifest.json"]))
@@ -1281,12 +1449,13 @@ def validate_official_bundle(files: Mapping[str, bytes]) -> dict:
         _fail("inputs.json 批次 ID 與 manifest 不一致")
     if inputs["official_scenario_ids"] != manifest["official_scenario_ids"]:
         _fail("inputs.json official_scenario_ids 與 manifest 不一致")
-    if official_inputs_fingerprint(inputs) != manifest["settings_fingerprint"]:
-        _fail("inputs.json 設定 fingerprint 與 manifest 不一致")
+    if official_inputs_fingerprint(inputs) != manifest["inputs_fingerprint"]:
+        _fail("inputs.json inputs fingerprint 與 manifest 不一致")
     summaries = deserialize_csv(bundle["scenario_summaries.csv"], SUMMARY_COLUMNS)
     daily_results = deserialize_csv(bundle["daily_results.csv"], DAILY_RESULT_COLUMNS)
     validate_scenario_summaries(summaries, manifest)
     validate_daily_results(daily_results, manifest, inputs)
+    validate_summary_daily_consistency(summaries, daily_results)
     scenario_lookup = {scenario["scenario_id"]: scenario for scenario in inputs["batch"]["scenarios"]}
     for row in summaries:
         scenario = scenario_lookup[row["scenario_id"]]

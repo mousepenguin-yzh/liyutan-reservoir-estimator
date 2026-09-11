@@ -23,11 +23,18 @@
 - 2-4 功能實作完成，但公司 SMB 實機多人、鎖定與中斷 acceptance 仍留在 2-8；generic `formal_write_available`／`formal_operations_available` 仍維持 `False`。
 - 2-4 年度資料 UI 已完成收斂：一般畫面只呈現可用狀態、使用年度、實績截止旬與更新日期；「年度資料維護」依上傳、檢查差異、建立新版、啟用新版四個任務呈現；current、revision、audit、fingerprint、SHA-256 及 recovery 技術資訊保留在預設收合的進階區。
 - 2-4D 年度資料填報規則已收斂：公版升為 `2-4D.1`，Q 值與年度基準出流空白只沿用目前啟用版本的同旬同欄位，水庫參數依數值是否變更決定日期是否可沿用；解析後 candidate 與正式版本仍是完整、自包含資料。舊版公版會明確拒絕，不會套用新空白語意。
-- 2-5 尚未開始，正式推估保存仍不可用；本次 UI 收斂沒有開啟 generic `formal_write_available` 或 `formal_operations_available`。
+- 2-5A 正式推估資料契約已收斂：V2 batch 明確保存並使用年度士林攔河堰最大引水量；official manifest/inputs/CSV 使用 `inputs_fingerprint`、previous/derived lineage、summary/daily 一致性與 clean source tree 資格驗證。
+- 2-5B 正式 bundle builder 與 2-5C 正式發布流程尚未開始；沒有正式保存按鈕，也不寫入 `official-estimates`，generic `formal_write_available`／`formal_operations_available` 仍維持 `False`。因此不要把 2-5 整體視為完成。
 - 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非正式資料，不會永久更新共享正式資料。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
 - staging、quarantine 與一般 temp evidence 的隔離／清理仍不自動執行，屬 2-8 人工維運與實機 acceptance 範圍。
+
+Phase 2 近期里程碑：
+
+- 2-4D ✅
+- 2-5A ✅
+- 2-5B 尚未開始
 
 
 ## V2 多情境工作流程（第一階段已完成）
@@ -38,7 +45,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 本階段完成 1～N 個入流情境、共用 0 旬至全部推估旬、共用出流、批次演算、步驟四單一情境詳情，以及步驟五跨批次比較相容；核心水量平衡公式未改動。
 
-第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。2-4 年度 Excel 驗證與不可變版本建立、安全啟用／切換、唯讀 diagnostics 與受控 recovery 功能均已完成；公司 SMB 實機 acceptance 留在 2-8，正式推估保存、跨電腦接續及桌面捷徑仍尚未實作。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
+第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。2-4 年度 Excel 驗證與不可變版本建立、安全啟用／切換、唯讀 diagnostics 與受控 recovery 功能均已完成；2-5A 資料契約也已完成。公司 SMB 實機 acceptance 留在 2-8，2-5B/2-5C 正式推估建置與發布、跨電腦接續及桌面捷徑仍尚未實作。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
 
 ## 技術與單位
 
@@ -124,7 +131,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 | --- | --- | --- |
 | Streamlit `session_state` | 同一次工作階段內保留輸入、情境及演算結果 | 關閉／逾時／重啟後仍保留；跨瀏覽器或跨電腦同步 |
 | JSON 設定檔 | 手動下載後，可在同一台或另一台電腦載入並重新演算 | 自動保存、自動載入、多人共用最新版 |
-| 公司內網共享資料夾年度資料 | 讀取目前年度版本與最近正式推估摘要；建立／啟用 immutable 年度版本；顯示 diagnostics；執行具唯一 evidence 的首次初始化、audit 補建、current reconstruction 或 broken-target switch | 尚無 destructive evidence cleanup、正式推估保存或跨裝置載入正式推估工作區；公司 SMB acceptance 留在 2-8 |
+| 公司內網共享資料夾年度資料 | 讀取目前年度版本與最近正式推估摘要；建立／啟用 immutable 年度版本；顯示 diagnostics；執行具唯一 evidence 的首次初始化、audit 補建、current reconstruction 或 broken-target switch | 正式推估僅完成 2-5A 契約，尚無 2-5B bundle builder、2-5C writer/publisher、destructive evidence cleanup 或跨裝置載入正式推估工作區；公司 SMB acceptance 留在 2-8 |
 
 因此，目前若要換電腦接續工作，必須先下載 JSON，再於另一台電腦手動載入。網站不會自動記得上一次推估條件，也不會辨識使用者或裝置。
 
@@ -136,7 +143,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 鯉魚潭正式共用根目錄規劃為 `U:\經管科\水庫庫容推估系統\鯉魚潭`。Google Sheet 是早期評估過的方向，已不再是第二階段主要永久儲存方案。
 
-正式推估將保存完整輸入、摘要、完整逐日結果、年度資料版本、程式與 schema 版本、操作人、備註、上一版本及 checksum；年度資料將涵蓋 Q5～Q95、出流需求、滿庫容量、生態流量及士林堰 33 cms 引水上限。兩者都採新增版本、不覆蓋舊版。
+正式推估資料契約保存完整實際輸入與來源、摘要、完整逐日結果、年度資料版本、程式與 schema 版本、操作人、備註、發布順序前版、工作衍生來源及 checksum；年度資料涵蓋 Q5～Q95、出流需求、滿庫容量、生態流量及士林攔河堰最大引水量。兩者都採新增版本、不覆蓋舊版。
 
 資料 schema、共享資料唯讀啟動，以及 2-4 年度 Excel 驗證／版本建立、安全啟用／切換、diagnostics 與受控 recovery 功能均已完成。2-4 功能實作完成；公司實際 SMB 多人、鎖定與中斷驗收留在 2-8。
 
@@ -146,6 +153,9 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 - 「系統基準資料」或「年度基準資料」是所有新推估共用的預設基礎，包括 Q 值、年度基準出流及水庫參數；一般每旬推估不需要重新填寫年度 Excel。
 - 「正式推估版本」是某一次推估的完整條件與結果；單次自訂入流、出流、抗旱調度或臨時參數只屬該次推估，不會反向修改系統基準。關係可表為：`系統基準資料＋本次推估調整＋計算結果＝正式推估版本`。
+- 執行推估、查看結果與加入 Step 5 跨批次比較都只是工作中嘗試，不會自動建立正式版本。未來正式保存必須由目前 V2 batch 選定情境、明確確認後另建不可變 `estimate_version_id`；同一開啟 batch 可沿用 `batch_id` 再存新版。
+- 只有正常且已驗證的共享年度基準、目前設定下重新計算成功的選定情境，以及 `source_tree_dirty=False` 的程式版本具正式保存資格。built-in fallback、相容模式、共享資料異常、未計算／失敗／過期結果或 dirty tree 均不具資格。
+- V2 `settings_fingerprint` 只判斷工作階段結果是否因設定變更而過期；正式 manifest 與 CSV 使用以完整 official inputs 計算的 `inputs_fingerprint`，兩者不可混用。
 - 正式年度資料採新增版本，不直接覆蓋。
 - 正式年度 JSON／CSV 與必要來源附件應保存於公司內網共享資料夾。
 - 程式碼、資料內容與憑證分開管理。
@@ -199,7 +209,7 @@ $env:LIYUTAN_ENABLE_ANNUAL_DATA_RECOVERY = '1'
 | 工作階段上傳資料 | 非正式 | 只影響目前 Streamlit 工作階段；畫面持續警示，不能冒充共享正式版本 |
 | 內建備援資料 | 非正式 | 已啟用共享模式但讀取失敗後，只有使用者明確點選備援按鈕才會啟用 |
 
-共享 reader 完整驗證成功時 `shared_storage_readable=True`。`annual_data_write_available` 與 `annual_recovery_available` 是互相獨立的年度專用能力；generic `formal_write_available=False` 與 `formal_operations_available=False` 仍固定不變，避免被尚未完成的 2-5 正式推估保存誤用。正式共享資料內容不得加入 Git；開發及自動化測試一律使用 pytest 暫存資料夾與合成資料。
+共享 reader 完整驗證成功時 `shared_storage_readable=True`。`annual_data_write_available` 與 `annual_recovery_available` 是互相獨立的年度專用能力；generic `formal_write_available=False` 與 `formal_operations_available=False` 仍固定不變，避免被尚未完成的 2-5B/2-5C 正式推估建置與發布流程誤用。正式共享資料內容不得加入 Git；開發及自動化測試一律使用 pytest 暫存資料夾與合成資料。
 
 ### 產生 2-4D 空白年度資料 Excel 公版
 
@@ -241,7 +251,7 @@ Streamlit 頁面上方提供獨立的年度資料維護與差異預覽。使用�
 
 2-4C2b1 將既有 2-4B preview 接到 2-4C1 publisher；操作人、建立備註、差異與 warnings 維持顯示及獨立確認，candidate fingerprint、原始檔名／SHA-256 等技術資訊移入進階收合區。一般維護流程使用「建立新版」與「啟用新版」；建立成功明示「尚未套用」，不會自動呼叫 activation。啟用區以業務語言說明新開啟推估與既有工作區的影響，observed current/revision、target 與 software provenance 保留在進階收合區；送往 2-4C2a 的 exact observed state 與 revision conflict 不重試規則完全不變。
 
-啟用的 software provenance 由 `software_provenance.py` 以唯讀 `git rev-parse HEAD` 與 `git status --porcelain --untracked-files=normal` 取得；repository 固定為本 repository，`app_version` 自動衍生為 `git-<12字元commit>`。無可靠 40 字元 SHA 時停用啟用；dirty 狀態會警示並如實寫入 audit，但本階段不另立禁止政策。
+啟用的 software provenance 由 `software_provenance.py` 以唯讀 `git rev-parse HEAD` 與 `git status --porcelain --untracked-files=normal` 取得；repository 固定為本 repository，`app_version` 自動衍生為 `git-<12字元commit>`。無可靠 40 字元 SHA 時停用啟用；年度資料 activation 的 dirty 狀態會警示並如實寫入 audit，維持既有政策。正式推估則採不同且更嚴格的 2-5A 契約：`source_tree_dirty=True` 不具正式保存資格。
 
 已開啟工作區記住其 loaded annual version。其他電腦啟用新版後，rerun 只顯示「系統基準資料已有新版」，不會改 hydrology、demand、水庫參數或使用者輸入。使用者可選擇「暫時使用目前資料」（通知持續），或明確按「重新載入新版」；後者完整套用新版、清除水文／出流年度 session overrides、使舊演算結果失效並更新 workspace version。activation 成功本身不直接改工作區。
 

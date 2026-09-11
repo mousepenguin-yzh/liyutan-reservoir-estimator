@@ -20,6 +20,7 @@ SCHEMA_NAME = "liyutan-reservoir-estimator/batch"
 SCHEMA_VERSION = 1
 UNIT_CMS = "cms"
 UNIT_10K_TON_DAY = "10k_ton_per_day"
+LEGACY_SHILIN_DIVERSION_LIMIT_CMS = 33.0
 
 
 def new_id() -> str:
@@ -437,13 +438,24 @@ def export_batch(batch: dict) -> str:
 def import_batch(text: str) -> dict:
     try: data = json.loads(text)
     except json.JSONDecodeError as exc: raise ValueError(f"JSON 格式錯誤：{exc.msg}") from exc
-    result = validate_batch(data)
+    # V2 JSON exported before Phase 2-5A did not persist this annual
+    # parameter. Migration is deliberately limited to the legacy import
+    # boundary; current/formal batches must carry the value explicitly.
+    result = validate_batch(data, allow_legacy_diversion_limit=True)
     result.pop("results", None); result.pop("results_fingerprint", None)
     return result
 
 
-def validate_batch(batch: dict) -> dict:
+def validate_batch(batch: dict, *, allow_legacy_diversion_limit: bool = False) -> dict:
     if not isinstance(batch, dict): raise ValueError("設定檔根節點必須是物件")
+    batch = copy.deepcopy(batch)
+    parameters = batch.get("reservoir_parameters")
+    if (
+        allow_legacy_diversion_limit
+        and isinstance(parameters, dict)
+        and "shilin_diversion_limit" not in parameters
+    ):
+        parameters["shilin_diversion_limit"] = LEGACY_SHILIN_DIVERSION_LIMIT_CMS
     required = {"schema", "schema_version", "batch_id", "batch_name", "display_start_date",
                 "projection_start_date", "projection_end_date", "initial_capacity",
                 "reservoir_parameters", "periods", "shared_period_count", "shared_inflows",
@@ -503,7 +515,15 @@ def validate_batch(batch: dict) -> dict:
     if batch["overrides_enabled"] and find_override_overlaps(batch["date_overrides"]):
         raise ValueError("啟用的出流覆寫期間不可重疊")
     _finite_nonnegative(batch["initial_capacity"], "起始庫容")
-    return copy.deepcopy(batch)
+    if not isinstance(parameters, dict): raise ValueError("水庫參數必須是物件")
+    for field, label in (
+        ("max_capacity", "最大庫容"),
+        ("shilin_eco_flow", "士林堰生態基流"),
+        ("liyutan_eco_flow", "鯉魚潭生態放流"),
+        ("shilin_diversion_limit", "士林攔河堰最大引水量"),
+    ):
+        _finite_nonnegative(parameters.get(field), label)
+    return batch
 
 
 def _jsonable(value: Any) -> Any:
@@ -525,13 +545,14 @@ def standardize_comparison_result(batch: dict, scenario: dict, result: pd.DataFr
 
 def run_water_balance(daily_profile: pd.DataFrame, inflows: dict[str, float], daily_outflow: pd.DataFrame,
                       initial_capacity: float, max_capacity: float, shilin_eco: float,
-                      liyutan_eco: float) -> tuple[pd.DataFrame, dict]:
+                      liyutan_eco: float, shilin_diversion_limit: float) -> tuple[pd.DataFrame, dict]:
     """The legacy daily formula, isolated unchanged for batch execution.
 
     ``daily_profile`` must contain 日期/年份/月分/旬別 and only projection days.
     This intentionally mirrors the arithmetic and rounding in ``app.py``.
     """
     capacity = initial_capacity
+    diversion_limit = _finite_nonnegative(shilin_diversion_limit, "士林攔河堰最大引水量")
     records, total_reduction, total_spill = [], 0.0, 0.0
     out_lookup = {pd.Timestamp(row["日期"]).date(): row for _, row in daily_outflow.iterrows()}
     for _, row in daily_profile.iterrows():
@@ -549,7 +570,7 @@ def run_water_balance(daily_profile: pd.DataFrame, inflows: dict[str, float], da
         reduction = upstream + downstream - actual_up - actual_down
         total_reduction += reduction * 8.64
         shilin_release = min(inflow, max(shilin_eco, actual_up))
-        diversion = min(33.0, max(0.0, inflow - shilin_release))
+        diversion = min(diversion_limit, max(0.0, inflow - shilin_release))
         diversion_volume = round(diversion * 8.64, 2)
         dam_release = max(liyutan_eco, actual_down)
         total_outflow = round(public + round(dam_release * 8.64, 2), 2)
@@ -596,7 +617,7 @@ def run_batch(batch: dict, daily_profile: pd.DataFrame, daily_outflow: pd.DataFr
             inflows = {key: cell["cms"] for key, cell in scenario["inflows"].items()}
             frame, summary = run_water_balance(daily_profile, inflows, daily_outflow,
                 batch["initial_capacity"], params["max_capacity"], params["shilin_eco_flow"],
-                params["liyutan_eco_flow"])
+                params["liyutan_eco_flow"], params["shilin_diversion_limit"])
             results[scenario["scenario_id"]] = {"status": "success", "data": frame, "summary": summary}
         except Exception as exc:  # scenario isolation is a batch requirement
             results[scenario["scenario_id"]] = {"status": "error", "error": str(exc)}
