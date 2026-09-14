@@ -26,7 +26,8 @@
 - 2-5A 正式推估資料契約已收斂：V2 batch 明確保存並使用年度士林攔河堰最大引水量；official manifest/inputs/CSV 使用 `inputs_fingerprint`、previous/derived lineage、summary/daily 一致性與 clean source tree 資格驗證。
 - 2-5B 正式保存預覽與 bundle candidate 已完成：Step 5 可從目前 V2 batch 的有效成功情境選取內容、填寫人工操作人與必填備註，並在記憶體建立且完整驗證 official-format candidate；工作階段上傳可保存當次真正使用的值，但其背後仍須有健康、已載入、未過期且版本一致的共享年度基準；不接受跨 batch 比較清單、built-in／未驗證年度資料、stale result 或 dirty source tree。
 - 2-5C1 正式推估安全發布核心已完成：`official_estimate_publisher.py` 可將同一份已驗證 candidate 依唯一 staging、逐檔 fsync/readback、最後建立正式 `COMMITTED.json`、Windows/SMB 排他鎖、鎖內 conflict/current/annual 重驗、append-only version rename、atomic current 與 append-only audit 安全發布。正常發布另要求 official history 健康：current 缺失時 versions inventory 必須為空；current 存在時必須有唯一且完整符合 revision、version、previous 與 manifest checksum 的成功 publish audit，否則回報 `recovery_required`。
-- 2-5C2 Streamlit 正式保存接線已完成：preview 固定產生當下的 official revision/current pair，使用者檢查預覽並勾選不可變版本確認後，才可按「正式保存」呼叫同一個 2-5C1 publisher。功能另受預設關閉的 `LIYUTAN_ENABLE_FORMAL_WRITES=1`、健康共享 root 與 Windows production capability 保護；成功、衝突、recovery-required、部分成功、lock timeout 與 filesystem failure 各有不同 session 處理及人類可讀訊息。`formal_operations_available` 仍為 `False`，2-5 整體仍未完成。
+- 2-5C2 Streamlit 正式保存接線已完成：preview 固定產生當下的 official revision/current pair，使用者檢查預覽並勾選不可變版本確認後，才可按「正式保存」呼叫同一個 2-5C1 publisher。功能另受預設關閉的 `LIYUTAN_ENABLE_FORMAL_WRITES=1`、健康共享 root 與 Windows production capability 保護；成功、衝突、recovery-required、部分成功、lock timeout 與 filesystem failure 各有不同 session 處理及人類可讀訊息。`formal_operations_available` 仍為 `False`。
+- 2-5D 正式保存 UI 與驗收文件已收斂：成功畫面以 `Asia/Taipei` 顯示台灣時間、一般畫面使用不具 identity 意義的短版正式版本 ID，完整 ID 與 UTC 保留在進階資訊；2-5 受控單機／多 session 測試區人工驗收已完成，紀錄見 [Phase 2-5 驗收文件](docs/PHASE_2_5_ACCEPTANCE.md)。
 - 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非年度基準資料，不會永久更新 annual-data；若底層共享年度基準健康且版本一致，當次真正使用的上傳值可以納入正式推估 candidate。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
@@ -39,6 +40,10 @@ Phase 2 近期里程碑：
 - 2-5B ✅
 - 2-5C1 ✅
 - 2-5C2 ✅
+- 2-5D ✅
+- 2-5 受控人工驗收 ✅
+
+下一階段：2-6 跨電腦／正式版本載入與接續工作。Phase 2 尚未全部完成；公司多電腦、真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收仍留在 2-8。
 
 
 ## V2 多情境工作流程（第一階段已完成）
@@ -49,7 +54,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 本階段完成 1～N 個入流情境、共用 0 旬至全部推估旬、共用出流、批次演算、步驟四單一情境詳情，以及步驟五跨批次比較相容；核心水量平衡公式未改動。
 
-第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。2-4 年度資料、2-5A 資料契約、2-5B 記憶體預覽／candidate、2-5C1 安全發布後端與 2-5C2 Streamlit 接線均已完成。公司 SMB 實機 acceptance 留在 2-8；2-6 跨電腦接續及桌面捷徑仍尚未實作。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
+第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。2-4 年度資料與 2-5A～2-5D 正式保存功能均已完成，2-5 也已通過受控單機／多 session 測試區人工驗收。公司多電腦、真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收仍留在 2-8；下一階段為 2-6 跨電腦／正式版本載入與接續工作，Phase 2 尚未全部完成。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
 
 ## 技術與單位
 
@@ -97,7 +102,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
    - 「正式保存準備」只列出目前 V2 batch 在目前設定下成功完成的情境；選取情境、填寫人工操作人與必填備註後，可按「產生正式保存預覽」。
    - 預覽仍有效且正式寫入 capability 開放時，勾選「我已確認以上內容，確定建立不可變的正式推估版本。」後才可按「正式保存」。
 
-預覽會顯示推估期間、年度資料版本、選定情境的庫容／溢流／農業減供摘要、調整資料標記及 lineage。背景建立的 candidate 含 `manifest.json`、`inputs.json`、`scenario_summaries.csv`、`daily_results.csv` 與 `COMMITTED.json`，並立即通過完整 `validate_official_bundle()`；preview session context 另固定 observed official revision/current ID，不寫入正式 inputs schema。batch 設定、結果、年度版本、情境選取、操作人、備註、software provenance 或 observed current pair 改變時，既有 candidate 會自動移除並要求重新產生。成功後會顯示正式版本 ID、current revision、操作人與保存時間，並立刻消耗原 candidate；同一 batch 若要再存新版，必須重新產生 preview。
+預覽會顯示推估期間、年度資料版本、選定情境的庫容／溢流／農業減供摘要、調整資料標記及 lineage。背景建立的 candidate 含 `manifest.json`、`inputs.json`、`scenario_summaries.csv`、`daily_results.csv` 與 `COMMITTED.json`，並立即通過完整 `validate_official_bundle()`；preview session context 另固定 observed official revision/current ID，不寫入正式 inputs schema。batch 設定、結果、年度版本、情境選取、操作人、備註、software provenance 或 observed current pair 改變時，既有 candidate 會自動移除並要求重新產生。成功後一般畫面會顯示短版正式版本 ID、current revision、操作人與台灣時間，完整 ID 及原始 UTC 留在進階資訊；原 candidate 會立刻消耗，同一 batch 若要再存新版，必須重新產生 preview。
 
 ## 核心演算概念
 

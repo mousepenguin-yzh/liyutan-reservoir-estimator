@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import sys
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import Mapping
+from zoneinfo import ZoneInfo
 
 from official_estimate_candidate import OfficialEstimateCandidate
 from official_estimate_publisher import (
@@ -18,6 +20,33 @@ from shared_storage_reader import SharedStorageResult
 
 ENABLE_FORMAL_WRITES_ENV = "LIYUTAN_ENABLE_FORMAL_WRITES"
 RUNTIME_PLATFORM = sys.platform
+TAIWAN_TIME_ZONE = ZoneInfo("Asia/Taipei")
+
+
+def format_taiwan_timestamp(timestamp: str) -> str:
+    """Format an aware ISO timestamp for people without changing stored UTC data."""
+    try:
+        normalized = timestamp.strip()
+        if normalized.endswith(("Z", "z")):
+            normalized = f"{normalized[:-1]}+00:00"
+        parsed = datetime.fromisoformat(normalized)
+        if parsed.tzinfo is None or parsed.utcoffset() is None:
+            raise ValueError("timestamp has no UTC offset")
+    except (AttributeError, TypeError, ValueError):
+        return f"{timestamp}（時間格式無法解析）"
+    return parsed.astimezone(TAIWAN_TIME_ZONE).strftime(
+        "%Y-%m-%d %H:%M（台灣時間）"
+    )
+
+
+def short_official_version_id(version_id: str) -> str:
+    """Return a display-only ID; the complete value remains the system identity."""
+    body = version_id
+    for prefix in ("estimate-candidate-", "estimate-"):
+        if body.startswith(prefix):
+            body = body[len(prefix) :]
+            break
+    return body if len(body) <= 10 else f"{body[:10]}…"
 
 
 def formal_writes_enabled(environ: Mapping[str, str] | None = None) -> bool:

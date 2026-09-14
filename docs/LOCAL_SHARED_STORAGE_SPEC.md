@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅。2-4 功能實作完成；公司 SMB 實機 acceptance 留在 2-8。正式保存 UI 與安全 publisher 已接通，但公司 SMB 實機、多電腦、網路中斷及完整人工驗收仍依後續階段執行。
+狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅。2-4 與 2-5 核心功能已完成；下一階段為 2-6 跨電腦／正式版本載入與接續工作。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -731,8 +731,10 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 - **2-5B（已完成）**：Step 5 加入「正式保存準備」，由使用者從目前 V2 batch 的有效成功結果選取情境，填寫人工操作人與必填備註後按「產生正式保存預覽」。builder 依 2-5A 契約建立五個 official-format 記憶體檔案，移除 V2 runtime result state 與未選情境，明確映射權威逐日欄位並只保留 `[projection_start_date, projection_end_date)`，最後直接通過 `validate_official_bundle()`。comparison registry 不在 builder interface；preview context 改變即自動移除 candidate。本階段不寫磁碟、不建立 staging/current/audit/lock，也不提供正式保存確認。
 - **2-5C1（已完成）**：`official_estimate_publisher.py` 直接接受並重驗 2-5B `OfficialEstimateCandidate`，驗證引用的 annual-data version，依唯一 staging、逐檔 durability/readback、正式 `COMMITTED.json` 最後建立、Windows/SMB 排他鎖、鎖內 current 雙欄位 conflict 與現行正式 bundle 重驗、append-only rename、atomic current switch 與嚴格 append-only audit 發布。鎖內 recovery guard 只在 current 缺失且 versions inventory 為空時允許 first publish；既有 current 則要求唯一合法 matched publish audit，缺失、不一致、損壞或 ambiguous 時回報 `recovery_required`，不得靠下一次 publish 蓋過去。錯誤模型另明確區分 candidate／annual／current 無效、version ID 衝突、lock timeout，以及 version/current/audit 三個失敗窗口；不自動 retry、不 rollback 已切換 current，也不清除 forensic evidence。
 - **2-5C2（已完成）**：Streamlit preview 固定當下 observed official revision/current pair；只有 candidate/context 未失效、正式推估專用 feature flag 與 Windows/shared/history capability 可用，且使用者勾選不可變版本確認時才啟用「正式保存」。UI 將原 candidate 與 preview 時 pair 直接交給 2-5C1，不重新抓 current、不自動 retry。成功後記錄 session receipt 並消耗 candidate；conflict、recovery-required、integrity error、兩種部分成功、lock timeout、version ID 與 filesystem failure 分別採清除／消耗／保留 candidate 的安全處理與人類可讀訊息。未提供任何 official recovery／repair／orphan 操作，`formal_operations_available=False`。
+- **2-5D（已完成）**：正式保存成功 receipt 的一般畫面只顯示短版正式版本 ID、current revision、操作人與以標準 `Asia/Taipei` 轉換的保存時間；完整正式 ID、原始 UTC、batch 與年度版本放在收合進階資訊。短 ID 僅供顯示，不成為 identity 或查詢 key；正式 schema、publisher transaction 與 UTC 儲存值均不變。
+- **2-5 受控人工驗收（已完成）**：Windows 本機 Streamlit 搭配 `U:` SMB 測試 shared root，完成三版正式保存、同 batch 新版、第二 session 發布、舊 revision preview 失效、重啟持久性與完整唯讀盤點；測試資料已清理，正式 root 未使用。完整紀錄見 [Phase 2-5 正式推估受控測試區人工驗收](PHASE_2_5_ACCEPTANCE.md)。
 
-**正式保存 UI 與安全 publisher 已接通，但公司 SMB 實機、多電腦、網路中斷及完整人工驗收仍依後續階段執行。**
+**正式保存 UI 與安全 publisher 已接通，且受控單機／多 session 測試區人工驗收已通過；公司多電腦、真實 SMB 斷線、OS lock contention 壓力與中斷／恢復實機驗收仍留在 Phase 2-8。**
 
 完整 2-5 範圍：保存 inputs、所有正式情境的成功摘要與完整逐日結果、inputs fingerprint、manifest、checksum、previous/derived 正式版本、程式版本、人工操作人與備註。
 
