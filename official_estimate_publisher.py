@@ -308,6 +308,8 @@ def _read_official_bundle(root: Path, version_id: str) -> tuple[dict, dict[str, 
 
 def _official_version_inventory(versions_root: Path) -> tuple[Path, ...]:
     """Read the direct immutable-version inventory without choosing a version."""
+    if not versions_root.exists():
+        return ()
     try:
         if versions_root.is_symlink() or not versions_root.is_dir():
             raise OSError("official-estimates/versions 不是可信任資料夾")
@@ -419,6 +421,36 @@ def _require_current_publish_audit(
             "需先完成正式推估復原／診斷。",
             evidence_path=events_root,
         )
+
+
+def observe_official_publish_context(
+    root: str | os.PathLike[str],
+) -> OfficialCurrentState:
+    """Read and validate the current/history state used to build a save preview.
+
+    This observation is intentionally lock-free and read-only.  The publisher
+    repeats the same checks under the official-current lock before publishing.
+    """
+    shared_root = Path(root)
+    _validate_root(shared_root)
+    current_path = shared_root / "official-estimates" / "current.json"
+    versions_root = shared_root / "official-estimates" / "versions"
+    state = _read_current(current_path)
+    if state.current_version_id is None:
+        if _official_version_inventory(versions_root):
+            raise OfficialEstimateRecoveryRequiredError(
+                "偵測到既有正式版本，但目前 current 不存在；需先完成正式推估"
+                "復原／診斷，不可建立新的正式 current。",
+                evidence_path=versions_root,
+            )
+        return state
+    _, bundle = _read_official_bundle(shared_root, state.current_version_id)
+    _require_current_publish_audit(
+        root=shared_root,
+        current=state.current,
+        current_manifest_bytes=bundle["manifest.json"],
+    )
+    return state
 
 
 def _validated_candidate(candidate: OfficialEstimateCandidate) -> tuple[dict, dict[str, bytes]]:

@@ -18,6 +18,7 @@ from shared_storage_schema import (
     ANNUAL_ACTIVATION_EVENT_TYPE,
     ANNUAL_CURRENT_SCHEMA,
     AUDIT_EVENT_SCHEMA,
+    OFFICIAL_ESTIMATE_PUBLISH_EVENT_TYPE,
     OFFICIAL_CURRENT_SCHEMA,
     SCHEMA_VERSION,
     SHARED_ROOT_SCHEMA,
@@ -104,6 +105,8 @@ def _build_root(tmp_path: Path, *, official: bool = False, annual_bundle=None) -
         )
     )
     if official:
+        official_bundle = _official_bundle()
+        official_manifest = deserialize_json(official_bundle["manifest.json"])
         official_current = {
             "schema": OFFICIAL_CURRENT_SCHEMA,
             "schema_version": SCHEMA_VERSION,
@@ -117,7 +120,43 @@ def _build_root(tmp_path: Path, *, official: bool = False, annual_bundle=None) -
         (root / "official-estimates" / "current.json").write_bytes(serialize_json(official_current))
         _write_bundle(
             root / "official-estimates" / "versions" / OFFICIAL_ID,
-            _official_bundle(),
+            official_bundle,
+        )
+        (
+            audit_dir / "20261215T024700000000Z_synthetic-official-publish-1.json"
+        ).write_bytes(
+            serialize_json(
+                {
+                    "schema": AUDIT_EVENT_SCHEMA,
+                    "schema_version": SCHEMA_VERSION,
+                    "event_id": "synthetic-official-publish-1",
+                    "event_type": OFFICIAL_ESTIMATE_PUBLISH_EVENT_TYPE,
+                    "occurred_at": "2026-12-15T02:47:00Z",
+                    "estimate_version_id": OFFICIAL_ID,
+                    "batch_id": official_manifest["batch_id"],
+                    "annual_data_version_id": official_manifest[
+                        "annual_data_version_id"
+                    ],
+                    "before_revision": 0,
+                    "before_current_version_id": None,
+                    "after_revision": 1,
+                    "after_current_version_id": OFFICIAL_ID,
+                    "previous_official_version_id": None,
+                    "operator_display_name": official_manifest[
+                        "operator_display_name"
+                    ],
+                    "note": official_manifest["note"],
+                    "software": official_manifest["software"],
+                    "result": "success",
+                    "diagnostics": {
+                        "hostname": "synthetic-host",
+                        "process_id": 1,
+                        "manifest_sha256": sha256_bytes(
+                            official_bundle["manifest.json"]
+                        ),
+                    },
+                }
+            )
         )
     return root
 

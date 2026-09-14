@@ -21,6 +21,7 @@ from official_estimate_publisher import (
     OfficialEstimateVersionPublishedCurrentNotSwitchedError,
     fault_at,
     observe_official_current,
+    observe_official_publish_context,
     publish_official_estimate_candidate,
 )
 from shared_storage_schema import (
@@ -141,6 +142,31 @@ def test_first_official_version_publish_creates_revision_one_and_valid_audit(tmp
     assert audit["diagnostics"]["manifest_sha256"] == sha256_bytes(
         candidate.files["manifest.json"]
     )
+
+
+def test_preview_observer_accepts_first_publish_and_valid_current_history(tmp_path):
+    first_root = _build_root(tmp_path / "first")
+    first = observe_official_publish_context(first_root)
+    assert first.revision == 0
+    assert first.current_version_id is None
+
+    current_root = _build_root(tmp_path / "current", official=True)
+    current = observe_official_publish_context(current_root)
+    assert current.revision == 1
+    assert current.current_version_id == "estimate-synthetic-1"
+
+
+def test_preview_observer_rejects_current_without_matched_publish_audit(tmp_path):
+    root = _build_root(tmp_path, official=True)
+    for path in (root / "audit" / "events").rglob("*.json"):
+        event = deserialize_json(path.read_bytes())
+        if event.get("event_type") == OFFICIAL_ESTIMATE_PUBLISH_EVENT_TYPE:
+            path.unlink()
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        observe_official_publish_context(root)
+
+    assert caught.value.code == "recovery_required"
 
 
 def test_missing_current_with_complete_orphan_requires_recovery_and_writes_no_new_version(

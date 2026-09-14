@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅。2-4 功能實作完成；公司 SMB 實機 acceptance 留在 2-8。2-5C2 Streamlit 正式保存接線尚未開始，正式保存功能仍不可由一般使用者觸發。
+狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅。2-4 功能實作完成；公司 SMB 實機 acceptance 留在 2-8。正式保存 UI 與安全 publisher 已接通，但公司 SMB 實機、多電腦、網路中斷及完整人工驗收仍依後續階段執行。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -319,7 +319,7 @@ repair audit 在 current replace 前先完成同月份 unique temp、flush/fsync
 
 2-5B 已在 Step 5 加入「正式保存準備」。介面只列出目前 V2 batch 在目前設定下重新計算成功的情境；操作人與備註必填，主要動作固定稱為「產生正式保存預覽」。操作人是人工填報，未經登入驗證。按下後 `official_estimate_candidate.py` 直接使用 2-5A `validate_official_save_eligibility()`，從目前 batch 與目前 result mapping 建立 `manifest.json`、`inputs.json`、`scenario_summaries.csv`、`daily_results.csv` 及 `COMMITTED.json` 的記憶體 bytes，隨即以 `validate_official_bundle()` 完整重驗。builder 介面不接受 Step 5 comparison registry，因此跨 batch 比較清單不能成為 candidate 來源。
 
-candidate 可使用唯一 provisional `estimate_version_id` 以通過正式 schema，但該 ID 與記憶體內的 `COMMITTED.json` 都只表示 candidate 檔案集合完整，不表示已正式保存、發布或切換 current。candidate 只存在目前 Streamlit session；不建立 staging、不寫入 `official-estimates`、不建立 audit、不取得 official lock。batch／輸入／結果、選定情境、操作人、備註、年度資料版本、previous/derived 關係或 software provenance 任一改變時，context fingerprint 不再相符，舊 candidate 會由 session 移除並提示重新產生。**目前系統只能產生正式保存預覽，尚未真正寫入正式共享資料。**
+candidate 可使用唯一 provisional `estimate_version_id` 以通過正式 schema，但該 ID 與記憶體內的 `COMMITTED.json` 都只表示 candidate 檔案集合完整，不表示已正式保存、發布或切換 current。candidate 建立當下只存在目前 Streamlit session；不建立 staging、不寫入 `official-estimates`、不建立 audit、不取得 official lock。batch／輸入／結果、選定情境、操作人、備註、年度資料版本、previous/derived 關係、software provenance 或 observed current pair 任一改變時，context fingerprint 不再相符，舊 candidate 會由 session 移除並提示重新產生。**只有使用者在有效 preview 下完成最後確認並按「正式保存」後，才會把同一份 candidate 交給安全 publisher 寫入正式共享資料。**
 
 每次正式推估必須保存一份自足且可稽核的快照：
 
@@ -456,7 +456,7 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 }
 ```
 
-2-5B 記憶體 candidate 也建立相同格式的 `COMMITTED.json`，使完整檔案集合可先通過正式 bundle validator。它不在正式 versions 目錄、未經 2-5C1 publisher 發布，因此不得被 reader 當成正式版本，也不代表任何正式資料已 committed 到共享儲存。2-5C1 發布時只重建正式 `COMMITTED.json`，其餘四個檔案必須與使用者確認的 candidate bytes 完全相同。
+2-5B 記憶體 candidate 也建立相同格式的 `COMMITTED.json`，使完整檔案集合可先通過正式 bundle validator。它不在正式 versions 目錄、未經 2-5C1 publisher 發布，因此不得被 reader 當成正式版本，也不代表任何正式資料已 committed 到共享儲存。2-5C2 只有在使用者檢查預覽、勾選最後確認並按下「正式保存」後才把同一 candidate 交給 2-5C1；publisher 只重建正式 `COMMITTED.json`，其餘四個檔案必須與使用者確認的 candidate bytes 完全相同。
 
 年度資料可將 `manifest_file` 指向 `version.json`。系統只有在下列條件全部成立時，才可把目錄視為完整版本：
 
@@ -472,10 +472,10 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 
 ## 8. 正式推估版本生命週期
 
-1. **載入基準**：記錄目前 `official-estimates/current.json` 的 `revision` 與 `current_version_id`。2-5B 預覽取得當下 `current_version_id` 作為 `previous_official_version_id`；2-5C1 publisher 另接受正式保存開始時觀察到的完整 revision/current pair。
+1. **載入基準（2-5C2 已接線）**：產生 preview 前以 `observe_official_publish_context()` 讀取並驗證 official current/history，同時固定 `observed_official_revision` 與 `observed_official_current_version_id`；current ID 也成為 candidate manifest 的 `previous_official_version_id`。這組 pair 屬 session publication context，不加入正式 inputs schema。按正式保存時不得重新抓較新的 pair 遷就 publisher；即使 current ID 經 A→B→A 回到同值，只要 revision 改變，舊 preview 仍失效或由 publisher 拒絕。
 2. **完成演算與硬性檢查（2-5B 已完成）**：先固定要放入預覽的情境 ID 清單，再確認清單中的每一個情境都有成功結果，且 V2 `results_fingerprint` 與預覽當下由 `settings_fingerprint(batch)` 算出的工作階段設定指紋一致。任一情境失敗、尚未計算或指紋失效時，立即阻止整批 candidate；不得建立部分成功預覽、不得進入暫存發布，也不得切換 current。
-3. **填寫與產生預覽（2-5B 已完成）**：操作人及備註必填；畫面顯示年度資料版本、上一正式版本、derived source、選定情境的成功摘要與「人工填報身分未驗證」提示。按下「產生正式保存預覽」後固定正式 inputs、計算 `inputs_fingerprint`、建立完整記憶體 candidate 並重驗；它與只負責結果失效判斷的 V2 `settings_fingerprint` 是不同概念。情境集合或任何 context 改變時，舊預覽立即失效。本步驟不是正式確認或發布。
-4. **正式保存再次確認（2-5C2 尚未開始）**：未來只對仍有效且已驗證的同一份 candidate 顯示清楚的正式保存確認；UI 不得重新拼裝另一份內容。
+3. **填寫與產生預覽（2-5B／2-5C2 已完成）**：操作人及備註必填；畫面顯示年度資料版本、上一正式版本、derived source、選定情境的成功摘要與「人工填報身分未驗證」提示。按下「產生正式保存預覽」後固定正式 inputs、observed current pair、計算 `inputs_fingerprint`、建立完整記憶體 candidate 並重驗；它與只負責結果失效判斷的 V2 `settings_fingerprint` 是不同概念。batch／results、情境集合、操作人、備註、年度版本、software provenance 或 observed current 任一改變時，舊預覽立即失效。本步驟不是正式確認或發布。
+4. **正式保存再次確認（2-5C2 已完成）**：只對仍有效且已驗證的同一份 candidate 顯示不可變版本警語與最後確認 checkbox；`LIYUTAN_ENABLE_FORMAL_WRITES=1` 的獨立 capability、Windows production、健康 shared root/history 與所有 candidate 條件成立後，按鈕「正式保存」才啟用。UI 不重新拼裝內容，也不在 click 時刷新 observed pair。
 5. **建立暫存（2-5C1 已完成）**：在同一共享根目錄的 `staging` 建立唯一目錄，逐檔 flush/fsync/close/readback；正式 `COMMITTED.json` 使用發布時間且最後建立。
 6. **驗證暫存（2-5C1 已完成）**：重新讀回完整 bytes，驗證 schema、筆數、日期、參照關係及 checksum；manifest、inputs 與兩份 CSV 必須與 candidate 完全一致。
 7. **取得短時間鎖（2-5C1 已完成）**：取得 `official-current.lock`，Windows production 使用 OS-level exclusive handle／SMB sharing semantics；非 Windows 測試注入 fake lock。
@@ -483,7 +483,7 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 9. **發布版本（2-5C1 已完成）**：在同一共享磁碟內把已驗證暫存目錄改名至最終 `versions\<version_id>`；既有目的目錄一律拒絕，正式版本 append-only。
 10. **切換目前版本（2-5C1 已完成）**：以同目錄唯一 temp、flush/fsync/readback、原子 replace 及 replace 後 readback 寫入 `current.json`，revision 加一。
 11. **操作紀錄（2-5C1 已完成）**：current 切換前先準備並驗證 `official-estimate-publish` audit temp，切換後再以唯一檔名 append-only 發布，記錄版本、annual version、前後 revision/current、操作人、備註、software 與 diagnostics。
-12. **釋放鎖並回報（2-5C1 後端已完成）**：publisher 回傳具體 result；rename 後／current 前失敗為 `version_published_current_not_switched` 且保留完整 orphan，current 後／audit 前失敗為 `current_switched_audit_incomplete` 且絕不 rollback。2-5C2 未完成前，一般使用者仍無法觸發此流程。
+12. **釋放鎖並回報（2-5C1／2-5C2 已完成）**：publisher 回傳具體 result；成功時 UI 保存 session receipt、清除 candidate／確認／in-progress state 並 rerun 共享 reader。revision／previous conflict 清除 preview 且不 retry；`recovery_required` 與 current／annual integrity error 停止保存；rename 後／current 前的 `version_published_current_not_switched` 與 current 後／audit 前的 `current_switched_audit_incomplete` 都清除並消耗 candidate、保留 evidence、不得宣稱完整成功；`lock_timeout` 保留 candidate 供使用者稍後手動再試，其餘 filesystem／permission failure 顯示簡短訊息與收合 diagnostics。
 
 正式版本不得進入「編輯」狀態。更正任何輸入、備註或結果都要建立新版本，並以 `previous_official_version_id` 串接。
 
@@ -687,7 +687,9 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 
 共享模式一旦啟用，讀取失敗時不得無提示退回內建資料；只有使用者明確點選備援後才能開放非正式工作區。reader 僅執行讀取，不建立、修改、重新命名或刪除共享資料。開發與自動化測試只可使用 pytest 暫存目錄及合成資料。
 
-狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`。年度專用 `annual_data_write_available` 只有在 `LIYUTAN_ENABLE_SHARED_STORAGE=1`、`LIYUTAN_ENABLE_ANNUAL_DATA_WRITES=1`，且 reader 與 diagnostics 共同確認健康 current／bundle／matched audit，或 current 缺失且 versions inventory 完全為空的 first-version create 狀態時才為 True。已有完整 orphan 但沒有 history 時，正常 create/activate 停止並改由 recovery flag 下的 first-current initialization；其他 `recovery_required`／`uninspectable` 狀態也停止正常寫入。單純 attention evidence 不必全面阻止。compatibility、fallback、未設定或不存在的 root、system 缺少／錯誤、wrong reservoir、current／bundle 損壞、權限／讀取錯誤與 `CURRENT_CHANGED` 均為 False。production activation/repair 另限 Windows/SMB。公司 SMB 寫入權限與實機人工驗收留在 2-8；2-5B candidate 只存在記憶體。2-5C1 publisher 是尚未接 UI 的後端核心，不開啟 generic capability；`formal_write_available=False` 與 `formal_operations_available=False` 仍固定不變，等待 2-5C2 安全接線。
+狀態語意分開表示：完整共享年度資料驗證成功時 `shared_storage_readable=True`。年度專用 `annual_data_write_available` 只有在 `LIYUTAN_ENABLE_SHARED_STORAGE=1`、`LIYUTAN_ENABLE_ANNUAL_DATA_WRITES=1`，且 reader 與 diagnostics 共同確認健康 current／bundle／matched audit，或 current 缺失且 versions inventory 完全為空的 first-version create 狀態時才為 True。已有完整 orphan 但沒有 history 時，正常 create/activate 停止並改由 recovery flag 下的 first-current initialization；其他 `recovery_required`／`uninspectable` 狀態也停止正常寫入。單純 attention evidence 不必全面阻止。compatibility、fallback、未設定或不存在的 root、system 缺少／錯誤、wrong reservoir、current／bundle 損壞、權限／讀取錯誤與 `CURRENT_CHANGED` 均為 False。production activation/repair 另限 Windows/SMB。公司 SMB 寫入權限與實機人工驗收留在 2-8。
+
+正式推估另由 `official_estimate_workflow.py` 提供獨立 capability。只有 `LIYUTAN_ENABLE_SHARED_STORAGE=1`、`LIYUTAN_ENABLE_FORMAL_WRITES=1`、有效且 reader 驗證成功的 shared root、Windows production environment，以及 `observe_official_publish_context()` 確認健康 official current/history（或 current 缺失且 official versions inventory 為空的合法 first publish）全部成立時，`formal_write_available=True`。此環境能力不等於某份 candidate 可寫；按鈕層仍須重驗 candidate context、年度版本、software provenance、observed pair、未 consumed／未 in-progress 與最後確認。feature flag 關閉仍可產生 preview，但正式保存 disabled。`formal_operations_available=False` 維持不變，避免誤示 recovery／repair／orphan 操作已提供。
 
 驗收：
 
@@ -712,7 +714,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 - 2-4C2b2b1（已完成）：healthy current 的 recovery audit 補建，以及以既有 activation 安全核心重新啟用合法 historical／orphan version。
 - 2-4C2b2b2（已完成）：first-current initialization、唯一 audit chain reconstruction、broken-target 人工 switch、獨立 repair audit、invalid current bytes evidence 與 current 成功/audit 失敗後的可補建狀態。staging／quarantine／一般 temp 隔離或清理仍待 2-8 人工維運規則。
 
-2-4 功能與年度資料 UI 收斂已完成。writer 永不自動切換；activation、重新啟用或 repair 成功也不直接覆蓋已開啟工作區。任何 recovery 都不猜 target、不清理 evidence。尚未在公司實際 SMB 環境驗證，本 PR 未存取正式共享根目錄或受控測試共享根目錄；該 acceptance 明確留在 2-8。2-5A 已完成資料契約與純 domain validation；2-5B 已完成 session-only 預覽與已驗證 bundle candidate；2-5C1 已完成安全發布後端，2-5C2 UI 尚未開始，`formal_write_available` 與 `formal_operations_available` 均維持 `False`。
+2-4 功能與年度資料 UI 收斂已完成。writer 永不自動切換；activation、重新啟用或 repair 成功也不直接覆蓋已開啟工作區。任何 recovery 都不猜 target、不清理 evidence。尚未在公司實際 SMB 環境驗證，本 PR 未存取正式共享根目錄或受控測試共享根目錄；該 acceptance 明確留在 2-8。2-5A 已完成資料契約與純 domain validation；2-5B 已完成 session-only 預覽與已驗證 bundle candidate；2-5C1 已完成安全發布後端；2-5C2 已完成 Streamlit 明確確認與 publisher 接線。`formal_write_available` 可依專用 flag 與健康條件開放，`formal_operations_available` 仍維持 `False`。
 
 驗收：
 
@@ -728,9 +730,9 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 - **2-5A（已完成）**：正式推估資料契約收斂。完成 V2 引水上限參數化與舊 JSON 相容、official inputs/manifest/CSV 嚴格驗證、`inputs_fingerprint` 命名、previous/derived lineage、summary/daily 交叉驗證，以及正常共享年度資料、目前 batch 成功結果、未過期結果與 clean source tree 的資格 helper。本階段不建立按鈕、bundle builder、writer/publisher，不寫入 `official-estimates`，也不操作公司或測試 U 槽。
 - **2-5B（已完成）**：Step 5 加入「正式保存準備」，由使用者從目前 V2 batch 的有效成功結果選取情境，填寫人工操作人與必填備註後按「產生正式保存預覽」。builder 依 2-5A 契約建立五個 official-format 記憶體檔案，移除 V2 runtime result state 與未選情境，明確映射權威逐日欄位並只保留 `[projection_start_date, projection_end_date)`，最後直接通過 `validate_official_bundle()`。comparison registry 不在 builder interface；preview context 改變即自動移除 candidate。本階段不寫磁碟、不建立 staging/current/audit/lock，也不提供正式保存確認。
 - **2-5C1（已完成）**：`official_estimate_publisher.py` 直接接受並重驗 2-5B `OfficialEstimateCandidate`，驗證引用的 annual-data version，依唯一 staging、逐檔 durability/readback、正式 `COMMITTED.json` 最後建立、Windows/SMB 排他鎖、鎖內 current 雙欄位 conflict 與現行正式 bundle 重驗、append-only rename、atomic current switch 與嚴格 append-only audit 發布。鎖內 recovery guard 只在 current 缺失且 versions inventory 為空時允許 first publish；既有 current 則要求唯一合法 matched publish audit，缺失、不一致、損壞或 ambiguous 時回報 `recovery_required`，不得靠下一次 publish 蓋過去。錯誤模型另明確區分 candidate／annual／current 無效、version ID 衝突、lock timeout，以及 version/current/audit 三個失敗窗口；不自動 retry、不 rollback 已切換 current，也不清除 forensic evidence。
-- **2-5C2（尚未開始）**：Streamlit 最後確認、「正式保存」按鈕、candidate 有效性重驗、publisher 呼叫及各結果狀態的人類可讀回饋。
+- **2-5C2（已完成）**：Streamlit preview 固定當下 observed official revision/current pair；只有 candidate/context 未失效、正式推估專用 feature flag 與 Windows/shared/history capability 可用，且使用者勾選不可變版本確認時才啟用「正式保存」。UI 將原 candidate 與 preview 時 pair 直接交給 2-5C1，不重新抓 current、不自動 retry。成功後記錄 session receipt 並消耗 candidate；conflict、recovery-required、integrity error、兩種部分成功、lock timeout、version ID 與 filesystem failure 分別採清除／消耗／保留 candidate 的安全處理與人類可讀訊息。未提供任何 official recovery／repair／orphan 操作，`formal_operations_available=False`。
 
-**安全正式發布後端已完成，但目前 Streamlit 尚無真正的「正式保存」按鈕，因此一般使用者仍無法觸發正式發布。**
+**正式保存 UI 與安全 publisher 已接通，但公司 SMB 實機、多電腦、網路中斷及完整人工驗收仍依後續階段執行。**
 
 完整 2-5 範圍：保存 inputs、所有正式情境的成功摘要與完整逐日結果、inputs fingerprint、manifest、checksum、previous/derived 正式版本、程式版本、人工操作人與備註。
 

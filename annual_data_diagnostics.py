@@ -23,6 +23,7 @@ from shared_storage_schema import (
     ANNUAL_ACTIVATION_EVENT_TYPE,
     ANNUAL_CURRENT_REPAIR_EVENT_TYPE,
     ANNUAL_REQUIRED_FILES,
+    OFFICIAL_ESTIMATE_PUBLISH_EVENT_TYPE,
     StorageValidationError,
     deserialize_json,
     validate_annual_activation_audit_event,
@@ -363,6 +364,13 @@ def _inspect_audits(root: Path) -> tuple[tuple[AnnualAuditDiagnostic, ...], list
                     if not isinstance(parsed, dict):
                         raise StorageValidationError("audit JSON 必須是 object")
                     event_type = parsed.get("event_type")
+                    # The shared audit tree also contains official-estimate
+                    # events.  They are validated by the official publisher's
+                    # history guard and are unrelated to annual activation
+                    # health, so do not classify them as unknown annual audit
+                    # evidence.
+                    if event_type == OFFICIAL_ESTIMATE_PUBLISH_EVENT_TYPE:
+                        continue
                     if event_type not in {
                         ANNUAL_ACTIVATION_EVENT_TYPE,
                         ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE,
