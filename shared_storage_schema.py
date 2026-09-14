@@ -31,6 +31,7 @@ AUDIT_EVENT_SCHEMA = "liyutan-reservoir-estimator/audit-event"
 ANNUAL_ACTIVATION_EVENT_TYPE = "annual-data-activation"
 ANNUAL_ACTIVATION_RECOVERY_EVENT_TYPE = "annual-data-activation-recovery"
 ANNUAL_CURRENT_REPAIR_EVENT_TYPE = "annual-data-current-repair"
+OFFICIAL_ESTIMATE_PUBLISH_EVENT_TYPE = "official-estimate-publish"
 ANNUAL_CURRENT_REPAIR_KINDS = (
     "reconstruct_missing_current",
     "reconstruct_invalid_current",
@@ -727,6 +728,87 @@ def validate_annual_activation_audit_event(data: Any) -> dict:
     _exact_fields(diagnostics, ("hostname", "process_id"), f"{label}.diagnostics")
     _string(diagnostics["hostname"], f"{label}.diagnostics.hostname")
     _integer(diagnostics["process_id"], f"{label}.diagnostics.process_id", 1)
+    return copy.deepcopy(item)
+
+
+def validate_official_estimate_publish_audit_event(data: Any) -> dict:
+    """Validate one successful official-estimate publication audit event."""
+    label = "official estimate publish audit event"
+    item = _schema(data, AUDIT_EVENT_SCHEMA, label)
+    fields = (
+        "schema",
+        "schema_version",
+        "event_id",
+        "event_type",
+        "occurred_at",
+        "estimate_version_id",
+        "batch_id",
+        "annual_data_version_id",
+        "before_revision",
+        "before_current_version_id",
+        "after_revision",
+        "after_current_version_id",
+        "previous_official_version_id",
+        "operator_display_name",
+        "note",
+        "software",
+        "result",
+        "diagnostics",
+    )
+    _exact_fields(item, fields, label)
+    validate_safe_id(item["event_id"], f"{label}.event_id")
+    if item["event_type"] != OFFICIAL_ESTIMATE_PUBLISH_EVENT_TYPE:
+        _fail(
+            f"{label}.event_type 必須是 {OFFICIAL_ESTIMATE_PUBLISH_EVENT_TYPE}"
+        )
+    _timestamp(item["occurred_at"], f"{label}.occurred_at")
+    target = validate_safe_id(
+        item["estimate_version_id"], f"{label}.estimate_version_id"
+    )
+    _string(item["batch_id"], f"{label}.batch_id")
+    validate_safe_id(
+        item["annual_data_version_id"], f"{label}.annual_data_version_id"
+    )
+    before_revision = _integer(item["before_revision"], f"{label}.before_revision", 0)
+    before_id = _optional_safe_id(
+        item["before_current_version_id"], f"{label}.before_current_version_id"
+    )
+    after_revision = _integer(item["after_revision"], f"{label}.after_revision", 1)
+    after_id = validate_safe_id(
+        item["after_current_version_id"], f"{label}.after_current_version_id"
+    )
+    previous_id = _optional_safe_id(
+        item["previous_official_version_id"],
+        f"{label}.previous_official_version_id",
+    )
+    if (before_revision == 0) != (before_id is None):
+        _fail(f"{label} 的 before revision 與 current version 狀態不一致")
+    if after_revision != before_revision + 1:
+        _fail(f"{label}.after_revision 必須等於 before_revision + 1")
+    if after_id != target:
+        _fail(f"{label}.after_current_version_id 必須等於 estimate_version_id")
+    if previous_id != before_id:
+        _fail(
+            f"{label}.previous_official_version_id 必須等於 before_current_version_id"
+        )
+    if before_id == target:
+        _fail(f"{label} 不得覆蓋或重新發布 current version")
+    _string(item["operator_display_name"], f"{label}.operator_display_name")
+    _string(item["note"], f"{label}.note")
+    software = validate_software_metadata(item["software"], f"{label}.software")
+    if software["source_tree_dirty"]:
+        _fail(f"{label}.software.source_tree_dirty 必須是 false")
+    if item["result"] != "success":
+        _fail(f"{label}.result 必須是 success")
+    diagnostics = _mapping(item["diagnostics"], f"{label}.diagnostics")
+    _exact_fields(
+        diagnostics,
+        ("hostname", "process_id", "manifest_sha256"),
+        f"{label}.diagnostics",
+    )
+    _string(diagnostics["hostname"], f"{label}.diagnostics.hostname")
+    _integer(diagnostics["process_id"], f"{label}.diagnostics.process_id", 1)
+    _sha256(diagnostics["manifest_sha256"], f"{label}.diagnostics.manifest_sha256")
     return copy.deepcopy(item)
 
 

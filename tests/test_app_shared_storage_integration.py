@@ -184,6 +184,7 @@ def test_phase_25b_preview_controls_are_visible_but_never_enable_formal_writes(
         item for item in app.button if item.label == "產生正式保存預覽"
     )
     assert preview_button.disabled
+    assert not any(item.label == "正式保存" for item in app.button)
     assert app.session_state.formal_write_available is False
     assert app.session_state.formal_operations_available is False
     assert "official_estimate_candidate" not in app.session_state
