@@ -65,6 +65,19 @@ class OfficialEstimateConflictError(OfficialEstimatePublishError):
     """The caller's observed official current state is no longer current."""
 
 
+class OfficialEstimateRecoveryRequiredError(OfficialEstimatePublishError):
+    """Official history is incomplete or ambiguous and needs separate recovery."""
+
+    def __init__(self, message: str, *, evidence_path: Path | None = None,
+                 cause: Exception | None = None) -> None:
+        super().__init__(
+            "recovery_required",
+            message,
+            evidence_path=evidence_path,
+            cause=cause,
+        )
+
+
 class OfficialEstimateVersionPublishedCurrentNotSwitchedError(OfficialEstimatePublishError):
     """The immutable version exists, but official current did not switch."""
 
@@ -291,6 +304,121 @@ def _read_official_bundle(root: Path, version_id: str) -> tuple[dict, dict[str, 
             evidence_path=path,
         )
     return validated, bundle
+
+
+def _official_version_inventory(versions_root: Path) -> tuple[Path, ...]:
+    """Read the direct immutable-version inventory without choosing a version."""
+    try:
+        if versions_root.is_symlink() or not versions_root.is_dir():
+            raise OSError("official-estimates/versions 不是可信任資料夾")
+        return tuple(sorted(versions_root.iterdir(), key=lambda path: path.name))
+    except OSError as exc:
+        raise OfficialEstimateRecoveryRequiredError(
+            "無法確認正式版本 inventory；需先完成正式推估復原／診斷。",
+            evidence_path=versions_root,
+            cause=exc,
+        ) from exc
+
+
+def _official_audit_paths(events_root: Path) -> tuple[Path, ...]:
+    """Return audit JSON paths while rejecting an untrustworthy audit tree."""
+    if not events_root.exists():
+        return ()
+    try:
+        if events_root.is_symlink() or not events_root.is_dir():
+            raise OSError("audit/events 不是可信任資料夾")
+        paths: list[Path] = []
+        for year_path in events_root.iterdir():
+            if year_path.is_symlink():
+                raise OSError(f"audit 年份目錄是 symbolic link：{year_path}")
+            if not year_path.is_dir():
+                continue
+            for month_path in year_path.iterdir():
+                if month_path.is_symlink():
+                    raise OSError(f"audit 月份目錄是 symbolic link：{month_path}")
+                if not month_path.is_dir():
+                    continue
+                for event_path in month_path.glob("*.json"):
+                    if event_path.is_symlink() or not event_path.is_file():
+                        raise OSError(f"audit event 不是一般檔案：{event_path}")
+                    _assert_contained(events_root, event_path, "audit event")
+                    paths.append(event_path)
+        return tuple(sorted(paths, key=lambda path: str(path)))
+    except (OSError, OfficialEstimatePublishError) as exc:
+        raise OfficialEstimateRecoveryRequiredError(
+            "無法完整檢查正式推估 audit；需先完成正式推估復原／診斷。",
+            evidence_path=events_root,
+            cause=exc,
+        ) from exc
+
+
+def _require_current_publish_audit(
+    *,
+    root: Path,
+    current: dict[str, Any],
+    current_manifest_bytes: bytes,
+) -> None:
+    """Require exactly one valid publish event matching the current pointer."""
+    events_root = root / "audit" / "events"
+    expected_manifest_sha256 = sha256_bytes(current_manifest_bytes)
+    matching_paths: list[Path] = []
+    contradictory_paths: list[Path] = []
+
+    for event_path in _official_audit_paths(events_root):
+        try:
+            raw_event = deserialize_json(event_path.read_bytes())
+        except (OSError, StorageValidationError) as exc:
+            raise OfficialEstimateRecoveryRequiredError(
+                "audit event 無法解析，無法確認目前正式版本發布紀錄；需先復原／診斷。",
+                evidence_path=event_path,
+                cause=exc,
+            ) from exc
+        if not isinstance(raw_event, dict):
+            raise OfficialEstimateRecoveryRequiredError(
+                "audit event 格式不可信，無法確認目前正式版本發布紀錄；需先復原／診斷。",
+                evidence_path=event_path,
+            )
+        if raw_event.get("event_type") != OFFICIAL_ESTIMATE_PUBLISH_EVENT_TYPE:
+            continue
+        try:
+            event = validate_official_estimate_publish_audit_event(raw_event)
+        except StorageValidationError as exc:
+            raise OfficialEstimateRecoveryRequiredError(
+                "正式推估 publish audit 不合法；需先完成正式推估復原／診斷。",
+                evidence_path=event_path,
+                cause=exc,
+            ) from exc
+
+        related_to_current = (
+            event["after_revision"] == current["revision"]
+            or event["after_current_version_id"] == current["current_version_id"]
+            or event["estimate_version_id"] == current["current_version_id"]
+        )
+        exact_match = (
+            event["after_revision"] == current["revision"]
+            and event["after_current_version_id"] == current["current_version_id"]
+            and event["estimate_version_id"] == current["current_version_id"]
+            and event["previous_official_version_id"] == current["previous_version_id"]
+            and event["diagnostics"]["manifest_sha256"] == expected_manifest_sha256
+        )
+        if exact_match:
+            matching_paths.append(event_path)
+        elif related_to_current:
+            contradictory_paths.append(event_path)
+
+    if contradictory_paths:
+        raise OfficialEstimateRecoveryRequiredError(
+            "目前正式版本的 publish audit 與 current revision、版本或 manifest checksum 不一致；"
+            "需先完成正式推估復原／診斷。",
+            evidence_path=contradictory_paths[0],
+        )
+    if len(matching_paths) != 1:
+        detail = "找不到" if not matching_paths else "存在多筆"
+        raise OfficialEstimateRecoveryRequiredError(
+            f"{detail}唯一且完整符合目前 current 的正式推估 publish audit；"
+            "需先完成正式推估復原／診斷。",
+            evidence_path=events_root,
+        )
 
 
 def _validated_candidate(candidate: OfficialEstimateCandidate) -> tuple[dict, dict[str, bytes]]:
@@ -559,8 +687,22 @@ def publish_official_estimate_candidate(
                         "正式 current 已變更；必須重新載入並重新確認正式保存預覽。",
                         evidence_path=current_path,
                     )
-                if locked_state.current_version_id is not None:
-                    _read_official_bundle(shared_root, locked_state.current_version_id)
+                if locked_state.current_version_id is None:
+                    if _official_version_inventory(versions_root):
+                        raise OfficialEstimateRecoveryRequiredError(
+                            "偵測到既有正式版本，但目前 current 不存在；需先完成正式推估"
+                            "復原／診斷，不可建立新的正式 current。",
+                            evidence_path=versions_root,
+                        )
+                else:
+                    _, current_bundle = _read_official_bundle(
+                        shared_root, locked_state.current_version_id
+                    )
+                    _require_current_publish_audit(
+                        root=shared_root,
+                        current=locked_state.current,
+                        current_manifest_bytes=current_bundle["manifest.json"],
+                    )
                 _, locked_annual_bytes = _read_annual_bundle(
                     shared_root, manifest["annual_data_version_id"]
                 )

@@ -479,7 +479,7 @@ spill_volume_10k_ton,agricultural_reduction_volume_10k_ton,dry_days
 5. **建立暫存（2-5C1 已完成）**：在同一共享根目錄的 `staging` 建立唯一目錄，逐檔 flush/fsync/close/readback；正式 `COMMITTED.json` 使用發布時間且最後建立。
 6. **驗證暫存（2-5C1 已完成）**：重新讀回完整 bytes，驗證 schema、筆數、日期、參照關係及 checksum；manifest、inputs 與兩份 CSV 必須與 candidate 完全一致。
 7. **取得短時間鎖（2-5C1 已完成）**：取得 `official-current.lock`，Windows production 使用 OS-level exclusive handle／SMB sharing semantics；非 Windows 測試注入 fake lock。
-8. **衝突與完整性檢查（2-5C1 已完成）**：鎖內重讀 current；revision 或 current ID 任一不同即停止，不 retry、不 last-write-wins、不改接新版。若現行 current bundle 或 candidate 引用的 annual-data bundle 損壞也停止。
+8. **衝突、history 與完整性檢查（2-5C1 已完成）**：鎖內重讀 current；revision 或 current ID 任一不同即停止，不 retry、不 last-write-wins、不改接新版。current 不存在時，只有 official versions inventory 為空才是合法 first publish；inventory 非空一律 `recovery_required`，不得 revision 重設、自動選 orphan 或繼續發布。current 存在時除重驗其完整 bundle 外，還必須在 audit tree 找到唯一一筆合法 `official-estimate-publish`，精確符合 current revision/current ID/previous ID、estimate version ID 與實際 manifest SHA-256；缺少、不合法、不一致或多筆 ambiguous 均 `recovery_required`。若 candidate 引用的 annual-data bundle 損壞也停止。
 9. **發布版本（2-5C1 已完成）**：在同一共享磁碟內把已驗證暫存目錄改名至最終 `versions\<version_id>`；既有目的目錄一律拒絕，正式版本 append-only。
 10. **切換目前版本（2-5C1 已完成）**：以同目錄唯一 temp、flush/fsync/readback、原子 replace 及 replace 後 readback 寫入 `current.json`，revision 加一。
 11. **操作紀錄（2-5C1 已完成）**：current 切換前先準備並驗證 `official-estimate-publish` audit temp，切換後再以唯一檔名 append-only 發布，記錄版本、annual version、前後 revision/current、操作人、備註、software 與 diagnostics。
@@ -727,7 +727,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 
 - **2-5A（已完成）**：正式推估資料契約收斂。完成 V2 引水上限參數化與舊 JSON 相容、official inputs/manifest/CSV 嚴格驗證、`inputs_fingerprint` 命名、previous/derived lineage、summary/daily 交叉驗證，以及正常共享年度資料、目前 batch 成功結果、未過期結果與 clean source tree 的資格 helper。本階段不建立按鈕、bundle builder、writer/publisher，不寫入 `official-estimates`，也不操作公司或測試 U 槽。
 - **2-5B（已完成）**：Step 5 加入「正式保存準備」，由使用者從目前 V2 batch 的有效成功結果選取情境，填寫人工操作人與必填備註後按「產生正式保存預覽」。builder 依 2-5A 契約建立五個 official-format 記憶體檔案，移除 V2 runtime result state 與未選情境，明確映射權威逐日欄位並只保留 `[projection_start_date, projection_end_date)`，最後直接通過 `validate_official_bundle()`。comparison registry 不在 builder interface；preview context 改變即自動移除 candidate。本階段不寫磁碟、不建立 staging/current/audit/lock，也不提供正式保存確認。
-- **2-5C1（已完成）**：`official_estimate_publisher.py` 直接接受並重驗 2-5B `OfficialEstimateCandidate`，驗證引用的 annual-data version，依唯一 staging、逐檔 durability/readback、正式 `COMMITTED.json` 最後建立、Windows/SMB 排他鎖、鎖內 current 雙欄位 conflict 與現行正式 bundle 重驗、append-only rename、atomic current switch 與嚴格 append-only audit 發布。錯誤模型明確區分 candidate／annual／current 無效、version ID 衝突、lock timeout，以及 version/current/audit 三個失敗窗口；不自動 retry、不 rollback 已切換 current，也不清除 forensic evidence。
+- **2-5C1（已完成）**：`official_estimate_publisher.py` 直接接受並重驗 2-5B `OfficialEstimateCandidate`，驗證引用的 annual-data version，依唯一 staging、逐檔 durability/readback、正式 `COMMITTED.json` 最後建立、Windows/SMB 排他鎖、鎖內 current 雙欄位 conflict 與現行正式 bundle 重驗、append-only rename、atomic current switch 與嚴格 append-only audit 發布。鎖內 recovery guard 只在 current 缺失且 versions inventory 為空時允許 first publish；既有 current 則要求唯一合法 matched publish audit，缺失、不一致、損壞或 ambiguous 時回報 `recovery_required`，不得靠下一次 publish 蓋過去。錯誤模型另明確區分 candidate／annual／current 無效、version ID 衝突、lock timeout，以及 version/current/audit 三個失敗窗口；不自動 retry、不 rollback 已切換 current，也不清除 forensic evidence。
 - **2-5C2（尚未開始）**：Streamlit 最後確認、「正式保存」按鈕、candidate 有效性重驗、publisher 呼叫及各結果狀態的人類可讀回饋。
 
 **安全正式發布後端已完成，但目前 Streamlit 尚無真正的「正式保存」按鈕，因此一般使用者仍無法觸發正式發布。**

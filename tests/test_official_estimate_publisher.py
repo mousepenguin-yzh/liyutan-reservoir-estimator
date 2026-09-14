@@ -17,6 +17,7 @@ from official_estimate_publisher import (
     OfficialEstimateConflictError,
     OfficialEstimateCurrentSwitchedAuditIncompleteError,
     OfficialEstimatePublishError,
+    OfficialEstimateRecoveryRequiredError,
     OfficialEstimateVersionPublishedCurrentNotSwitchedError,
     fault_at,
     observe_official_current,
@@ -104,6 +105,12 @@ def _official_audits(root):
     return sorted(files)
 
 
+def _rewrite_audit(path, mutator):
+    event = deserialize_json(path.read_bytes())
+    mutator(event)
+    path.write_bytes(serialize_json(event))
+
+
 def test_first_official_version_publish_creates_revision_one_and_valid_audit(tmp_path):
     root = _build_root(tmp_path)
     candidate = _candidate("estimate-c1-first")
@@ -136,6 +143,50 @@ def test_first_official_version_publish_creates_revision_one_and_valid_audit(tmp
     )
 
 
+def test_missing_current_with_complete_orphan_requires_recovery_and_writes_no_new_version(
+    tmp_path,
+):
+    root = _build_root(tmp_path)
+    orphan = _candidate("estimate-c1-orphan")
+    with pytest.raises(OfficialEstimateVersionPublishedCurrentNotSwitchedError):
+        _publish(root, orphan, fault_injector=fault_at("after_version_rename"))
+    next_candidate = _candidate("estimate-c1-after-orphan")
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, next_candidate)
+
+    assert caught.value.code == "recovery_required"
+    assert "current 不存在" in str(caught.value)
+    assert (root / "official-estimates" / "versions" / orphan.version_id).is_dir()
+    assert not (
+        root / "official-estimates" / "versions" / next_candidate.version_id
+    ).exists()
+    assert not (root / "official-estimates" / "current.json").exists()
+
+
+def test_locked_inventory_check_catches_orphan_created_after_staging(tmp_path):
+    root = _build_root(tmp_path)
+    orphan = _candidate("estimate-c1-raced-orphan")
+    candidate = _candidate("estimate-c1-raced-next")
+
+    @contextmanager
+    def create_orphan_on_lock(_path):
+        orphan_path = root / "official-estimates" / "versions" / orphan.version_id
+        orphan_path.mkdir(parents=True)
+        for filename, content in orphan.files.items():
+            (orphan_path / filename).write_bytes(content)
+        yield
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, candidate, lock_factory=create_orphan_on_lock)
+
+    assert caught.value.code == "recovery_required"
+    assert not (
+        root / "official-estimates" / "versions" / candidate.version_id
+    ).exists()
+    assert not (root / "official-estimates" / "current.json").exists()
+
+
 def test_second_version_increments_revision_preserves_previous_and_old_version(tmp_path):
     root = _build_root(tmp_path)
     batch_and_results = _ready(1)
@@ -155,6 +206,131 @@ def test_second_version_increments_revision_preserves_previous_and_old_version(t
     assert first_result.version_path.is_dir()
     assert second_result.version_path.is_dir()
     assert len(_official_audits(root)) == 2
+
+
+def test_missing_current_publish_audit_requires_recovery(tmp_path):
+    root = _build_root(tmp_path)
+    first = _candidate("estimate-c1-audit-missing")
+    first_result = _publish(root, first)
+    first_result.audit_path.unlink()
+    second = _candidate("estimate-c1-after-audit-missing", previous=first.version_id)
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, second, 1, first.version_id)
+
+    assert caught.value.code == "recovery_required"
+    assert "找不到" in str(caught.value)
+    assert not (
+        root / "official-estimates" / "versions" / second.version_id
+    ).exists()
+
+
+def test_current_publish_audit_revision_mismatch_requires_recovery(tmp_path):
+    root = _build_root(tmp_path)
+    first = _candidate("estimate-c1-audit-revision")
+    first_result = _publish(root, first)
+
+    def mismatch_revision(event):
+        event["before_revision"] = 1
+        event["before_current_version_id"] = "estimate-c1-prior"
+        event["after_revision"] = 2
+        event["previous_official_version_id"] = "estimate-c1-prior"
+
+    _rewrite_audit(first_result.audit_path, mismatch_revision)
+    second = _candidate("estimate-c1-after-revision-mismatch", previous=first.version_id)
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, second, 1, first.version_id)
+
+    assert caught.value.code == "recovery_required"
+    assert "不一致" in str(caught.value)
+
+
+def test_current_publish_audit_version_mismatch_requires_recovery(tmp_path):
+    root = _build_root(tmp_path)
+    first = _candidate("estimate-c1-audit-version")
+    first_result = _publish(root, first)
+
+    def mismatch_version(event):
+        event["estimate_version_id"] = "estimate-c1-other"
+        event["after_current_version_id"] = "estimate-c1-other"
+
+    _rewrite_audit(first_result.audit_path, mismatch_version)
+    second = _candidate("estimate-c1-after-version-mismatch", previous=first.version_id)
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, second, 1, first.version_id)
+
+    assert caught.value.code == "recovery_required"
+    assert "不一致" in str(caught.value)
+
+
+def test_current_publish_audit_previous_version_mismatch_requires_recovery(tmp_path):
+    root = _build_root(tmp_path)
+    first = _candidate("estimate-c1-audit-previous")
+    _publish(root, first)
+    current_path = root / "official-estimates" / "current.json"
+    current = deserialize_json(current_path.read_bytes())
+    current["previous_version_id"] = "estimate-c1-unexpected-previous"
+    current_path.write_bytes(serialize_json(current))
+    second = _candidate("estimate-c1-after-previous-mismatch", previous=first.version_id)
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, second, 1, first.version_id)
+
+    assert caught.value.code == "recovery_required"
+    assert "不一致" in str(caught.value)
+
+
+def test_current_publish_audit_manifest_sha_mismatch_requires_recovery(tmp_path):
+    root = _build_root(tmp_path)
+    first = _candidate("estimate-c1-audit-sha")
+    first_result = _publish(root, first)
+    _rewrite_audit(
+        first_result.audit_path,
+        lambda event: event["diagnostics"].update({"manifest_sha256": "0" * 64}),
+    )
+    second = _candidate("estimate-c1-after-sha-mismatch", previous=first.version_id)
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, second, 1, first.version_id)
+
+    assert caught.value.code == "recovery_required"
+    assert "checksum 不一致" in str(caught.value)
+
+
+def test_invalid_current_publish_audit_requires_recovery(tmp_path):
+    root = _build_root(tmp_path)
+    first = _candidate("estimate-c1-audit-invalid")
+    first_result = _publish(root, first)
+    _rewrite_audit(
+        first_result.audit_path,
+        lambda event: event.update({"unknown_field": True}),
+    )
+    second = _candidate("estimate-c1-after-invalid-audit", previous=first.version_id)
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, second, 1, first.version_id)
+
+    assert caught.value.code == "recovery_required"
+    assert "audit 不合法" in str(caught.value)
+
+
+def test_two_matching_current_publish_audits_are_ambiguous_and_require_recovery(tmp_path):
+    root = _build_root(tmp_path)
+    first = _candidate("estimate-c1-audit-ambiguous")
+    first_result = _publish(root, first)
+    duplicate = deserialize_json(first_result.audit_path.read_bytes())
+    duplicate["event_id"] = "event-c1-duplicate"
+    duplicate_path = first_result.audit_path.with_name("duplicate-event-c1.json")
+    duplicate_path.write_bytes(serialize_json(duplicate))
+    second = _candidate("estimate-c1-after-ambiguous", previous=first.version_id)
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, second, 1, first.version_id)
+
+    assert caught.value.code == "recovery_required"
+    assert "存在多筆" in str(caught.value)
 
 
 def test_existing_version_id_is_rejected_without_overwrite(tmp_path):
@@ -352,6 +528,49 @@ def test_fault_after_current_replace_never_rolls_back_and_preserves_audit_eviden
     assert caught.value.pending_audit_path.is_file()
     assert not caught.value.audit_path.exists()
     assert validate_official_bundle(_disk_bundle(caught.value.version_path))
+
+
+def test_audit_incomplete_current_blocks_next_normal_publish_until_recovery(tmp_path):
+    root = _build_root(tmp_path)
+    first = _candidate("estimate-c1-incomplete-audit")
+    with pytest.raises(OfficialEstimateCurrentSwitchedAuditIncompleteError):
+        _publish(root, first, fault_injector=fault_at("after_current_replace"))
+    second = _candidate(
+        "estimate-c1-after-incomplete-audit", previous=first.version_id
+    )
+
+    with pytest.raises(OfficialEstimateRecoveryRequiredError) as caught:
+        _publish(root, second, 1, first.version_id)
+
+    assert caught.value.code == "recovery_required"
+    assert not (
+        root / "official-estimates" / "versions" / second.version_id
+    ).exists()
+    current = validate_official_current(
+        deserialize_json((root / "official-estimates" / "current.json").read_bytes())
+    )
+    assert current["current_version_id"] == first.version_id
+
+
+def test_published_audit_is_healthy_even_if_post_publish_confirmation_faulted(tmp_path):
+    root = _build_root(tmp_path)
+    first = _candidate("estimate-c1-audit-postcheck")
+    with pytest.raises(OfficialEstimateCurrentSwitchedAuditIncompleteError) as caught:
+        _publish(root, first, fault_injector=fault_at("after_audit_publish"))
+
+    assert caught.value.audit_path.is_file()
+    assert validate_official_estimate_publish_audit_event(
+        deserialize_json(caught.value.audit_path.read_bytes())
+    )
+    second = _candidate(
+        "estimate-c1-after-audit-postcheck", previous=first.version_id
+    )
+
+    result = _publish(root, second, 1, first.version_id)
+
+    assert result.status == "success"
+    assert result.after_revision == 2
+    assert result.current["previous_version_id"] == first.version_id
 
 
 def test_audit_destination_is_unique_and_existing_event_is_never_overwritten(tmp_path):

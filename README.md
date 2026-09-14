@@ -25,7 +25,7 @@
 - 2-4D 年度資料填報規則已收斂：公版升為 `2-4D.1`，Q 值與年度基準出流空白只沿用目前啟用版本的同旬同欄位，水庫參數依數值是否變更決定日期是否可沿用；解析後 candidate 與正式版本仍是完整、自包含資料。舊版公版會明確拒絕，不會套用新空白語意。
 - 2-5A 正式推估資料契約已收斂：V2 batch 明確保存並使用年度士林攔河堰最大引水量；official manifest/inputs/CSV 使用 `inputs_fingerprint`、previous/derived lineage、summary/daily 一致性與 clean source tree 資格驗證。
 - 2-5B 正式保存預覽與 bundle candidate 已完成：Step 5 可從目前 V2 batch 的有效成功情境選取內容、填寫人工操作人與必填備註，並在記憶體建立且完整驗證 official-format candidate；工作階段上傳可保存當次真正使用的值，但其背後仍須有健康、已載入、未過期且版本一致的共享年度基準；不接受跨 batch 比較清單、built-in／未驗證年度資料、stale result 或 dirty source tree。
-- 2-5C1 正式推估安全發布核心已完成：`official_estimate_publisher.py` 可將同一份已驗證 candidate 依唯一 staging、逐檔 fsync/readback、最後建立正式 `COMMITTED.json`、Windows/SMB 排他鎖、鎖內 conflict/current/annual 重驗、append-only version rename、atomic current 與 append-only audit 安全發布。2-5C2 UI 尚未開始；目前沒有真正的「正式保存」按鈕，generic `formal_write_available`／`formal_operations_available` 仍維持 `False`，因此一般使用者仍無法觸發 publisher，也不要把 2-5 整體視為完成。
+- 2-5C1 正式推估安全發布核心已完成：`official_estimate_publisher.py` 可將同一份已驗證 candidate 依唯一 staging、逐檔 fsync/readback、最後建立正式 `COMMITTED.json`、Windows/SMB 排他鎖、鎖內 conflict/current/annual 重驗、append-only version rename、atomic current 與 append-only audit 安全發布。正常發布另要求 official history 健康：current 缺失時 versions inventory 必須為空；current 存在時必須有唯一且完整符合 revision、version、previous 與 manifest checksum 的成功 publish audit，否則回報 `recovery_required`。2-5C2 UI 尚未開始；目前沒有真正的「正式保存」按鈕，generic `formal_write_available`／`formal_operations_available` 仍維持 `False`，因此一般使用者仍無法觸發 publisher，也不要把 2-5 整體視為完成。
 - 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非年度基準資料，不會永久更新 annual-data；若底層共享年度基準健康且版本一致，當次真正使用的上傳值可以納入正式推估 candidate。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
@@ -294,7 +294,7 @@ python -m compileall -q app.py v2_workflow.py shared_storage_schema.py shared_st
 python -m pytest -q
 ```
 
-測試另涵蓋既有 annual-data 建立、啟用、diagnostics 與 recovery 全流程，以及 2-5A/2-5B contract、candidate 與 Streamlit preview。2-5C1 測試涵蓋第一／後續正式版本、相同 batch 新版、candidate/annual/current 重驗、逐檔 bytes 與 checksum、`COMMITTED.json` 最後寫入、完整 staging readback、append-only rename、雙欄位 conflict、fake lock concurrency/timeout、atomic current temp/replace/readback、嚴格 audit schema/唯一命名/不可覆寫，以及 rename 前、rename 後 current 前、current 後 audit 前的 fault injection。自動化測試只使用 pytest `tmp_path`、synthetic data 與 fake lock，不存取 `U:`。
+測試另涵蓋既有 annual-data 建立、啟用、diagnostics 與 recovery 全流程，以及 2-5A/2-5B contract、candidate 與 Streamlit preview。2-5C1 測試涵蓋第一／後續正式版本、相同 batch 新版、candidate/annual/current 重驗、current 缺失時的空 inventory first-publish guard、current 與唯一 publish audit 的 revision/version/previous/manifest checksum consistency、ambiguous/invalid/missing audit recovery guard、逐檔 bytes 與 checksum、`COMMITTED.json` 最後寫入、完整 staging readback、append-only rename、雙欄位 conflict、fake lock concurrency/timeout、atomic current temp/replace/readback、嚴格 audit schema/唯一命名/不可覆寫，以及 rename 前、rename 後 current 前、current 後 audit 前的 fault injection。自動化測試只使用 pytest `tmp_path`、synthetic data 與 fake lock，不存取 `U:`。
 
 Repository 亦包含 `.github/workflows/tests.yml`，每次 push 與 Pull Request 都會使用 Python 3.12 執行 compileall 與完整 pytest 測試。
 
