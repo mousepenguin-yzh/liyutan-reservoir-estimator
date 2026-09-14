@@ -7,6 +7,8 @@ from streamlit.testing.v1 import AppTest
 
 import annual_data_maintenance as maintenance_module
 import annual_data_preview_ui as preview_ui
+import official_estimate_publisher as official_publisher_module
+import official_estimate_workflow as official_workflow_module
 import software_provenance as provenance_module
 from annual_data_activation import (
     AnnualDataActivationConflictError,
@@ -42,6 +44,7 @@ from test_shared_storage_schema import (
 )
 from test_annual_data_excel import _mutated_bytes, _workbook_bytes
 from software_provenance import SoftwareProvenanceResult
+from official_estimate_workflow import ENABLE_FORMAL_WRITES_ENV
 from test_official_estimate_candidate import _ready as _ready_official_candidate
 
 
@@ -163,7 +166,7 @@ def test_enabled_valid_shared_data_shows_official_state_and_opens_workspace(
     assert app.session_state.formal_operations_available is False
 
 
-def test_phase_25b_preview_controls_are_visible_but_never_enable_formal_writes(
+def test_phase_25c2_preview_remains_available_when_formal_writes_are_disabled(
     tmp_path, monkeypatch
 ):
     root = _build_root(tmp_path, official=True)
@@ -266,8 +269,13 @@ def test_phase_25b_builds_memory_candidate_and_invalidates_it_after_note_change(
         "COMMITTED.json",
     }
     assert candidate.validated_bundle["manifest"]["official_scenario_ids"] == [scenario_id]
+    assert candidate.observed_official_revision == 1
+    assert candidate.observed_official_current_version_id == "estimate-synthetic-1"
     assert app.session_state.formal_write_available is False
     assert app.session_state.formal_operations_available is False
+    save_button = next(item for item in app.button if item.label == "正式保存")
+    assert save_button.disabled
+    assert "正式保存功能目前尚未啟用。" in _messages(app.info)
 
     _set_widget_value(app.text_area, "備註（必填）", "修改後備註")
     app = app.run(timeout=30)
@@ -319,6 +327,25 @@ def _fill_phase_25b_preview_form(app, scenario_id):
     _set_widget_value(app.text_area, "備註（必填）", "SESSION_UPLOAD 資格測試")
 
 
+def _build_phase_25c2_preview(app, *, note="2-5C2 正式保存測試"):
+    batch = _seed_phase_25b_ready_batch(app)
+    app = app.run(timeout=30)
+    scenario_id = batch["scenarios"][0]["scenario_id"]
+    _set_widget_value(
+        app.multiselect,
+        "選擇本批次要納入正式保存預覽的情境",
+        [scenario_id],
+    )
+    _set_widget_value(app.text_input, "操作人（必填）", "王承辦")
+    _set_widget_value(app.text_area, "備註（必填）", note)
+    app = app.run(timeout=30)
+    preview_button = next(
+        item for item in app.button if item.label == "產生正式保存預覽"
+    )
+    assert not preview_button.disabled
+    return preview_button.click().run(timeout=30), batch
+
+
 def _use_clean_software_provenance(monkeypatch):
     monkeypatch.setattr(
         provenance_module,
@@ -362,6 +389,196 @@ def test_phase_25b_session_upload_with_healthy_shared_baseline_can_build_candida
     assert "official_estimate_candidate" in app.session_state
     assert app.session_state.formal_write_available is False
     assert app.session_state.formal_operations_available is False
+
+
+def test_phase_25c2_session_upload_with_healthy_baseline_can_enable_formal_save(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path, official=True)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_FORMAL_WRITES_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    monkeypatch.setattr(official_workflow_module, "RUNTIME_PLATFORM", "win32")
+    _use_clean_software_provenance(monkeypatch)
+    app = _run_app()
+    batch = _seed_phase_25b_ready_batch(app)
+    app.session_state.hydrology_session_upload = True
+    app = app.run(timeout=30)
+    _fill_phase_25b_preview_form(app, batch["scenarios"][0]["scenario_id"])
+    app = app.run(timeout=30)
+    app = next(
+        item for item in app.button if item.label == "產生正式保存預覽"
+    ).click().run(timeout=30)
+
+    assert app.session_state.active_data_source_mode == DataSourceMode.SESSION_UPLOAD.value
+    assert app.session_state.formal_write_available is True
+    confirmation = next(
+        item
+        for item in app.checkbox
+        if item.label == "我已確認以上內容，確定建立不可變的正式推估版本。"
+    )
+    assert not confirmation.disabled
+    confirmation.set_value(True)
+    app = app.run(timeout=30)
+    assert not next(item for item in app.button if item.label == "正式保存").disabled
+    assert app.session_state.formal_operations_available is False
+
+
+def test_phase_25c2_success_uses_preview_observed_pair_and_consumes_candidate(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path, official=True)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_FORMAL_WRITES_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    monkeypatch.setattr(official_workflow_module, "RUNTIME_PLATFORM", "win32")
+    _use_clean_software_provenance(monkeypatch)
+
+    @contextlib.contextmanager
+    def fake_lock(_path):
+        yield
+
+    captured = {}
+    real_publish = official_publisher_module.publish_official_estimate_candidate
+
+    def publish_with_fake_lock(**arguments):
+        captured.update(arguments)
+        return real_publish(**arguments, lock_factory=fake_lock)
+
+    monkeypatch.setattr(
+        official_publisher_module,
+        "publish_official_estimate_candidate",
+        publish_with_fake_lock,
+    )
+    app, batch = _build_phase_25c2_preview(_run_app())
+    candidate = app.session_state.official_estimate_candidate
+    assert candidate.observed_official_revision == 1
+    assert candidate.observed_official_current_version_id == "estimate-synthetic-1"
+    confirmation = next(
+        item
+        for item in app.checkbox
+        if item.label == "我已確認以上內容，確定建立不可變的正式推估版本。"
+    )
+    confirmation.set_value(True)
+    app = app.run(timeout=30)
+    save_button = next(item for item in app.button if item.label == "正式保存")
+    assert not save_button.disabled
+    app = save_button.click().run(timeout=30)
+
+    assert not app.exception
+    assert captured["observed_revision"] == 1
+    assert captured["observed_current_version_id"] == "estimate-synthetic-1"
+    assert captured["candidate"].version_id == candidate.version_id
+    assert "正式保存成功" in _messages(app.success)
+    assert "official_estimate_candidate" not in app.session_state
+    assert "official_publish_in_progress_version_id" not in app.session_state
+    assert candidate.version_id in app.session_state.official_consumed_candidate_version_ids
+    receipt = app.session_state.official_publish_receipt
+    assert receipt["version_id"] == candidate.version_id
+    assert receipt["revision"] == 2
+    current = deserialize_json(
+        (root / "official-estimates" / "current.json").read_bytes()
+    )
+    assert current["revision"] == 2
+    assert current["current_version_id"] == candidate.version_id
+    assert not any(
+        item.key == f"publish_official_candidate_{candidate.version_id}"
+        for item in app.button
+    )
+    assert app.session_state.v2_batch["batch_id"] == batch["batch_id"]
+
+    # Saving the same open batch again is possible only after creating a new
+    # preview, which binds the newly observed current revision and gets a new ID.
+    preview_button = next(
+        item for item in app.button if item.label == "產生正式保存預覽"
+    )
+    assert not preview_button.disabled
+    app = preview_button.click().run(timeout=30)
+    next_candidate = app.session_state.official_estimate_candidate
+    assert next_candidate.version_id != candidate.version_id
+    assert next_candidate.validated_bundle["manifest"]["batch_id"] == batch["batch_id"]
+    assert next_candidate.observed_official_revision == 2
+    assert next_candidate.observed_official_current_version_id == candidate.version_id
+    assert next_candidate.validated_bundle["manifest"][
+        "previous_official_version_id"
+    ] == candidate.version_id
+
+
+def test_phase_25c2_revision_conflict_clears_preview_without_retry(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path, official=True)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_FORMAL_WRITES_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    monkeypatch.setattr(official_workflow_module, "RUNTIME_PLATFORM", "win32")
+    _use_clean_software_provenance(monkeypatch)
+    calls = []
+
+    def conflict(**arguments):
+        calls.append(arguments)
+        raise official_publisher_module.OfficialEstimateConflictError(
+            "revision_conflict", "synthetic conflict"
+        )
+
+    monkeypatch.setattr(
+        official_publisher_module, "publish_official_estimate_candidate", conflict
+    )
+    app, _ = _build_phase_25c2_preview(_run_app(), note="conflict test")
+    candidate = app.session_state.official_estimate_candidate
+    next(
+        item
+        for item in app.checkbox
+        if item.label == "我已確認以上內容，確定建立不可變的正式推估版本。"
+    ).set_value(True)
+    app = app.run(timeout=30)
+    app = next(item for item in app.button if item.label == "正式保存").click().run(
+        timeout=30
+    )
+
+    assert len(calls) == 1
+    assert calls[0]["observed_revision"] == candidate.observed_official_revision
+    assert "official_estimate_candidate" not in app.session_state
+    assert "重新產生正式保存預覽" in _messages(app.error)
+    assert "正式保存成功" not in _messages(app.success)
+
+
+def test_phase_25c2_lock_timeout_retains_candidate_and_does_not_retry(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path, official=True)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(ENABLE_FORMAL_WRITES_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    monkeypatch.setattr(official_workflow_module, "RUNTIME_PLATFORM", "win32")
+    _use_clean_software_provenance(monkeypatch)
+    calls = []
+
+    def timeout(**arguments):
+        calls.append(arguments)
+        raise official_publisher_module.OfficialEstimatePublishError(
+            "lock_timeout", "synthetic lock timeout"
+        )
+
+    monkeypatch.setattr(
+        official_publisher_module, "publish_official_estimate_candidate", timeout
+    )
+    app, _ = _build_phase_25c2_preview(_run_app(), note="lock timeout test")
+    candidate = app.session_state.official_estimate_candidate
+    next(
+        item
+        for item in app.checkbox
+        if item.label == "我已確認以上內容，確定建立不可變的正式推估版本。"
+    ).set_value(True)
+    app = app.run(timeout=30)
+    app = next(item for item in app.button if item.label == "正式保存").click().run(
+        timeout=30
+    )
+
+    assert len(calls) == 1
+    assert app.session_state.official_estimate_candidate.version_id == candidate.version_id
+    assert "請稍後再試" in _messages(app.warning)
+    assert "正式保存成功" not in _messages(app.success)
 
 
 def test_phase_25b_session_upload_without_valid_shared_baseline_cannot_build_candidate(

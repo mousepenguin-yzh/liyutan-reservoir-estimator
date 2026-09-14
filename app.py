@@ -15,6 +15,7 @@ import calendar
 import io
 import plotly.graph_objects as go
 import json
+import official_estimate_publisher as official_publisher
 from annual_data_diagnostics import diagnose_annual_data
 from annual_data_preview_ui import (
     format_annual_created_date,
@@ -29,6 +30,12 @@ from official_estimate_candidate import (
     OfficialEstimateCandidate,
     build_official_estimate_candidate,
     candidate_is_current,
+)
+from official_estimate_workflow import (
+    OfficialEstimateWriteCapability,
+    official_estimate_write_capability,
+    official_publish_error_presentation,
+    official_save_button_state,
 )
 from shared_storage_reader import (
     DataSourceMode,
@@ -388,12 +395,48 @@ def render_official_save_preparation(
     *,
     annual_data_version_id,
     shared_annual_data_validated,
-    previous_official_version_id,
     derived_from_official_version_id,
+    official_publish_observation,
+    official_publish_observation_error,
+    formal_write_capability: OfficialEstimateWriteCapability,
 ):
-    """Render the Phase 2-5B in-memory preview workflow only."""
+    """Render preview, explicit confirmation, and the Phase 2-5C2 publish action."""
     st.markdown("### 正式保存準備")
-    st.info("目前僅產生正式保存預覽，尚未寫入正式資料。")
+    st.info(
+        "目前僅產生正式保存預覽，尚未寫入正式資料。只有按下「正式保存」"
+        "才會在共享資料夾建立不可變的正式版本。"
+    )
+    pending_confirmation_clear = st.session_state.pop(
+        "official_publish_confirmation_to_clear", None
+    )
+    if pending_confirmation_clear:
+        st.session_state.pop(
+            f"official_publish_confirmed_{pending_confirmation_clear}", None
+        )
+
+    receipt = st.session_state.get("official_publish_receipt")
+    if isinstance(receipt, dict):
+        st.success("正式保存成功")
+        receipt_columns = st.columns(2)
+        receipt_columns[0].write(f"**正式版本 ID：** {receipt['version_id']}")
+        receipt_columns[1].write(f"**current revision：** {receipt['revision']}")
+        receipt_columns[0].write(f"**操作人：** {receipt['operator_display_name']}")
+        receipt_columns[1].write(f"**保存時間：** {receipt['saved_at']}")
+
+    publish_notice = st.session_state.pop("official_publish_notice", None)
+    if isinstance(publish_notice, dict):
+        if publish_notice.get("code") == "lock_timeout":
+            st.warning(publish_notice["message"])
+        else:
+            st.error(publish_notice["message"])
+        if publish_notice.get("version_id"):
+            st.write(f"**正式版本 ID：** {publish_notice['version_id']}")
+        with st.expander("正式保存錯誤進階資訊"):
+            st.code(f"error code: {publish_notice.get('code', 'unknown')}")
+            if publish_notice.get("evidence_path"):
+                st.code(f"evidence path: {publish_notice['evidence_path']}")
+            if publish_notice.get("detail"):
+                st.write(publish_notice["detail"])
 
     batch_id = batch.get("batch_id", "no-batch") if isinstance(batch, dict) else "no-batch"
     scenarios = batch.get("scenarios", []) if isinstance(batch, dict) else []
@@ -427,14 +470,26 @@ def render_official_save_preparation(
 
     provenance = load_software_provenance()
     software = provenance.software if provenance.ok else None
+    observed_revision = (
+        official_publish_observation.revision
+        if official_publish_observation is not None
+        else None
+    )
+    observed_current_version_id = (
+        official_publish_observation.current_version_id
+        if official_publish_observation is not None
+        else None
+    )
     context = {
         "annual_data_version_id": annual_data_version_id,
         "shared_annual_data_validated": shared_annual_data_validated,
         "operator_display_name": operator,
         "note": note,
         "software": software,
-        "previous_official_version_id": previous_official_version_id,
+        "previous_official_version_id": observed_current_version_id,
         "derived_from_official_version_id": derived_from_official_version_id,
+        "observed_official_revision": observed_revision,
+        "observed_official_current_version_id": observed_current_version_id,
     }
 
     existing = st.session_state.get("official_estimate_candidate")
@@ -443,7 +498,17 @@ def render_official_save_preparation(
         or not isinstance(batch, dict)
         or not candidate_is_current(existing, batch, current_results, selected_ids, **context)
     ):
+        stale_version_id = (
+            existing.version_id
+            if isinstance(existing, OfficialEstimateCandidate)
+            else None
+        )
         st.session_state.pop("official_estimate_candidate", None)
+        if stale_version_id:
+            st.session_state.pop(
+                f"official_publish_confirmed_{stale_version_id}", None
+            )
+        st.session_state.pop("official_publish_in_progress_version_id", None)
         st.session_state.official_candidate_stale_notice = True
         existing = None
     if st.session_state.get("official_candidate_stale_notice"):
@@ -474,6 +539,15 @@ def render_official_save_preparation(
             )
         except StorageValidationError as exc:
             eligibility_error = str(exc)
+        if eligibility_error is None and official_publish_observation_error is not None:
+            if official_publish_observation_error.code == "recovery_required":
+                eligibility_error = (
+                    "正式推估資料目前需要復原／診斷，暫時不能產生可正式保存的預覽。"
+                )
+            else:
+                eligibility_error = "無法完整確認目前正式推估 current/history。"
+        elif eligibility_error is None and official_publish_observation is None:
+            eligibility_error = "無法確認目前正式推估 current revision。"
 
     if eligibility_error:
         st.warning(f"目前不符合正式保存預覽資格：{eligibility_error}")
@@ -501,6 +575,7 @@ def render_official_save_preparation(
         else:
             st.session_state.official_estimate_candidate = existing
             st.session_state.official_candidate_stale_notice = False
+            st.session_state.pop("official_publish_receipt", None)
 
     if existing is None:
         return
@@ -556,7 +631,130 @@ def render_official_save_preparation(
             "derived_from_official_version_id：",
             preview["derived_from_official_version_id"] or "null",
         )
+        st.write(
+            "observed_official_revision：",
+            preview["observed_official_revision"],
+        )
+        st.write(
+            "observed_official_current_version_id：",
+            preview["observed_official_current_version_id"] or "null",
+        )
         st.json(preview["files"])
+
+    st.markdown("### 正式保存")
+    st.warning(
+        "按下正式保存後，系統會在共享資料夾建立一筆不可變的正式推估版本。"
+        "若需修正，必須另建新版本。"
+    )
+    if not formal_write_capability.available:
+        if formal_write_capability.state == "feature_disabled":
+            st.info("正式保存功能目前尚未啟用。")
+        else:
+            st.warning(formal_write_capability.reason)
+
+    confirmation_key = f"official_publish_confirmed_{existing.version_id}"
+    consumed_version_ids = set(
+        st.session_state.get("official_consumed_candidate_version_ids", [])
+    )
+    publish_in_progress_version_id = st.session_state.get(
+        "official_publish_in_progress_version_id"
+    )
+    final_confirmation = st.checkbox(
+        "我已確認以上內容，確定建立不可變的正式推估版本。",
+        key=confirmation_key,
+        disabled=(
+            not formal_write_capability.available
+            or existing.version_id in consumed_version_ids
+            or publish_in_progress_version_id == existing.version_id
+        ),
+    )
+    candidate_current = candidate_is_current(
+        existing,
+        batch,
+        current_results,
+        selected_ids,
+        **context,
+    )
+    button_state = official_save_button_state(
+        candidate=existing,
+        candidate_current=candidate_current,
+        capability=formal_write_capability,
+        final_confirmation=final_confirmation,
+        publish_in_progress_version_id=publish_in_progress_version_id,
+        consumed_version_ids=consumed_version_ids,
+    )
+    if st.button(
+        "正式保存",
+        type="primary",
+        disabled=not button_state.enabled,
+        help=button_state.reason,
+        key=f"publish_official_candidate_{existing.version_id}",
+    ):
+        st.session_state.official_publish_in_progress_version_id = existing.version_id
+        try:
+            result = official_publisher.publish_official_estimate_candidate(
+                root=formal_write_capability.root,
+                candidate=existing,
+                observed_revision=existing.observed_official_revision,
+                observed_current_version_id=(
+                    existing.observed_official_current_version_id
+                ),
+            )
+        except official_publisher.OfficialEstimatePublishError as exc:
+            presentation = official_publish_error_presentation(exc)
+            if presentation.consume_candidate:
+                consumed_version_ids.add(existing.version_id)
+                st.session_state.official_consumed_candidate_version_ids = sorted(
+                    consumed_version_ids
+                )
+            if presentation.clear_candidate:
+                st.session_state.pop("official_estimate_candidate", None)
+                st.session_state.official_publish_confirmation_to_clear = (
+                    existing.version_id
+                )
+            st.session_state.pop("official_publish_in_progress_version_id", None)
+            st.session_state.official_publish_notice = {
+                "code": exc.code,
+                "message": presentation.message,
+                "version_id": (
+                    existing.version_id
+                    if presentation.consume_candidate
+                    else None
+                ),
+                "evidence_path": (
+                    str(exc.evidence_path) if exc.evidence_path is not None else None
+                ),
+                "detail": str(exc),
+            }
+            st.rerun()
+        except Exception as exc:
+            st.session_state.pop("official_publish_in_progress_version_id", None)
+            st.session_state.official_publish_notice = {
+                "code": "filesystem_failure",
+                "message": "正式保存未完成，請確認共享資料夾連線與權限。",
+                "version_id": None,
+                "evidence_path": None,
+                "detail": str(exc),
+            }
+            st.rerun()
+        else:
+            consumed_version_ids.add(existing.version_id)
+            st.session_state.official_consumed_candidate_version_ids = sorted(
+                consumed_version_ids
+            )
+            st.session_state.official_publish_receipt = {
+                "version_id": result.estimate_version_id,
+                "revision": result.after_revision,
+                "saved_at": result.current["updated_at"],
+                "operator_display_name": preview["operator_display_name"],
+            }
+            st.session_state.pop("official_estimate_candidate", None)
+            st.session_state.pop("official_publish_in_progress_version_id", None)
+            st.session_state.official_publish_confirmation_to_clear = (
+                existing.version_id
+            )
+            st.session_state.pop("official_publish_notice", None)
+            st.rerun()
 
 # ==========================================
 # 2. 第二階段核心邏輯：動態旬流量檢索、多重解碼與解析
@@ -996,8 +1194,30 @@ else:
 st.session_state.active_data_source_mode = source_decision.mode.value
 st.session_state.shared_storage_mode_enabled = shared_storage_mode_enabled
 st.session_state.shared_storage_readable = source_decision.shared_storage_readable
-st.session_state.formal_write_available = source_decision.formal_write_available
-# Generic formal-write keys remain closed until the later official-estimate workflow.
+official_publish_observation = None
+official_publish_observation_error = None
+if (
+    shared_storage_mode_enabled
+    and shared_storage_result is not None
+    and shared_storage_result.ok
+    and shared_storage_result.root is not None
+):
+    try:
+        official_publish_observation = (
+            official_publisher.observe_official_publish_context(
+                shared_storage_result.root
+            )
+        )
+    except official_publisher.OfficialEstimatePublishError as exc:
+        official_publish_observation_error = exc
+formal_write_capability = official_estimate_write_capability(
+    shared_storage_result,
+    shared_mode_enabled=shared_storage_mode_enabled,
+    observation=official_publish_observation,
+    observation_error=official_publish_observation_error,
+)
+st.session_state.formal_write_available = formal_write_capability.available
+# Official recovery/repair operations remain unavailable in Phase 2-5C2.
 st.session_state.formal_operations_available = False
 annual_write_capability = annual_data_write_capability(
     shared_storage_result,
@@ -2657,24 +2877,19 @@ with tab_products:
         and loaded_annual_version_id
         and loaded_annual_version_id == current_shared_annual_version_id
     )
-    previous_official_version_id = (
-        shared_storage_result.official.version_id
-        if shared_storage_result is not None
-        and shared_storage_result.ok
-        and shared_storage_result.official is not None
-        else None
-    )
     render_official_save_preparation(
         st.session_state.get("v2_batch"),
         current_v2_results,
         annual_data_version_id=loaded_annual_version_id,
         shared_annual_data_validated=shared_annual_data_validated,
-        previous_official_version_id=previous_official_version_id,
         # Phase 2-6 will populate this when a batch is opened from an old
-        # official version.  Phase 2-5B only keeps the interface available.
+        # official version.  Phase 2-5C2 only keeps the interface available.
         derived_from_official_version_id=st.session_state.get(
             "v2_derived_from_official_version_id"
         ),
+        official_publish_observation=official_publish_observation,
+        official_publish_observation_error=official_publish_observation_error,
+        formal_write_capability=formal_write_capability,
     )
     st.markdown("---")
     

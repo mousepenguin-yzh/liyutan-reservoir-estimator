@@ -382,3 +382,58 @@ def test_multiselect_click_order_does_not_invalidate_same_scenario_set():
     assert candidate_is_current(
         candidate, batch, results, list(reversed(selected)), **context
     )
+
+
+def test_preview_observed_current_pair_is_session_context_not_official_schema():
+    batch, results = _ready(1)
+    selected = [batch["scenarios"][0]["scenario_id"]]
+    candidate = _build(
+        batch,
+        results,
+        selected,
+        previous_official_version_id="estimate-a",
+        observed_official_revision=3,
+        observed_official_current_version_id="estimate-a",
+    )
+
+    assert candidate.observed_official_revision == 3
+    assert candidate.observed_official_current_version_id == "estimate-a"
+    assert candidate.preview["observed_official_revision"] == 3
+    assert candidate.preview["observed_official_current_version_id"] == "estimate-a"
+    assert "observed_official_revision" not in candidate.validated_bundle["inputs"]
+    assert "observed_official_current_version_id" not in candidate.validated_bundle["inputs"]
+    assert "observed_official_revision" not in candidate.validated_bundle["manifest"]
+
+
+def test_revision_change_invalidates_preview_even_when_current_id_returns_to_same_value():
+    batch, results = _ready(1)
+    selected = [batch["scenarios"][0]["scenario_id"]]
+    candidate = _build(
+        batch,
+        results,
+        selected,
+        previous_official_version_id="estimate-a",
+        observed_official_revision=1,
+        observed_official_current_version_id="estimate-a",
+    )
+    context = _kwargs(
+        previous_official_version_id="estimate-a",
+        observed_official_revision=3,
+        observed_official_current_version_id="estimate-a",
+    )
+    context.pop("created_at")
+
+    assert not candidate_is_current(candidate, batch, results, selected, **context)
+
+
+def test_observed_current_id_must_match_candidate_previous_version():
+    batch, results = _ready(1)
+    with pytest.raises(StorageValidationError, match="previous official version"):
+        _build(
+            batch,
+            results,
+            [batch["scenarios"][0]["scenario_id"]],
+            previous_official_version_id="estimate-a",
+            observed_official_revision=2,
+            observed_official_current_version_id="estimate-b",
+        )

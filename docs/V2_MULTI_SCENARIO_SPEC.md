@@ -294,7 +294,9 @@ Phase 2-5A 進一步固定：Step 5 是可跨不同 `batch_id` 累積的比較�
 
 Phase 2-5B 已在 Step 5 另設「正式保存準備」，但資料邊界仍與跨批次比較區分離。可選項只取 `current_session_results()` 中屬於目前 batch、狀態為 success 且 V2 `settings_fingerprint` 仍有效的情境。使用者填寫人工操作人與必填備註、按「產生正式保存預覽」後，domain builder 直接收到目前 `v2_batch` 與目前 result mapping，不接收 `v2_comparison_results`。它建立 session-only official bundle candidate、裁掉展示用歷史列、移除 runtime result state 與未選情境，再由正式 bundle validator 完整重驗。資格判斷依底層共享年度基準是否健康、已載入、未 stale 且版本一致，而不以 `source_decision.mode` 是否為 `OFFICIAL` 取代這些條件；因此健康基準上的 `SESSION_UPLOAD` 可把當次實際使用值納入 candidate，沒有有效共享基準時仍拒絕。任何 batch、結果、情境選取、操作人、備註、年度版本或 software provenance 改變都會使舊 candidate 失效。此預覽不寫入共享資料，也不代表正式保存。
 
-Phase 2-5C1 已完成獨立後端 publisher：只接受同一份已驗證 candidate，重驗 candidate 與其 annual-data reference，將 candidate 四個核心檔案原 bytes 寫入唯一 staging，最後以真正發布時間建立 `COMMITTED.json`；鎖內執行 revision/current conflict、目前正式 bundle 重驗、append-only version rename、atomic current switch 與 append-only audit。Streamlit 尚未呼叫 publisher，2-5C2 的最後確認與「正式保存」按鈕仍未開始。
+Phase 2-5C1 已完成獨立後端 publisher：只接受同一份已驗證 candidate，重驗 candidate 與其 annual-data reference，將 candidate 四個核心檔案原 bytes 寫入唯一 staging，最後以真正發布時間建立 `COMMITTED.json`；鎖內執行 revision/current conflict、目前正式 bundle 重驗、append-only version rename、atomic current switch 與 append-only audit。
+
+Phase 2-5C2 已完成 Streamlit 接線：產生 preview 時同時固定已驗證的 observed official revision/current ID，並納入 session context fingerprint；按「正式保存」時只傳這組 preview pair 與原 candidate，不重新抓 current 來遷就 publisher。只有專用 feature flag、Windows/shared/history capability、candidate 仍有效與不可變版本 checkbox 全部成立才啟用按鈕。成功後 candidate 立即失效；conflict、recovery-required、完整性錯誤、部分成功、lock timeout 與 filesystem failure 依安全語意分別顯示及處理，不自動 retry 或 repair。`formal_operations_available` 仍為 `False`。
 
 ### 7.3 比較項目與命名
 
@@ -346,7 +348,7 @@ Phase 2-5C1 已完成獨立後端 publisher：只接受同一份已驗證 candid
 
 ## 9. 第二階段：本機 Streamlit＋內網共享資料夾永久保存
 
-第一階段已完成驗收。第二階段目前已完成 2-4D、2-5A 資料契約、2-5B 正式保存預覽／記憶體 bundle candidate 與 2-5C1 正式推估安全發布核心；2-5C2 UI 及 2-6 跨裝置接續尚未開始，完整狀態以 `LOCAL_SHARED_STORAGE_SPEC.md` 第 18 節為準。**安全正式發布後端已完成，但目前 Streamlit 尚無真正的「正式保存」按鈕，因此一般使用者仍無法觸發正式發布。**
+第一階段已完成驗收。第二階段目前已完成 2-4D、2-5A 資料契約、2-5B 正式保存預覽／記憶體 bundle candidate、2-5C1 正式推估安全發布核心與 2-5C2 Streamlit 正式保存接線；2-6 跨裝置接續尚未開始，完整狀態以 `LOCAL_SHARED_STORAGE_SPEC.md` 第 18 節為準。**正式保存 UI 與安全 publisher 已接通，但公司 SMB 實機、多電腦、網路中斷及完整人工驗收仍依後續階段執行。**
 
 歷史上曾評估以 Google Sheet 保存共用正式資料，現已由「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」取代。Google Sheet 不再是第二階段主要永久儲存方案。正式資料夾結構、檔案 schema、append-only、Windows／SMB 寫入鎖、revision 衝突、中斷復原、保存期限與分階段驗收，以 [本機 Streamlit＋內網共享資料夾永久保存規格](LOCAL_SHARED_STORAGE_SPEC.md) 為準。
 

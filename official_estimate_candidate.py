@@ -47,6 +47,8 @@ class OfficialEstimateCandidate:
     validated_bundle: dict[str, Any]
     preview: dict[str, Any]
     context_fingerprint: str
+    observed_official_revision: int | None = None
+    observed_official_current_version_id: str | None = None
 
 
 _DAILY_COLUMN_MAP = {
@@ -176,6 +178,8 @@ def official_candidate_context_fingerprint(
     software: Mapping[str, Any] | None,
     previous_official_version_id: str | None = None,
     derived_from_official_version_id: str | None = None,
+    observed_official_revision: int | None = None,
+    observed_official_current_version_id: str | None = None,
 ) -> str:
     """Fingerprint every user-visible input that keeps a preview current."""
 
@@ -206,6 +210,8 @@ def official_candidate_context_fingerprint(
         "software": dict(software) if isinstance(software, Mapping) else software,
         "previous_official_version_id": previous_official_version_id,
         "derived_from_official_version_id": derived_from_official_version_id,
+        "observed_official_revision": observed_official_revision,
+        "observed_official_current_version_id": observed_official_current_version_id,
     }
     return deterministic_fingerprint(payload)
 
@@ -277,6 +283,8 @@ def build_official_estimate_candidate(
     software: Mapping[str, Any] | None,
     previous_official_version_id: str | None = None,
     derived_from_official_version_id: str | None = None,
+    observed_official_revision: int | None = None,
+    observed_official_current_version_id: str | None = None,
     estimate_version_id: str | None = None,
     created_at: str | None = None,
 ) -> OfficialEstimateCandidate:
@@ -288,6 +296,24 @@ def build_official_estimate_candidate(
         _fail("產生正式保存預覽前必須填寫操作人")
     if not candidate_note:
         _fail("產生正式保存預覽前必須填寫備註")
+    if (
+        observed_official_revision is not None
+        or observed_official_current_version_id is not None
+    ):
+        if (
+            isinstance(observed_official_revision, bool)
+            or not isinstance(observed_official_revision, int)
+            or observed_official_revision < 0
+        ):
+            _fail("observed official revision 必須是大於等於 0 的整數")
+        if (observed_official_revision == 0) != (
+            observed_official_current_version_id is None
+        ):
+            _fail("observed official revision/current version 狀態不一致")
+        if observed_official_current_version_id != previous_official_version_id:
+            _fail(
+                "preview observed current version 必須等於 previous official version"
+            )
 
     eligibility = validate_official_save_eligibility(
         batch,
@@ -437,6 +463,8 @@ def build_official_estimate_candidate(
         software=eligibility["software"],
         previous_official_version_id=previous_official_version_id,
         derived_from_official_version_id=derived_from_official_version_id,
+        observed_official_revision=observed_official_revision,
+        observed_official_current_version_id=observed_official_current_version_id,
     )
     preview = {
         "version_id": version_id,
@@ -451,6 +479,8 @@ def build_official_estimate_candidate(
         "note": candidate_note,
         "previous_official_version_id": previous_official_version_id,
         "derived_from_official_version_id": derived_from_official_version_id,
+        "observed_official_revision": observed_official_revision,
+        "observed_official_current_version_id": observed_official_current_version_id,
         "inputs_fingerprint": inputs_fingerprint,
         "software": eligibility["software"],
         "files": {
@@ -463,4 +493,6 @@ def build_official_estimate_candidate(
         validated_bundle=validated_bundle,
         preview=preview,
         context_fingerprint=context_fingerprint,
+        observed_official_revision=observed_official_revision,
+        observed_official_current_version_id=observed_official_current_version_id,
     )
