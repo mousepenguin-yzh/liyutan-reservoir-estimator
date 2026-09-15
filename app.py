@@ -12,6 +12,7 @@ st.set_page_config(
 import pandas as pd
 import datetime
 import calendar
+import copy
 import io
 import plotly.graph_objects as go
 import json
@@ -31,6 +32,37 @@ from official_estimate_candidate import (
     build_official_estimate_candidate,
     candidate_is_current,
 )
+from official_estimate_continuation import (
+    OfficialContinuationError,
+    build_official_continuation,
+)
+from official_estimate_continuation_ui import (
+    CONTINUATION_SOURCE,
+    NEW_WORK_SOURCE,
+    apply_active_annual_helpers,
+    apply_continuation_to_session,
+    apply_date_adjustment_to_session,
+    apply_portable_batch_to_session,
+    build_official_history_view,
+    build_official_snapshot_preview,
+    current_continuation_adjustment,
+    current_continuation_draft,
+    invalidate_working_artifacts,
+    mark_active_annual_unavailable,
+    preview_continuation_date_request,
+    reset_to_new_work,
+)
+from official_estimate_date_adjustment import (
+    ContinuationDateAdjustmentError,
+    adjust_continuation_dates,
+    apply_added_period_q80,
+    apply_added_period_q90,
+    confirm_initial_capacity,
+)
+from official_estimate_loader import (
+    OfficialEstimateLoadError,
+    OfficialEstimateLoader,
+)
 from official_estimate_workflow import (
     OfficialEstimateWriteCapability,
     format_taiwan_timestamp,
@@ -40,10 +72,12 @@ from official_estimate_workflow import (
     short_official_version_id,
 )
 from shared_storage_reader import (
+    AnnualDataVersionLoadError,
     DataSourceMode,
     compatibility_data_source,
     decide_data_source,
     load_shared_storage,
+    load_annual_data_version,
     shared_storage_enabled,
 )
 from shared_storage_schema import StorageValidationError, validate_official_save_eligibility
@@ -1216,6 +1250,71 @@ else:
 st.session_state.active_data_source_mode = source_decision.mode.value
 st.session_state.shared_storage_mode_enabled = shared_storage_mode_enabled
 st.session_state.shared_storage_readable = source_decision.shared_storage_readable
+current_shared_annual_snapshot = (
+    shared_storage_result.annual
+    if shared_storage_result is not None
+    and shared_storage_result.ok
+    and shared_storage_result.annual is not None
+    else None
+)
+current_shared_annual_version_id = (
+    current_shared_annual_snapshot.version["version_id"]
+    if current_shared_annual_snapshot is not None
+    else None
+)
+active_annual_snapshot = current_shared_annual_snapshot
+active_annual_load_error = None
+v2_continuation_active = bool(st.session_state.get("v2_continuation_active"))
+if v2_continuation_active:
+    active_annual_version_id = st.session_state.get(
+        "v2_active_annual_data_version_id"
+    )
+    if (
+        shared_storage_result is not None
+        and shared_storage_result.ok
+        and shared_storage_result.root is not None
+        and active_annual_version_id
+    ):
+        try:
+            active_annual_snapshot = (
+                current_shared_annual_snapshot
+                if active_annual_version_id == current_shared_annual_version_id
+                else load_annual_data_version(
+                    shared_storage_result.root, active_annual_version_id
+                )
+            )
+            apply_active_annual_helpers(st.session_state, active_annual_snapshot)
+        except AnnualDataVersionLoadError as exc:
+            active_annual_snapshot = None
+            active_annual_load_error = exc
+            mark_active_annual_unavailable(
+                st.session_state, active_annual_version_id, exc.message
+            )
+    else:
+        active_annual_snapshot = None
+        active_annual_load_error = "目前無法讀取共享年度版本。"
+        if active_annual_version_id:
+            mark_active_annual_unavailable(
+                st.session_state,
+                active_annual_version_id,
+                str(active_annual_load_error),
+            )
+    # A continuation using historical A while current is B is a normal state,
+    # not the generic current-changed workspace interlock.
+    st.session_state.workspace_annual_stale = False
+    st.session_state.pop("pending_shared_annual_version_id", None)
+    st.session_state.pop("workspace_annual_retain_acknowledged", None)
+elif current_shared_annual_snapshot is not None:
+    st.session_state.v2_active_annual_data_version_id = (
+        st.session_state.get("loaded_shared_annual_version_id")
+        if st.session_state.get("workspace_annual_stale")
+        else current_shared_annual_version_id
+    )
+    st.session_state.v2_active_annual_validated = bool(
+        source_decision.mode is DataSourceMode.OFFICIAL
+        and not session_upload_active
+        and not st.session_state.get("workspace_annual_stale")
+    )
 official_publish_observation = None
 official_publish_observation_error = None
 if (
@@ -1374,6 +1473,43 @@ elif source_decision.mode is DataSourceMode.OFFICIAL:
 else:
     st.caption(f"本次試算目前使用的資料來源：{source_decision.label}")
 
+if st.session_state.get("v2_continuation_active"):
+    source_metadata = st.session_state.get("v2_source_official_metadata", {})
+    active_id = st.session_state.get("v2_active_annual_data_version_id")
+    st.info(
+        "目前工作來源：正式版本接續｜"
+        f"{source_metadata.get('batch_name', '未命名批次')}｜"
+        f"工作年度基準 {active_id or '無法確認'}｜"
+        f"系統目前年度基準 {current_shared_annual_version_id or '無法讀取'}"
+    )
+    if active_id and current_shared_annual_version_id and active_id != current_shared_annual_version_id:
+        st.caption(
+            f"本工作批次沿用正式版本的年度基準 {active_id}；"
+            f"目前系統基準為 {current_shared_annual_version_id}。"
+            "既有輸入不會自動改寫。"
+        )
+    if not st.session_state.get("v2_active_annual_validated"):
+        st.warning(
+            "工作批次仍可查看，但使用年度基準的填值協助與正式保存已停用："
+            f"{st.session_state.get('v2_active_annual_error', '歷史年度版本無法完整驗證')}"
+        )
+    with st.expander("目前工作來源進階資訊"):
+        st.write(
+            "**source official version_id：** "
+            f"{st.session_state.get('v2_source_official_version_id')}"
+        )
+        st.write(
+            "**derived_from_official_version_id：** "
+            f"{st.session_state.get('v2_derived_from_official_version_id')}"
+        )
+        if st.session_state.get("v2_batch"):
+            st.write(f"**working batch_id：** {st.session_state.v2_batch['batch_id']}")
+        st.write(f"**active annual_data_version_id：** {active_id}")
+        st.write(
+            "**current annual_data_version_id：** "
+            f"{current_shared_annual_version_id}"
+        )
+
 tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
     "⚙️ 第一階段：推估需求基礎資料設定", 
     "🌊 第二階段：入流條件與水文維護",
@@ -1387,32 +1523,353 @@ tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
 # -----------------
 with tab_config:
     st.subheader("⚙️ 水庫基本資料與展示區間")
+    st.markdown("### 工作批次來源")
+    continuation_available = bool(
+        shared_storage_mode_enabled
+        and shared_storage_result is not None
+        and shared_storage_result.ok
+        and shared_storage_result.root is not None
+        and source_decision.mode is DataSourceMode.OFFICIAL
+        and not session_upload_active
+    )
+    source_options = ["建立全新推估", "從正式版本接續"]
+    source_index = 1 if st.session_state.get("v2_continuation_active") else 0
+    requested_work_source = st.radio(
+        "選擇工作批次來源",
+        source_options,
+        index=source_index,
+        horizontal=True,
+        key="v2_requested_work_source",
+    )
+    if requested_work_source == "從正式版本接續":
+        if not continuation_available:
+            st.warning(
+                "正式版本接續只在共享儲存區與正式年度資料完整驗證成功時開放；"
+                "相容模式、備援資料或工作階段上傳不能使用。"
+            )
+        else:
+            try:
+                official_loader = OfficialEstimateLoader(shared_storage_result.root)
+                official_history = official_loader.load_history()
+                history_view = build_official_history_view(official_history)
+                history_labels = {
+                    item.version_id: item.label for item in history_view.items
+                }
+                selected_official_version_id = st.selectbox(
+                    "選擇正式版本",
+                    options=[item.version_id for item in history_view.items],
+                    format_func=lambda version_id: history_labels[version_id],
+                    key="v2_selected_official_version_id",
+                )
+                selected_snapshot = official_loader.load_history_version(
+                    selected_official_version_id
+                )
+                official_preview = build_official_snapshot_preview(
+                    selected_snapshot,
+                    current_annual_data_version_id=current_shared_annual_version_id,
+                )
+                st.markdown("#### 正式版本預覽")
+                preview_cols = st.columns(2)
+                preview_cols[0].write(f"**批次名稱：** {official_preview.batch_name}")
+                preview_cols[1].write(
+                    "**推估期間：** "
+                    f"{official_preview.projection_start_date}～"
+                    f"{official_preview.projection_end_date}"
+                )
+                preview_cols[0].write(
+                    f"**起始庫容：** {official_preview.initial_capacity:g} 萬噸"
+                )
+                preview_cols[1].write(
+                    "**正式情境：** " + "、".join(official_preview.scenario_names)
+                )
+                preview_cols[0].write(
+                    f"**操作人：** {official_preview.operator_display_name}"
+                )
+                preview_cols[1].write(
+                    f"**建立時間（UTC）：** {official_preview.created_at}"
+                )
+                st.write(f"**正式備註：** {official_preview.note}")
+                st.write(
+                    "**來源年度基準：** "
+                    f"{official_preview.source_annual_data_version_id}"
+                )
+                if official_preview.annual_versions_differ:
+                    st.info(
+                        "此正式版本使用年度基準 "
+                        f"{official_preview.source_annual_data_version_id}；"
+                        "目前系統年度基準為 "
+                        f"{official_preview.current_annual_data_version_id}。"
+                        "載入後會先完整沿用來源基準，不會自動改成目前基準；"
+                        "若延長新增旬，系統會要求明確確認後才使用目前基準。"
+                    )
+                else:
+                    st.info("此正式版本與目前系統使用相同年度基準。")
+                with st.expander("正式版本預覽進階資訊"):
+                    st.write(f"**完整 version_id：** {official_preview.version_id}")
+                    st.write(
+                        "**derived_from_official_version_id：** "
+                        f"{official_preview.derived_from_official_version_id or '無'}"
+                    )
+                replacing_work = bool(st.session_state.get("v2_batch"))
+                replace_confirmed = True
+                if replacing_work:
+                    st.warning(
+                        "這會取代目前正在編輯的工作批次；已正式保存的版本不受影響。"
+                    )
+                    replace_confirmed = st.checkbox(
+                        "我確認要以選取的正式版本取代目前工作批次。",
+                        key=f"v2_confirm_official_replace_{selected_official_version_id}",
+                    )
+                if st.button(
+                    "從此正式版本建立新工作",
+                    type="primary",
+                    disabled=not replace_confirmed,
+                    key=f"v2_build_continuation_{selected_official_version_id}",
+                ):
+                    try:
+                        # Reload at the action boundary so the preview cannot
+                        # become an authorization to use stale shared bytes.
+                        selected_snapshot = official_loader.load_history_version(
+                            selected_official_version_id
+                        )
+                        continuation_draft = build_official_continuation(
+                            selected_snapshot
+                        )
+                        source_annual_snapshot = None
+                        source_annual_error = None
+                        try:
+                            source_annual_snapshot = load_annual_data_version(
+                                shared_storage_result.root,
+                                continuation_draft.annual_data_version_id,
+                            )
+                            # Build all potentially failing helper frames
+                            # before changing the real session.
+                            annual_helper_patch = {}
+                            apply_active_annual_helpers(
+                                annual_helper_patch, source_annual_snapshot
+                            )
+                        except AnnualDataVersionLoadError as exc:
+                            source_annual_error = exc.message
+                            annual_helper_patch = None
+                        apply_continuation_to_session(
+                            st.session_state,
+                            continuation_draft,
+                            source_metadata=selected_snapshot.metadata,
+                            active_annual_validated=(source_annual_snapshot is not None),
+                            active_annual_error=source_annual_error,
+                        )
+                        if annual_helper_patch is not None:
+                            for key, value in annual_helper_patch.items():
+                                st.session_state[key] = value
+                        st.rerun()
+                    except (
+                        OfficialEstimateLoadError,
+                        OfficialContinuationError,
+                        ValueError,
+                        TypeError,
+                        KeyError,
+                    ) as exc:
+                        st.error(f"無法建立正式版本接續工作：{exc}")
+                        with st.expander("正式版本載入錯誤進階資訊"):
+                            st.code(f"error code: {getattr(exc, 'code', 'unknown')}")
+                            st.write(str(exc))
+            except OfficialEstimateLoadError as exc:
+                st.error("正式版本歷史目前無法安全載入，未變更目前工作。")
+                with st.expander("正式版本歷史錯誤進階資訊"):
+                    st.code(f"error code: {exc.code.value}")
+                    if exc.version_id:
+                        st.code(f"version_id: {exc.version_id}")
+                    st.write(exc.message)
+    elif st.session_state.get("v2_continuation_active"):
+        st.warning(
+            "建立全新推估會取代目前接續工作，清除正式來源 lineage，"
+            "但不會清除跨批次比較清單。"
+        )
+        reset_confirmed = st.checkbox(
+            "我確認要結束目前正式接續工作並建立全新推估。",
+            key="v2_confirm_reset_new_work",
+        )
+        if st.button(
+            "建立新的工作批次",
+            disabled=not reset_confirmed,
+            key="v2_reset_new_work",
+        ):
+            reset_to_new_work(
+                st.session_state,
+                current_annual_version_id=current_shared_annual_version_id,
+            )
+            if current_shared_annual_snapshot is not None:
+                apply_shared_annual_data(shared_storage_result)
+            st.rerun()
+
     col1, col2 = st.columns(2)
+    step1_widget_version = st.session_state.get("v2_widget_version", 0)
     with col1:
         st.markdown("##### 🏛️ 水庫基本資料")
-        st.session_state.max_capacity = st.number_input("水庫上限庫容 (萬噸)", min_value=100.0, max_value=20000.0, value=st.session_state.max_capacity, step=100.0)
-        st.session_state.shilin_eco_flow = st.number_input("士林堰生態基流量 (cms)", min_value=0.0, max_value=10.0, value=st.session_state.shilin_eco_flow, step=0.1)
-        st.session_state.liyutan_eco_flow = st.number_input("鯉魚潭最低生態放流量 (cms)", min_value=0.0, max_value=5.0, value=st.session_state.liyutan_eco_flow, step=0.05)
+        st.session_state.max_capacity = st.number_input("水庫上限庫容 (萬噸)", min_value=100.0, max_value=20000.0, value=st.session_state.max_capacity, step=100.0, key=f"v2_max_capacity_{step1_widget_version}")
+        st.session_state.shilin_eco_flow = st.number_input("士林堰生態基流量 (cms)", min_value=0.0, max_value=10.0, value=st.session_state.shilin_eco_flow, step=0.1, key=f"v2_shilin_eco_{step1_widget_version}")
+        st.session_state.liyutan_eco_flow = st.number_input("鯉魚潭最低生態放流量 (cms)", min_value=0.0, max_value=5.0, value=st.session_state.liyutan_eco_flow, step=0.05, key=f"v2_liyutan_eco_{step1_widget_version}")
     with col2:
         st.markdown("##### 📅 展示區間設定")
-        st.session_state.display_start_date = st.date_input("展示起始日期(若早於推估起始日期，需在下方填入實際蓄水量)", value=st.session_state.display_start_date)
-        st.session_state.start_date = st.date_input("推估起始日期 (庫容推估起點)", value=st.session_state.start_date)
-        st.session_state.end_date = st.date_input("預計推估結束日期 (此日不計入日計算)", value=st.session_state.end_date)
-        
-        # 檢驗日期先後關係
+        if v2_continuation_active:
+            st.caption("日期修改會先暫存；確認後才以 2-6C 規則原子遷移工作批次。")
+            requested_defaults = {
+                "v2_requested_display_start_date": st.session_state.display_start_date,
+                "v2_requested_projection_start_date": st.session_state.start_date,
+                "v2_requested_projection_end_date": st.session_state.end_date,
+            }
+            for requested_key, requested_value in requested_defaults.items():
+                st.session_state.setdefault(requested_key, requested_value)
+            requested_display = st.date_input(
+                "展示起始日期(若早於推估起始日期，需在下方填入實際蓄水量)",
+                key="v2_requested_display_start_date",
+            )
+            requested_start = st.date_input(
+                "推估起始日期 (庫容推估起點)",
+                key="v2_requested_projection_start_date",
+            )
+            requested_end = st.date_input(
+                "預計推估結束日期 (此日不計入日計算)",
+                key="v2_requested_projection_end_date",
+            )
+            try:
+                date_preview = preview_continuation_date_request(
+                    current_continuation_draft(st.session_state),
+                    display_start_date=requested_display,
+                    projection_start_date=requested_start,
+                    projection_end_date=requested_end,
+                )
+                if date_preview.changed:
+                    st.info(
+                        f"日期變更摘要：保留 {len(date_preview.preserved_periods)} 旬、"
+                        f"新增 {len(date_preview.added_periods)} 旬、移除 {len(date_preview.removed_periods)} 旬。"
+                    )
+                    if date_preview.added_periods:
+                        st.write("新增旬：" + "、".join(date_preview.added_periods))
+                        active_before = st.session_state.get("v2_active_annual_data_version_id")
+                        st.warning(
+                            "新增旬入流將保持待填；新增旬出流會使用目前系統年度基準 "
+                            f"{current_shared_annual_version_id or '（不可用）'} 的去年同期資料。"
+                            "原有旬資料不會重算。"
+                        )
+                        if active_before != current_shared_annual_version_id:
+                            st.caption(
+                                f"確認後，本工作批次年度基準將由 {active_before} 切換為 "
+                                f"{current_shared_annual_version_id}。"
+                            )
+                        extension_ready = bool(
+                            current_shared_annual_snapshot is not None
+                            and current_shared_annual_version_id
+                            and shared_storage_result is not None
+                            and shared_storage_result.ok
+                            and st.session_state.get("shared_snapshot_valid")
+                        )
+                        if st.button(
+                            "使用目前年度基準延長",
+                            type="primary",
+                            disabled=not extension_ready,
+                            key="v2_apply_extension_dates",
+                        ):
+                            adjusted = adjust_continuation_dates(
+                                current_continuation_draft(st.session_state),
+                                display_start_date=requested_display,
+                                projection_start_date=requested_start,
+                                projection_end_date=requested_end,
+                                extension_annual_snapshot=current_shared_annual_snapshot,
+                            )
+                            apply_date_adjustment_to_session(st.session_state, adjusted)
+                            apply_active_annual_helpers(
+                                st.session_state, current_shared_annual_snapshot
+                            )
+                            st.rerun()
+                        if not extension_ready:
+                            st.error("目前系統年度基準無法安全驗證，不能新增旬；不會使用備援或上傳資料。")
+                    elif st.button(
+                        "套用日期變更", type="primary", key="v2_apply_dates_without_extension"
+                    ):
+                        adjusted = adjust_continuation_dates(
+                            current_continuation_draft(st.session_state),
+                            display_start_date=requested_display,
+                            projection_start_date=requested_start,
+                            projection_end_date=requested_end,
+                        )
+                        apply_date_adjustment_to_session(st.session_state, adjusted)
+                        st.rerun()
+                else:
+                    st.caption("目前沒有待套用的日期變更。")
+            except (ContinuationDateAdjustmentError, ValueError, TypeError, KeyError) as exc:
+                st.error(f"日期變更無法套用：{exc}")
+                error_code = getattr(exc, "code", None)
+                if error_code:
+                    with st.expander("進階資訊"):
+                        st.code(f"error_code={error_code}\ndetail={exc}")
+        else:
+            st.session_state.display_start_date = st.date_input("展示起始日期(若早於推估起始日期，需在下方填入實際蓄水量)", value=st.session_state.display_start_date, key=f"v2_display_start_{step1_widget_version}")
+            st.session_state.start_date = st.date_input("推估起始日期 (庫容推估起點)", value=st.session_state.start_date, key=f"v2_projection_start_{step1_widget_version}")
+            st.session_state.end_date = st.date_input("預計推估結束日期 (此日不計入日計算)", value=st.session_state.end_date, key=f"v2_projection_end_{step1_widget_version}")
+
         if st.session_state.display_start_date > st.session_state.start_date:
             st.error("⚠️ 錯誤：『展示起始日期』不可晚於『推估起始日期』。")
         if st.session_state.start_date >= st.session_state.end_date:
             st.error("⚠️ 錯誤：『推估起始日期』必須早於『預計推估結束日期』。")
-            
+
         calc_start_day = st.session_state.start_date
         prev_day = calc_start_day - datetime.timedelta(days=1)
         prev_day_label = f"推估起點前一日 ({prev_day.strftime('%m/%d')} 24:00) 庫容 (萬噸)"
-        
-        st.session_state.init_capacity = st.number_input(prev_day_label, min_value=0.0, max_value=st.session_state.max_capacity, value=st.session_state.init_capacity, step=10.0)
+
+        if v2_continuation_active and st.session_state.get("v2_initial_capacity_requires_confirmation"):
+            st.warning("推估起始日期已變更，請重新輸入推估起點前一日 24:00 庫容。")
+            pending_capacity = st.number_input(
+                prev_day_label,
+                min_value=0.0,
+                max_value=st.session_state.max_capacity,
+                value=None,
+                step=10.0,
+                placeholder="待重新確認",
+                key="v2_pending_initial_capacity_value",
+            )
+            if st.button(
+                "確認新的起始庫容",
+                disabled=pending_capacity is None,
+                key="v2_confirm_initial_capacity",
+            ):
+                try:
+                    confirmed = confirm_initial_capacity(
+                        current_continuation_adjustment(st.session_state), pending_capacity
+                    )
+                    apply_date_adjustment_to_session(st.session_state, confirmed)
+                    st.rerun()
+                except ContinuationDateAdjustmentError as exc:
+                    st.error(f"起始庫容無法確認：{exc}")
+        else:
+            st.session_state.init_capacity = st.number_input(
+                prev_day_label,
+                min_value=0.0,
+                max_value=st.session_state.max_capacity,
+                value=st.session_state.init_capacity,
+                step=10.0,
+                key=f"v2_initial_capacity_{step1_widget_version}",
+            )
+
+    if v2_continuation_active and st.session_state.get("v2_batch"):
+        current_batch = st.session_state.v2_batch
+        updated_batch = copy.deepcopy(current_batch)
+        updated_batch["historical_capacities"] = copy.deepcopy(st.session_state.hist_capacity)
+        updated_batch["reservoir_parameters"] = {
+            "max_capacity": st.session_state.max_capacity,
+            "shilin_eco_flow": st.session_state.shilin_eco_flow,
+            "liyutan_eco_flow": st.session_state.liyutan_eco_flow,
+            "shilin_diversion_limit": st.session_state.shilin_diversion_limit,
+        }
+        if not st.session_state.get("v2_initial_capacity_requires_confirmation"):
+            updated_batch["initial_capacity"] = st.session_state.init_capacity
+        if settings_fingerprint(updated_batch) != settings_fingerprint(current_batch):
+            st.session_state.v2_batch = updated_batch
+            invalidate_working_artifacts(st.session_state)
 
     # 處理展示期（歷史觀測期）的逐旬蓄水量輸入
-    if st.session_state.display_start_date < st.session_state.start_date:
+    if (st.session_state.display_start_date < st.session_state.start_date
+            and not st.session_state.get("v2_initial_capacity_requires_confirmation")):
         st.markdown("---")
         st.markdown("##### 📈 展示區間實際蓄水量輸入")
         st.caption("請輸入展示期間內，各旬末日前一日 24:00 的實際蓄水量 (萬噸)：")
@@ -1474,9 +1931,15 @@ with tab_inflow:
     else:
         v2_periods = [f"{int(r['年份'])}-{int(r['月份'])}-{r['旬別']}" for _, r in proj_unique_periods.iterrows()]
         if "v2_batch" in st.session_state and st.session_state.v2_batch.get("periods") != v2_periods:
-            st.session_state.v2_batch = migrate_batch_periods(st.session_state.v2_batch, v2_periods)
-            invalidate_session_results(st.session_state)
-            st.session_state.v2_widget_version = st.session_state.get("v2_widget_version", 0) + 1
+            if v2_continuation_active:
+                st.error(
+                    "接續工作日期與批次旬別不一致；已停止自動遷移。"
+                    "請回第一階段使用『套用日期變更』。"
+                )
+            else:
+                st.session_state.v2_batch = migrate_batch_periods(st.session_state.v2_batch, v2_periods)
+                invalidate_session_results(st.session_state)
+                st.session_state.v2_widget_version = st.session_state.get("v2_widget_version", 0) + 1
         if "v2_batch" not in st.session_state:
             v2_scenarios = scenario_template("single", v2_periods)
             st.session_state.v2_batch = {
@@ -1495,10 +1958,108 @@ with tab_inflow:
                 "shared_inflows": {}, "scenarios": v2_scenarios, "outflows": {},
                 "daily_outflows": [], "date_overrides": [], "overrides_enabled": False,
                 "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(), "note": ""}
+            st.session_state.v2_work_source = NEW_WORK_SOURCE
+            st.session_state.v2_continuation_active = False
+            st.session_state.v2_derived_from_official_version_id = None
+            st.session_state.v2_active_annual_data_version_id = current_shared_annual_version_id
         batch = st.session_state.v2_batch
         old_fingerprint = settings_fingerprint(batch)
         widget_version = st.session_state.get("v2_widget_version", 0)
         batch["batch_name"] = st.text_input("批次名稱", batch["batch_name"], key=f"v2_batch_name_{widget_version}")
+
+        latest_added = tuple(
+            key for key in st.session_state.get("v2_latest_added_periods", ())
+            if key in batch["periods"]
+        ) if v2_continuation_active else ()
+        if latest_added:
+            st.markdown("### 接續版本新增旬快速填值")
+            st.caption(
+                "只會處理最近日期調整新增、且目前仍空白的旬；不會覆蓋既有旬或人工值。"
+                f" 工作年度基準：{st.session_state.get('v2_active_annual_data_version_id')}"
+            )
+            st.write("最近新增旬：" + "、".join(latest_added))
+            quick_fill_ready = bool(
+                active_annual_snapshot is not None
+                and st.session_state.get("v2_active_annual_validated")
+            )
+            all_scenario_ids = tuple(item["scenario_id"] for item in batch["scenarios"])
+            shared_periods = set(batch["periods"][: int(batch["shared_period_count"])])
+            added_shared = tuple(key for key in latest_added if key in shared_periods)
+            added_scenario = tuple(key for key in latest_added if key not in shared_periods)
+            if added_shared:
+                pending_shared_added = [
+                    key for key in added_shared
+                    if batch["shared_inflows"].get(key, {}).get("cms") is None
+                ]
+                st.markdown("#### 新增共用旬")
+                st.write("待填：" + ("、".join(pending_shared_added) or "無"))
+                shared_q90, shared_q80 = st.columns(2)
+                shared_action = None
+                if shared_q90.button(
+                    "全部新增共用空白旬套 Q90",
+                    disabled=not quick_fill_ready or not pending_shared_added,
+                    key="v2_added_shared_q90",
+                ):
+                    shared_action = apply_added_period_q90
+                if shared_q80.button(
+                    "全部新增共用空白旬套 Q80",
+                    disabled=not quick_fill_ready or not pending_shared_added,
+                    key="v2_added_shared_q80",
+                ):
+                    shared_action = apply_added_period_q80
+                if shared_action is not None:
+                    try:
+                        filled = shared_action(
+                            current_continuation_adjustment(st.session_state),
+                            scenario_ids=all_scenario_ids,
+                            annual_snapshot=active_annual_snapshot,
+                            period_keys=added_shared,
+                        )
+                        apply_date_adjustment_to_session(st.session_state, filled)
+                        st.rerun()
+                    except ContinuationDateAdjustmentError as exc:
+                        st.error(f"新增共用旬無法套值：{exc}")
+            if added_scenario:
+                st.markdown("#### 新增分情境旬")
+                for quick_scenario in sorted(batch["scenarios"], key=lambda item: item["order"]):
+                    scenario_id = quick_scenario["scenario_id"]
+                    pending_scenario_added = [
+                        key for key in added_scenario
+                        if quick_scenario["inflows"].get(key, {}).get("cms") is None
+                    ]
+                    label_col, q90_col, q80_col = st.columns([3, 1, 1])
+                    label_col.write(
+                        f"{quick_scenario['name']}："
+                        + ("、".join(pending_scenario_added) if pending_scenario_added else "無待填")
+                    )
+                    scenario_action = None
+                    if q90_col.button(
+                        "Q90",
+                        disabled=not quick_fill_ready or not pending_scenario_added,
+                        key=f"v2_added_q90_{scenario_id}",
+                    ):
+                        scenario_action = apply_added_period_q90
+                    if q80_col.button(
+                        "Q80",
+                        disabled=not quick_fill_ready or not pending_scenario_added,
+                        key=f"v2_added_q80_{scenario_id}",
+                    ):
+                        scenario_action = apply_added_period_q80
+                    if scenario_action is not None:
+                        try:
+                            filled = scenario_action(
+                                current_continuation_adjustment(st.session_state),
+                                scenario_ids=scenario_id,
+                                annual_snapshot=active_annual_snapshot,
+                                period_keys=added_scenario,
+                            )
+                            apply_date_adjustment_to_session(st.session_state, filled)
+                            st.rerun()
+                        except ContinuationDateAdjustmentError as exc:
+                            st.error(f"{quick_scenario['name']} 無法套值：{exc}")
+            if not quick_fill_ready:
+                st.warning("本工作批次年度基準無法驗證，Q80/Q90 快速填值已停用。")
+
         template_kind = st.radio("快速範本（套用前必須確認）", ["沿用目前工作區", "單一情境", "標準 A／B／C", "空白自訂情境"], horizontal=True)
         if template_kind != "沿用目前工作區":
             st.warning("套用範本會清除目前情境及已輸入的情境入流。")
@@ -1590,7 +2151,14 @@ with tab_inflow:
                 if divergent:
                     tool1, tool2 = st.columns(2)
                     q_choice = tool1.selectbox("以 Q 值填入分歧期間", [f"Q{x}" for x in range(5, 100, 5)], index=17, key=widget_keys["q"])
-                    if tool1.button("套用 Q 值", key=f"v2_apply_q_{sid}"):
+                    if tool1.button(
+                        "套用 Q 值",
+                        key=f"v2_apply_q_{sid}",
+                        disabled=bool(
+                            v2_continuation_active
+                            and not st.session_state.get("v2_active_annual_validated")
+                        ),
+                    ):
                         q_values = {}
                         for key in divergent:
                             _, month, period = key.split("-", 2); value = get_dynamic_shilin_flow(int(month), period, q_choice)
@@ -1634,23 +2202,16 @@ with tab_inflow:
                 try:
                     candidate = import_batch(uploaded.getvalue().decode("utf-8")); st.success(f"預覽：{candidate['batch_name']}，{len(candidate['scenarios'])} 個情境，{len(candidate['periods'])} 旬")
                     if st.button("確認覆蓋目前設定", type="primary"):
-                        st.session_state.display_start_date = datetime.date.fromisoformat(candidate["display_start_date"])
-                        st.session_state.start_date = datetime.date.fromisoformat(candidate["projection_start_date"])
-                        st.session_state.end_date = datetime.date.fromisoformat(candidate["projection_end_date"])
-                        st.session_state.init_capacity = float(candidate["initial_capacity"])
-                        st.session_state.hist_capacity = candidate.get("historical_capacities", {})
-                        params = candidate["reservoir_parameters"]
-                        st.session_state.max_capacity = float(params["max_capacity"])
-                        st.session_state.shilin_eco_flow = float(params["shilin_eco_flow"])
-                        st.session_state.liyutan_eco_flow = float(params["liyutan_eco_flow"])
-                        st.session_state.shilin_diversion_limit = float(params["shilin_diversion_limit"])
-                        st.session_state.override_list = [{**ov, "start": datetime.date.fromisoformat(ov["start"]),
-                            "end": datetime.date.fromisoformat(ov["end"])} for ov in candidate["date_overrides"]]
-                        st.session_state.enable_override = candidate["overrides_enabled"]
-                        st.session_state.v2_batch = candidate
-                        st.session_state.v2_outflows_authoritative = True
-                        st.session_state.v2_widget_version = st.session_state.get("v2_widget_version", 0) + 1
-                        invalidate_session_results(st.session_state); st.rerun()
+                        apply_portable_batch_to_session(
+                            st.session_state,
+                            candidate,
+                            current_annual_version_id=current_shared_annual_version_id,
+                        )
+                        if current_shared_annual_snapshot is not None:
+                            apply_active_annual_helpers(
+                                st.session_state, current_shared_annual_snapshot
+                            )
+                        st.rerun()
                 except (ValueError, TypeError, KeyError, UnicodeDecodeError) as exc: st.error(f"設定檔驗證失敗：{exc}")
         if settings_fingerprint(batch) != old_fingerprint and st.session_state.get("v2_batch_results"):
             invalidate_session_results(st.session_state)
@@ -1818,8 +2379,11 @@ with tab_inflow:
             uploaded_hydrology_file = st.file_uploader(
                 "請選擇欲上傳之水文流量檔案 (需符合36旬格式規格，強烈推薦使用修改後的 .xlsx 檔)：",
                 type=["xlsx", "csv"],
-                key="hydrology_uploader"
+                key="hydrology_uploader",
+                disabled=v2_continuation_active,
             )
+            if v2_continuation_active:
+                st.caption("正式版本接續期間，水文協助工具固定使用工作批次的 active annual baseline。")
             
             # 處理上傳與多重解碼覆寫邏輯
             if uploaded_hydrology_file is not None:
@@ -1883,7 +2447,7 @@ with tab_inflow:
                 "🔄 還原目前基準水文資料",
                 use_container_width=True,
                 type="secondary",
-                disabled=bool(st.session_state.get("workspace_annual_stale")),
+                disabled=bool(st.session_state.get("workspace_annual_stale")) or v2_continuation_active,
             ):
                 if shared_storage_mode_enabled and shared_storage_result.ok:
                     st.session_state.hydrology_df = shared_hydrology_frame(shared_storage_result.annual.hydrology)
@@ -1916,16 +2480,16 @@ with tab_inflow:
 with tab_outflow:
     st.subheader("🚰 出流標的設定與抗旱調整")
     if st.session_state.get("v2_outflows_authoritative") and st.session_state.get("v2_batch"):
-        st.success("目前使用匯入設定檔出流；下方原工作區僅供參考，並非目前正式條件。")
+        st.success("目前使用正式版本接續／匯入設定的權威出流；下方工作區僅供參考。")
         imported_daily = daily_outflow_frame(st.session_state.v2_batch)
         imported_summary = imported_daily.groupby(["年份", "月份", "旬別"], sort=False).agg(
             上灌區加權均值=("上灌區當日流量(cms)", "mean"), 下灌區加權均值=("下灌區當日流量(cms)", "mean"),
             公共給水加權均值=("公共供水當日水量(萬噸)", "mean"), 覆寫日數=("調度狀態", lambda x: x.astype(str).str.contains("覆寫").sum())).reset_index()
         st.dataframe(imported_summary, hide_index=True, use_container_width=True)
         if st.session_state.v2_batch.get("date_overrides"):
-            st.caption("匯入的逐日覆寫規則")
+            st.caption("權威工作批次的逐日覆寫規則")
             st.dataframe(pd.DataFrame(st.session_state.v2_batch["date_overrides"]), hide_index=True, use_container_width=True)
-        if st.button("改用目前步驟三工作區並覆蓋匯入出流", key="v2_release_imported_outflow"):
+        if st.button("改用目前步驟三工作區並覆蓋權威出流", key="v2_release_imported_outflow"):
             st.session_state.v2_outflows_authoritative = False
             invalidate_session_results(st.session_state); st.rerun()
     if proj_unique_periods.empty:
@@ -2275,8 +2839,11 @@ with tab_outflow:
             uploaded_demand_file = st.file_uploader(
                 "請選擇欲上傳之出流需求檔案 (需符合36旬格式規格，推薦使用修訂後的 .xlsx 檔)：",
                 type=["xlsx", "csv"],
-                key="demand_uploader"
+                key="demand_uploader",
+                disabled=v2_continuation_active,
             )
+            if v2_continuation_active:
+                st.caption("正式版本接續期間，出流協助工具固定使用工作批次的 active annual baseline。")
             
             if uploaded_demand_file is not None:
                 file_name = uploaded_demand_file.name
@@ -2339,7 +2906,7 @@ with tab_outflow:
                 "🔄 還原目前基準出流需求",
                 use_container_width=True,
                 type="secondary",
-                disabled=bool(st.session_state.get("workspace_annual_stale")),
+                disabled=bool(st.session_state.get("workspace_annual_stale")) or v2_continuation_active,
             ):
                 if shared_storage_mode_enabled and shared_storage_result.ok:
                     st.session_state.demand_df = shared_demand_frame(shared_storage_result.annual.outflow_demand)
@@ -2393,9 +2960,43 @@ with tab_simulation:
         st.warning("⚠️ 請確保已完成第一至三階段的入流與出流條件設定。")
     else:
         st.markdown("### V2 批次計算")
+        initial_capacity_pending = bool(
+            v2_continuation_active
+            and st.session_state.get("v2_initial_capacity_requires_confirmation")
+        )
+        calculation_batch = st.session_state.get("v2_batch", {})
+        missing_shared_for_calculation = [
+            row["period"] for row in shared_inflow_rows(calculation_batch)
+            if row["cms"] is None
+        ] if calculation_batch else []
+        if initial_capacity_pending:
+            st.warning("推估起始日期已變更；請先回第一階段重新確認起始庫容。")
+        if missing_shared_for_calculation:
+            st.warning(
+                "共用旬入流尚待填，所有情境都無法計算："
+                + "、".join(missing_shared_for_calculation)
+            )
+        latest_added_for_calculation = set(
+            st.session_state.get("v2_latest_added_periods", ())
+        )
+        if latest_added_for_calculation and calculation_batch:
+            for scenario in calculation_batch.get("scenarios", []):
+                pending_added = [
+                    key for key in latest_added_for_calculation
+                    if key not in set(calculation_batch["periods"][: int(calculation_batch["shared_period_count"])])
+                    and scenario["inflows"].get(key, {}).get("cms") is None
+                ]
+                if pending_added:
+                    st.caption(f"{scenario['name']} 新增旬待填：" + "、".join(pending_added))
+        calculation_blocked = initial_capacity_pending or bool(missing_shared_for_calculation)
         if st.session_state.get("v2_results_stale"):
             st.warning("⚠️ 步驟二或三的資料已變更；下列舊結果已失效，請重新計算。")
-        if st.button("▶️ 一次計算所有有效情境", type="primary", key="v2_run_all"):
+        if st.button(
+            "▶️ 一次計算所有有效情境",
+            type="primary",
+            key="v2_run_all",
+            disabled=calculation_blocked,
+        ):
             conflicts = (find_override_overlaps(st.session_state.v2_batch["date_overrides"])
                          if st.session_state.v2_batch["overrides_enabled"] else [])
             if conflicts:
@@ -2440,7 +3041,11 @@ with tab_simulation:
         # 放置模擬控制按鈕
         btn_cols = st.columns([1, 3])
         with btn_cols[0]:
-            trigger_sim = st.button("▶️ 開始進行庫容推估", type="primary")
+            trigger_sim = st.button(
+                "▶️ 開始進行庫容推估",
+                type="primary",
+                disabled=calculation_blocked,
+            )
             
         # 若觸發推估按鈕，則執行質量守恆物理演算
         if trigger_sim:
@@ -2881,7 +3486,7 @@ with tab_products:
         st.caption(f"標準化比較庫目前共 {len(st.session_state.v2_comparison_results)} 筆，可與其他批次累積比較。")
         st.markdown("---")
 
-    loaded_annual_version_id = st.session_state.get("loaded_shared_annual_version_id")
+    loaded_annual_version_id = st.session_state.get("v2_active_annual_data_version_id")
     current_shared_annual_version_id = (
         shared_storage_result.annual.version["version_id"]
         if shared_storage_result is not None
@@ -2889,23 +3494,38 @@ with tab_products:
         and shared_storage_result.annual is not None
         else None
     )
-    shared_annual_data_validated = bool(
-        shared_storage_mode_enabled
-        and shared_storage_result is not None
-        and shared_storage_result.ok
-        and shared_storage_result.annual is not None
-        and st.session_state.get("shared_snapshot_valid")
-        and not st.session_state.get("workspace_annual_stale")
-        and loaded_annual_version_id
-        and loaded_annual_version_id == current_shared_annual_version_id
-    )
+    if v2_continuation_active:
+        shared_annual_data_validated = bool(
+            shared_storage_mode_enabled
+            and shared_storage_result is not None
+            and shared_storage_result.ok
+            and shared_storage_result.annual is not None
+            and st.session_state.get("shared_snapshot_valid")
+            and st.session_state.get("v2_active_annual_validated")
+            and active_annual_snapshot is not None
+            and loaded_annual_version_id
+            and active_annual_snapshot.version.get("version_id") == loaded_annual_version_id
+            and not st.session_state.get("hydrology_session_upload")
+            and not st.session_state.get("demand_session_upload")
+        )
+    else:
+        # Preserve the Phase 2-5 contract: a session-upload helper may coexist
+        # with a still-validated shared annual current used by formal inputs.
+        shared_annual_data_validated = bool(
+            shared_storage_mode_enabled
+            and shared_storage_result is not None
+            and shared_storage_result.ok
+            and shared_storage_result.annual is not None
+            and st.session_state.get("shared_snapshot_valid")
+            and not st.session_state.get("workspace_annual_stale")
+            and loaded_annual_version_id
+            and loaded_annual_version_id == current_shared_annual_version_id
+        )
     render_official_save_preparation(
         st.session_state.get("v2_batch"),
         current_v2_results,
         annual_data_version_id=loaded_annual_version_id,
         shared_annual_data_validated=shared_annual_data_validated,
-        # Phase 2-6 will populate this when a batch is opened from an old
-        # official version.  Phase 2-5C2 only keeps the interface available.
         derived_from_official_version_id=st.session_state.get(
             "v2_derived_from_official_version_id"
         ),

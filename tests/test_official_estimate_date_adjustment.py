@@ -323,6 +323,24 @@ def test_q80_q90_are_scenario_specific_and_scenario_ids_never_change():
     assert [item["scenario_id"] for item in mixed.batch["scenarios"]] == original_ids
 
 
+def test_q_fill_can_target_an_added_period_subset_for_shared_ui_routing():
+    annual = _annual()
+    adjustment = adjust_continuation_dates(
+        _draft(), projection_end_date="2026-10-21", extension_annual_snapshot=annual
+    )
+
+    filled = apply_added_period_q90(
+        adjustment,
+        scenario_ids="scenario-a",
+        annual_snapshot=annual,
+        period_keys=("2026-10-上旬",),
+    )
+
+    inflows = _scenario(filled.batch, "scenario-a")["inflows"]
+    assert inflows["2026-10-上旬"]["cms"] == 100.0
+    assert inflows["2026-10-中旬"]["cms"] is None
+
+
 def test_only_q80_and_q90_are_supported():
     annual = _annual()
     adjustment = adjust_continuation_dates(
