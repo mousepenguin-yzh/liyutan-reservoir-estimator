@@ -39,6 +39,7 @@ def _versioned_bundle(
     version_id: str,
     previous_version_id: str | None,
     *,
+    derived_from_version_id: str | None = None,
     created_at: str = "2026-12-15T02:45:00Z",
     operator: str = "測試操作人",
     note: str = "合成正式推估",
@@ -61,6 +62,7 @@ def _versioned_bundle(
     manifest.update(
         version_id=version_id,
         previous_official_version_id=previous_version_id,
+        derived_from_official_version_id=derived_from_version_id,
         created_at=created_at,
         operator_display_name=operator,
         note=note,
