@@ -16,6 +16,8 @@ from typing import Any, Iterable
 
 import pandas as pd
 
+from ten_day_period import parse_date, period_name_for_date
+
 SCHEMA_NAME = "liyutan-reservoir-estimator/batch"
 SCHEMA_VERSION = 1
 UNIT_CMS = "cms"
@@ -364,10 +366,7 @@ def find_override_overlaps(overrides: list[dict]) -> list[tuple[int, int]]:
 
 
 def _date(value: Any) -> dt.date:
-    if isinstance(value, dt.datetime): return value.date()
-    if isinstance(value, dt.date): return value
-    try: return dt.date.fromisoformat(value)
-    except (TypeError, ValueError) as exc: raise ValueError(f"無效日期：{value}") from exc
+    return parse_date(value)
 
 
 def settings_fingerprint(batch: dict) -> str:
@@ -629,7 +628,7 @@ def daily_outflow_frame(batch: dict) -> pd.DataFrame:
     rows = []
     for item in batch["daily_outflows"]:
         date = _date(item["date"])
-        period = "上旬" if date.day <= 10 else "中旬" if date.day <= 20 else "下旬"
+        period = period_name_for_date(date)
         rows.append({"日期": date, "年份": date.year, "月份": date.month, "旬別": period,
              "上灌區當日流量(cms)": item["upstream_irrigation_cms"],
              "下灌區當日流量(cms)": item["downstream_irrigation_cms"],
@@ -649,7 +648,7 @@ def prepend_history(projection: pd.DataFrame, display_start: dt.date, projection
     while date < projection_start:
         yesterday = capacity
         capacity = daily_capacities.get(date, yesterday)
-        period = "上旬" if date.day <= 10 else "中旬" if date.day <= 20 else "下旬"
+        period = period_name_for_date(date)
         records.append({"日期": date, "年份": date.year, "月份": date.month, "旬別": period,
             "運行狀態": "📊 觀測/歷史", "天然流量 (cms)": 0.0, "原上灌需求 (cms)": 0.0,
             "原下灌需求 (cms)": 0.0, "實際上灌放水 (cms)": 0.0, "實際下灌放水 (cms)": 0.0,
