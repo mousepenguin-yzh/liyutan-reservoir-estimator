@@ -33,9 +33,11 @@ from official_estimate_candidate import (
 )
 from official_estimate_workflow import (
     OfficialEstimateWriteCapability,
+    format_taiwan_timestamp,
     official_estimate_write_capability,
     official_publish_error_presentation,
     official_save_button_state,
+    short_official_version_id,
 )
 from shared_storage_reader import (
     DataSourceMode,
@@ -403,8 +405,8 @@ def render_official_save_preparation(
     """Render preview, explicit confirmation, and the Phase 2-5C2 publish action."""
     st.markdown("### 正式保存準備")
     st.info(
-        "目前僅產生正式保存預覽，尚未寫入正式資料。只有按下「正式保存」"
-        "才會在共享資料夾建立不可變的正式版本。"
+        "「產生正式保存預覽」不會寫入正式資料。只有檢查預覽、勾選確認並"
+        "按下「正式保存」，才會在共享資料夾建立不可變的正式版本。"
     )
     pending_confirmation_clear = st.session_state.pop(
         "official_publish_confirmation_to_clear", None
@@ -418,10 +420,28 @@ def render_official_save_preparation(
     if isinstance(receipt, dict):
         st.success("正式保存成功")
         receipt_columns = st.columns(2)
-        receipt_columns[0].write(f"**正式版本 ID：** {receipt['version_id']}")
+        receipt_columns[0].write(
+            "**正式版本：** "
+            f"{short_official_version_id(receipt['version_id'])}"
+        )
         receipt_columns[1].write(f"**current revision：** {receipt['revision']}")
         receipt_columns[0].write(f"**操作人：** {receipt['operator_display_name']}")
-        receipt_columns[1].write(f"**保存時間：** {receipt['saved_at']}")
+        receipt_columns[1].write(
+            f"**保存時間：** {format_taiwan_timestamp(receipt['saved_at'])}"
+        )
+        st.caption(
+            "上一筆已正式保存；若要再次保存目前 batch，請重新產生新的正式保存預覽。"
+        )
+        with st.expander("正式保存成功進階資訊"):
+            st.write(f"**完整正式版本 ID：** {receipt['version_id']}")
+            st.write(f"**UTC 保存時間：** {receipt['saved_at']}")
+            if receipt.get("batch_id"):
+                st.write(f"**batch_id：** {receipt['batch_id']}")
+            if receipt.get("annual_data_version_id"):
+                st.write(
+                    "**annual_data_version_id：** "
+                    f"{receipt['annual_data_version_id']}"
+                )
 
     publish_notice = st.session_state.pop("official_publish_notice", None)
     if isinstance(publish_notice, dict):
@@ -747,6 +767,8 @@ def render_official_save_preparation(
                 "revision": result.after_revision,
                 "saved_at": result.current["updated_at"],
                 "operator_display_name": preview["operator_display_name"],
+                "batch_id": result.batch_id,
+                "annual_data_version_id": result.annual_data_version_id,
             }
             st.session_state.pop("official_estimate_candidate", None)
             st.session_state.pop("official_publish_in_progress_version_id", None)

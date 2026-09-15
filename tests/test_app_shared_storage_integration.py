@@ -176,7 +176,7 @@ def test_phase_25c2_preview_remains_available_when_formal_writes_are_disabled(
     app = _run_app()
 
     assert not app.exception
-    assert "目前僅產生正式保存預覽，尚未寫入正式資料。" in _messages(app.info)
+    assert "「產生正式保存預覽」不會寫入正式資料。" in _messages(app.info)
     assert any(
         item.label == "選擇本批次要納入正式保存預覽的情境"
         for item in app.multiselect
@@ -476,6 +476,20 @@ def test_phase_25c2_success_uses_preview_observed_pair_and_consumes_candidate(
     receipt = app.session_state.official_publish_receipt
     assert receipt["version_id"] == candidate.version_id
     assert receipt["revision"] == 2
+    assert receipt["saved_at"].endswith("Z")
+    assert receipt["batch_id"] == batch["batch_id"]
+    assert receipt["annual_data_version_id"] == ANNUAL_ID
+    short_version_id = official_workflow_module.short_official_version_id(
+        candidate.version_id
+    )
+    assert any(
+        str(item.value) == f"**正式版本：** {short_version_id}"
+        for item in app.markdown
+    )
+    assert any("台灣時間" in str(item.value) for item in app.markdown)
+    receipt_advanced = _expander(app, "正式保存成功進階資訊")
+    assert candidate.version_id in _messages(receipt_advanced.markdown)
+    assert receipt["saved_at"] in _messages(receipt_advanced.markdown)
     current = deserialize_json(
         (root / "official-estimates" / "current.json").read_bytes()
     )

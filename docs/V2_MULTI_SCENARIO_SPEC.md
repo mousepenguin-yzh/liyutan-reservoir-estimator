@@ -296,7 +296,7 @@ Phase 2-5B 已在 Step 5 另設「正式保存準備」，但資料邊界仍與�
 
 Phase 2-5C1 已完成獨立後端 publisher：只接受同一份已驗證 candidate，重驗 candidate 與其 annual-data reference，將 candidate 四個核心檔案原 bytes 寫入唯一 staging，最後以真正發布時間建立 `COMMITTED.json`；鎖內執行 revision/current conflict、目前正式 bundle 重驗、append-only version rename、atomic current switch 與 append-only audit。
 
-Phase 2-5C2 已完成 Streamlit 接線：產生 preview 時同時固定已驗證的 observed official revision/current ID，並納入 session context fingerprint；按「正式保存」時只傳這組 preview pair 與原 candidate，不重新抓 current 來遷就 publisher。只有專用 feature flag、Windows/shared/history capability、candidate 仍有效與不可變版本 checkbox 全部成立才啟用按鈕。成功後 candidate 立即失效；conflict、recovery-required、完整性錯誤、部分成功、lock timeout 與 filesystem failure 依安全語意分別顯示及處理，不自動 retry 或 repair。`formal_operations_available` 仍為 `False`。
+Phase 2-5C2 已完成 Streamlit 接線：產生 preview 時同時固定已驗證的 observed official revision/current ID，並納入 session context fingerprint；按「正式保存」時只傳這組 preview pair 與原 candidate，不重新抓 current 來遷就 publisher。只有專用 feature flag、Windows/shared/history capability、candidate 仍有效與不可變版本 checkbox 全部成立才啟用按鈕。成功後 candidate 立即失效；conflict、recovery-required、完整性錯誤、部分成功、lock timeout 與 filesystem failure 依安全語意分別顯示及處理，不自動 retry 或 repair。2-5D 進一步把成功時間以 `Asia/Taipei` 呈現、一般畫面改用純顯示短 ID，完整正式 ID 與原始 UTC 保留在進階資訊；正式 identity、schema 與 publisher 均未改變。`formal_operations_available` 仍為 `False`。
 
 ### 7.3 比較項目與命名
 
@@ -348,7 +348,7 @@ Phase 2-5C2 已完成 Streamlit 接線：產生 preview 時同時固定已驗證
 
 ## 9. 第二階段：本機 Streamlit＋內網共享資料夾永久保存
 
-第一階段已完成驗收。第二階段目前已完成 2-4D、2-5A 資料契約、2-5B 正式保存預覽／記憶體 bundle candidate、2-5C1 正式推估安全發布核心與 2-5C2 Streamlit 正式保存接線；2-6 跨裝置接續尚未開始，完整狀態以 `LOCAL_SHARED_STORAGE_SPEC.md` 第 18 節為準。**正式保存 UI 與安全 publisher 已接通，但公司 SMB 實機、多電腦、網路中斷及完整人工驗收仍依後續階段執行。**
+第一階段已完成驗收。第二階段目前已完成 2-4D 與 2-5A～2-5D，2-5 受控單機／多 session 測試區人工驗收亦已通過；2-6 跨電腦／正式版本載入與接續尚未開始，完整狀態以 `LOCAL_SHARED_STORAGE_SPEC.md` 第 18 節為準。**這不代表 Phase 2 或公司多電腦、真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收已完成；後者仍留在 Phase 2-8。**
 
 歷史上曾評估以 Google Sheet 保存共用正式資料，現已由「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」取代。Google Sheet 不再是第二階段主要永久儲存方案。正式資料夾結構、檔案 schema、append-only、Windows／SMB 寫入鎖、revision 衝突、中斷復原、保存期限與分階段驗收，以 [本機 Streamlit＋內網共享資料夾永久保存規格](LOCAL_SHARED_STORAGE_SPEC.md) 為準。
 

@@ -10,10 +10,12 @@ from official_estimate_publisher import (
 from official_estimate_workflow import (
     ENABLE_FORMAL_WRITES_ENV,
     OfficialEstimateWriteCapability,
+    format_taiwan_timestamp,
     formal_writes_enabled,
     official_estimate_write_capability,
     official_publish_error_presentation,
     official_save_button_state,
+    short_official_version_id,
 )
 from shared_storage_reader import SharedStorageResult
 from test_official_estimate_candidate import CLEAN_SOFTWARE, _ready
@@ -59,6 +61,31 @@ def test_formal_write_flag_is_exact_and_defaults_off():
     assert not formal_writes_enabled({})
     assert not formal_writes_enabled({ENABLE_FORMAL_WRITES_ENV: "true"})
     assert formal_writes_enabled({ENABLE_FORMAL_WRITES_ENV: "1"})
+
+
+def test_utc_timestamp_is_displayed_in_taiwan_time_without_mutation():
+    stored = "2026-09-14T08:08:31.083993Z"
+
+    assert format_taiwan_timestamp(stored) == "2026-09-14 16:08（台灣時間）"
+    assert stored == "2026-09-14T08:08:31.083993Z"
+
+
+def test_offset_timestamp_is_converted_to_taiwan_time():
+    assert (
+        format_taiwan_timestamp("2026-09-14T03:08:31-04:00")
+        == "2026-09-14 15:08（台灣時間）"
+    )
+
+
+def test_malformed_timestamp_has_graceful_display_fallback():
+    assert format_taiwan_timestamp("not-a-time") == "not-a-time（時間格式無法解析）"
+
+
+def test_short_official_version_id_is_display_only():
+    full_id = "estimate-candidate-62081f75c6e343eab73890e6283002a3"
+
+    assert short_official_version_id(full_id) == "62081f75c6…"
+    assert full_id == "estimate-candidate-62081f75c6e343eab73890e6283002a3"
 
 
 def test_capability_requires_flag_healthy_shared_root_and_windows(tmp_path):
