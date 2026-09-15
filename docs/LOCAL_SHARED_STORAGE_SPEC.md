@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅；2-6A 正式版本唯讀載入器 ✅。下一階段為 2-6B 從正式 snapshot 建立新 working batch；2-6C／2-6D 尚未實作。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
+狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅；2-6A 正式版本唯讀載入器 ✅；2-6B 正式 snapshot 建立新 working batch ✅。下一階段為 2-6C 日期延長 domain rules；2-6D Streamlit UI／2-6E 最終整合尚未實作。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -761,7 +761,19 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 
 正常歷史建立過程只讀取 pointer 指到的版本及其 previous 鏈，不列舉 `official-estimates/versions/` 的兄弟目錄。因此即使存在內容完整的 orphan，也不屬於 normal continuation history，且 normal 指定版本 API 會以 `version_not_in_history` 拒絕載入。staging、tmp、失敗殘留或其他 recovery evidence 同樣不會被混入；本階段沒有提供 raw/admin/recovery 任意版本讀取入口。
 
-2-6A 不建立 working batch、不產生新 `batch_id`、不寫入 `derived_from_official_version_id`、不修改 Streamlit `session_state`、不提供版本選擇 UI，也不實作日期延長、Q90／Q80 快速帶值、去年同期出流、起始庫容失效或 annual baseline switching。這些仍屬 2-6B／2-6C／2-6D 後續工作；真正雙電腦 SMB、lock pressure、斷線及 rename／replace timeout acceptance 仍留在 2-8。
+2-6A 的 loader 邊界本身不建立 working batch、不產生新 `batch_id`、不寫入 lineage，也不修改 Streamlit `session_state`。它同樣不提供版本選擇 UI，亦不實作日期延長、Q90／Q80 快速帶值、去年同期出流、起始庫容失效或 annual baseline switching；真正雙電腦 SMB、lock pressure、斷線及 rename／replace timeout acceptance 仍留在 2-8。
+
+#### 2-6B：從正式 snapshot 建立新的 working batch（已完成）
+
+`official_estimate_continuation.py` 是純記憶體 domain transformation，只接受 2-6A 已驗證的 `OfficialEstimateSnapshot`，不重新掃描 `versions/`、不繞過 normal-history membership，也不依賴 filesystem、Streamlit、annual current 或 publisher。public `build_official_continuation()` 回傳 `OfficialContinuationDraft`，其中只有新 `batch`、`derived_from_official_version_id` 與 `annual_data_version_id`；contract 刻意沒有 `previous_official_version_id`。
+
+每次 transformation 都先 deep copy source `snapshot.batch`，再以 `v2_workflow.new_id()` 產生新的 UUID `batch_id`；測試可注入 `batch_id_factory`。新 ID 不得為空、含首尾空白或等於 source batch ID。預設 batch name 是原工作 batch name 加「（接續）」，也允許 caller 傳入非空白自訂名稱。`created_at` 使用新取得且正規化為 UTC 的時間，支援注入 aware clock 或固定 timestamp 以進行 deterministic tests，且不得沿用 source batch 的值。完成後仍以既有 `v2_workflow.validate_batch()` 驗證，不另建第二套 batch validator。
+
+除了新 `batch_id`、batch name 與 `created_at`，來源正式 snapshot 的日期、起始庫容、歷史庫容、水庫參數、periods、shared inflows、正式 scenarios、outflows、`daily_outflows`、overrides、啟用狀態及 batch note 均原樣保留。scenario 只來自正式 snapshot 實際保存的集合，scenario ID／name／order／inflows 均不重建；修改任何 draft nested dict/list 不會改變 source snapshot。
+
+`derived_from_official_version_id` 永遠等於本次實際傳入 snapshot 的 version ID，不遞迴沿用 source manifest 的 derived ancestor。`annual_data_version_id` 永遠先保留 source snapshot 的 annual-data version，即使目前 annual current 已更新也不 silently rebase。publication `previous_official_version_id` 完全不在本階段決定，必須留到未來正式發布當下觀察 current。
+
+正式 `scenario_summaries` 與 `daily_results` 只留在 source snapshot 作 reference，不會轉成 working active results。新 batch 顯式移除 `results` 與 `results_fingerprint`，後續必須重新演算；工作輸入 `daily_outflows` 則完整保留。2-6B 不擴充 portable JSON lineage、不建立 formal candidate、不 publish、不修改 shared storage，也不接 Streamlit UI。日期延長、新增旬、Q90／Q80、去年同期出流、起始庫容失效與 annual baseline transition 留給 2-6C／2-6D；2-6E 最終整合與 2-8 真實 SMB multi-machine acceptance 仍未實作。
 
 驗收：
 
