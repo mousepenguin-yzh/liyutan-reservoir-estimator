@@ -18,6 +18,7 @@ import re
 from collections.abc import Mapping, Sequence
 from typing import Any
 
+from ten_day_period import PERIODS
 from v2_workflow import settings_fingerprint as v2_settings_fingerprint
 from v2_workflow import validate_batch as validate_v2_batch
 
@@ -49,7 +50,6 @@ COMMITTED_SCHEMA = "liyutan-reservoir-estimator/committed"
 BATCH_SCHEMA = "liyutan-reservoir-estimator/batch"
 BATCH_SCHEMA_VERSION = 1
 
-PERIODS = ("上旬", "中旬", "下旬")
 Q_COLUMNS = tuple(f"q{quantile:02d}_cms" for quantile in range(5, 100, 5))
 HYDROLOGY_COLUMNS = ("period_key", "month", "period", *Q_COLUMNS)
 OUTFLOW_COLUMNS = (

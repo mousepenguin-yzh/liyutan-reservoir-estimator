@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅；2-6A 正式版本唯讀載入器 ✅；2-6B 正式 snapshot 建立新 working batch ✅。下一階段為 2-6C 日期延長 domain rules；2-6D Streamlit UI／2-6E 最終整合尚未實作。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
+狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅；2-6A 正式版本唯讀載入器 ✅；2-6B 正式 snapshot 建立新 working batch ✅；2-6C 日期調整與年度基準延長 domain rules ✅。下一階段為 2-6D Streamlit UI；2-6E 最終整合尚未實作。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -773,7 +773,21 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 
 `derived_from_official_version_id` 永遠等於本次實際傳入 snapshot 的 version ID，不遞迴沿用 source manifest 的 derived ancestor。`annual_data_version_id` 永遠先保留 source snapshot 的 annual-data version，即使目前 annual current 已更新也不 silently rebase。publication `previous_official_version_id` 完全不在本階段決定，必須留到未來正式發布當下觀察 current。
 
-正式 `scenario_summaries` 與 `daily_results` 只留在 source snapshot 作 reference，不會轉成 working active results。新 batch 顯式移除 `results` 與 `results_fingerprint`，後續必須重新演算；工作輸入 `daily_outflows` 則完整保留。2-6B 不擴充 portable JSON lineage、不建立 formal candidate、不 publish、不修改 shared storage，也不接 Streamlit UI。日期延長、新增旬、Q90／Q80、去年同期出流、起始庫容失效與 annual baseline transition 留給 2-6C／2-6D；2-6E 最終整合與 2-8 真實 SMB multi-machine acceptance 仍未實作。
+正式 `scenario_summaries` 與 `daily_results` 只留在 source snapshot 作 reference，不會轉成 working active results。新 batch 顯式移除 `results` 與 `results_fingerprint`，後續必須重新演算；工作輸入 `daily_outflows` 則完整保留。2-6B 不擴充 portable JSON lineage、不建立 formal candidate、不 publish、不修改 shared storage，也不接 Streamlit UI。日期調整、新增旬、Q90／Q80、去年同期出流、起始庫容失效與 annual baseline transition 已由下節 2-6C domain layer 實作；Streamlit 接線仍留給 2-6D，2-6E 最終整合與 2-8 真實 SMB multi-machine acceptance 尚未實作。
+
+#### 2-6C：日期調整、新增旬資料遷移與年度基準延長（已完成）
+
+`official_estimate_date_adjustment.py` 是純記憶體 domain layer，接受 2-6B `OfficialContinuationDraft`；只有實際新增 brand-new period 時，caller 才必須明確傳入已驗證的 `AnnualDataSnapshot`。module 不讀 filesystem、不自行尋找 annual current、不修改 Streamlit session，也不 publish。`ContinuationDateAdjustment` 回傳新 draft、added／removed／preserved periods、added dates、extension annual version、起始庫容確認狀態及 `requires_recalculation`。`ten_day_period.py` 是 working `YYYY-M-旬別`、annual `MM-旬別` 與 calendar date 的單一 mapping；遷移依 key/date set 判斷，不依 list index 或年份猜 annual row。
+
+所有 overlap period 的 scenario/shared inflow 與 working outflow 依 key deep copy 保留；former shared period 移出 shared prefix 時，既有 authoritative shared value會複製到各 scenario。brand-new period 的 inflow 使用既有 V2「待填」cell，絕不自動套 Q 值；outflow 則依 annual month＋旬別明確取得 caller 所選 annual baseline 的去年同期三欄值。只有真的新增 period 才把 draft `annual_data_version_id` 從來源 A 切至 extension B；只改 display、縮短、或同一旬內增加日期，即使 caller 傳入 B 也仍保留 A，不 silent rebase overlap。
+
+`apply_added_period_q80()`、`apply_added_period_q90()` 與受限的 `apply_added_period_quantile()` 只以 adjustment 明確記錄的 `added_periods` 為 target，並再次要求 cell 目前仍 blank，因此不會填到來源正式版既有 pending cell，也不會覆蓋新增旬內已人工輸入的值。caller 可指定一個或多個 scenario；新增旬落在 shared prefix 時必須一次選全部 scenarios，並同步 shared 與各 scenario cell，避免 authoritative shared 值衝突。每個套值 cell 保留 Q80/Q90 與 annual-data version provenance；沒有建立長期 `extension_inflow_policy`。
+
+`daily_outflows` 仍是 working input，與 formal `daily_results` 完全分離。新 projection range 內已有日期逐筆原樣 deep copy，保留人工逐日數值、source 與 note；同旬內新增日期取該旬既有 working outflow；brand-new period 的新增日期才取 extension annual outflow；縮短時只移除 range 外 daily rows。`date_overrides`（包含 range 外定義）與 `historical_capacities` 全部保留，不 clip、不刪除、不從共享區補資料。
+
+projection start 只要改變，舊 `initial_capacity` 就真正清為 `None`，並以 `initial_capacity_requires_confirmation=True` 表示不可沿用；`confirm_initial_capacity()` 只接受有限且非負的新值後解除 flag。`validate_continuation_pending_batch()` 僅允許這個明確 intermediate state與既有 pending shared cell，透過驗證用 copy 交給嚴格 `validate_batch()`，不放寬 official/V2 schema。projection start 不變時，單改 display 或 projection end 都保留 initial capacity。
+
+任何實質日期設定變更、Q80/Q90 套值或起始庫容確認，都在新 copy 移除 `results`／`results_fingerprint` 並標記 `requires_recalculation=True`；batch ID、scenario IDs、created time、derived lineage 與 overrides 均不改變。所有 failure（缺 annual、缺 month/旬 row、非法 annual identity、非法 Q/scenario、非法 capacity 或 migration validation）均在回傳前失敗，原 draft 不受 mutation。2-6C 尚未接 `app.py`／Streamlit UI；正式版本選擇、session result aliases 與互動流程留給 2-6D，2-6E 最終整合與 2-8 真實 SMB multi-machine acceptance 仍未實作。
 
 驗收：
 
