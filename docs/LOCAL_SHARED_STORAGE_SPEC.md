@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅。2-4 與 2-5 核心功能已完成；下一階段為 2-6 跨電腦／正式版本載入與接續工作。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
+狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅；2-6A 正式版本唯讀載入器 ✅。下一階段為 2-6B 從正式 snapshot 建立新 working batch；2-6C／2-6D 尚未實作。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -749,13 +749,25 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 
 ### 2-6：跨裝置載入與接續
 
-範圍：載入最近正式推估、沿用或全新批次、日期延長、Q90 明確預設規則、結果失效。
+範圍：載入最近正式推估、沿用或全新批次、日期延長、Q90／Q80 明確快速帶值規則、結果失效。
+
+#### 2-6A：正式版本唯讀載入器（已完成）
+
+`official_estimate_loader.py` 是獨立於 write-side publisher 與 Streamlit session 的 public read-only 邊界。它先驗證 shared root 的 `system.json`、正式 `current.json` 與 current bundle；正式歷史唯一依據是 `current.current_version_id`，再逐版沿已驗證 `manifest.previous_official_version_id` 追溯，順序固定為 current → previous → previous。不得依版本資料夾名稱、mtime、建立時間或 inventory 排序推論歷史。
+
+正常 API 提供 current 完整 snapshot、current-first 歷史 metadata，以及鏈上指定版本的完整 snapshot。metadata 包含 version／previous／derived lineage、batch、annual-data version、建立時間、人工操作人、備註、展示與推估日期範圍及正式情境基本資訊；完整 snapshot 保留 manifest、inputs／batch、official scenario IDs、formal summaries、daily results 與 committed metadata。summary 與 daily results 在本階段只作歷史參考，不會轉為 active working results。
+
+每個被追溯到的版本都以既有 `validate_official_bundle()` 完整驗證；loader 不複製另一套正式 schema。previous 指向不存在、無法讀取或 validation 失敗的版本時，整條正常歷史以可診斷的 `broken_history_link` 失敗，不會略過；重複 version ID 以 `history_cycle` 失敗。讀取結束會重讀 current 原始 bytes，若期間變動則以 `current_changed` 拒絕回傳可能混合的 snapshot。loader 不修補、建立、重新命名、刪除或寫入任何共享檔案。
+
+正常歷史建立過程只讀取 pointer 指到的版本及其 previous 鏈，不列舉 `official-estimates/versions/` 的兄弟目錄。因此即使存在內容完整的 orphan，也不屬於 normal continuation history，且 normal 指定版本 API 會以 `version_not_in_history` 拒絕載入。staging、tmp、失敗殘留或其他 recovery evidence 同樣不會被混入；本階段沒有提供 raw/admin/recovery 任意版本讀取入口。
+
+2-6A 不建立 working batch、不產生新 `batch_id`、不寫入 `derived_from_official_version_id`、不修改 Streamlit `session_state`、不提供版本選擇 UI，也不實作日期延長、Q90／Q80 快速帶值、去年同期出流、起始庫容失效或 annual baseline switching。這些仍屬 2-6B／2-6C／2-6D 後續工作；真正雙電腦 SMB、lock pressure、斷線及 rename／replace timeout acceptance 仍留在 2-8。
 
 驗收：
 
 - 不同電腦讀到相同 current 與年度版本。
 - 重疊旬依年月旬鍵保留；新增出流取自啟用年度資料。
-- 新增入流預設待填，只有明確 Q90 規則才自動補值。
+- 新增入流預設待填，只有使用者明確操作才可將尚未人工填寫的新增旬快速帶入 Q90 或 Q80。
 - 起始日改變會要求重新確認起始庫容。
 - 任何日期或資料變更後舊結果不可保存為正式版本，重新演算後才恢復。
 
