@@ -2489,7 +2489,19 @@ with tab_outflow:
         if st.session_state.v2_batch.get("date_overrides"):
             st.caption("權威工作批次的逐日覆寫規則")
             st.dataframe(pd.DataFrame(st.session_state.v2_batch["date_overrides"]), hide_index=True, use_container_width=True)
-        if st.button("改用目前步驟三工作區並覆蓋權威出流", key="v2_release_imported_outflow"):
+        authoritative_outflow_takeover_disabled = bool(
+            st.session_state.get("v2_continuation_active")
+            and not st.session_state.get("v2_active_annual_validated")
+        )
+        if authoritative_outflow_takeover_disabled:
+            st.warning(
+                "工作批次年度基準目前無法驗證，不能使用年度出流協助資料覆蓋權威出流。"
+            )
+        if st.button(
+            "改用目前步驟三工作區並覆蓋權威出流",
+            key="v2_release_imported_outflow",
+            disabled=authoritative_outflow_takeover_disabled,
+        ):
             st.session_state.v2_outflows_authoritative = False
             invalidate_session_results(st.session_state); st.rerun()
     if proj_unique_periods.empty:

@@ -18,7 +18,7 @@ from test_app_shared_storage_integration import (
 )
 from test_official_estimate_candidate import _ready as _ready_official_candidate
 from test_shared_storage_reader import ANNUAL_ID, OFFICIAL_ID, _build_root
-from v2_workflow import standardize_comparison_result
+from v2_workflow import safe_export_batch, standardize_comparison_result
 
 
 APP_PATH = Path(__file__).resolve().parents[1] / "app.py"
@@ -87,6 +87,7 @@ def test_ui_loads_current_official_into_new_atomic_working_state(
     assert app.session_state.end_date == dt.date(2027, 1, 3)
     assert app.session_state.init_capacity == 8000.0
     assert app.session_state.v2_outflows_authoritative is True
+    assert not _key(app.button, "v2_release_imported_outflow").disabled
     assert comparison_item["result_id"] in app.session_state.v2_comparison_results
     assert app.session_state.v2_comparison_results[
         comparison_item["result_id"]
@@ -221,3 +222,57 @@ def test_missing_source_annual_keeps_work_viewable_without_silent_switch(
     assert app.session_state.loaded_shared_annual_version_id == ANNUAL_ID
     assert annual_b != app.session_state.v2_active_annual_data_version_id
     assert any("正式保存已停用" in str(item.value) for item in app.warning)
+    takeover = _key(app.button, "v2_release_imported_outflow")
+    assert takeover.disabled
+    assert any(
+        "工作批次年度基準目前無法驗證" in str(item.value)
+        for item in app.warning
+    )
+
+
+def test_corrupt_source_annual_disables_authoritative_outflow_takeover(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path, official=True)
+    _switch_test_root_to_version_b(root)
+    annual_file = (
+        root / "annual-data" / "versions" / ANNUAL_ID / "hydrology_q.csv"
+    )
+    annual_file.write_bytes(annual_file.read_bytes() + b"corrupt")
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+
+    app = _load_selected_official(_open_continuation_picker(_run_app()))
+
+    assert not app.exception
+    assert app.session_state.v2_active_annual_validated is False
+    assert app.session_state.v2_outflows_authoritative is True
+    assert _key(app.button, "v2_release_imported_outflow").disabled
+
+
+def test_portable_import_returns_work_source_radio_to_new_estimate(
+    tmp_path, monkeypatch
+):
+    root = _build_root(tmp_path, official=True)
+    monkeypatch.setenv(ENABLE_SHARED_STORAGE_ENV, "1")
+    monkeypatch.setenv(SHARED_ROOT_ENV, str(root))
+    app = _load_selected_official(_open_continuation_picker(_run_app()))
+    portable_batch = copy.deepcopy(app.session_state.v2_batch)
+    json_text, export_error = safe_export_batch(portable_batch)
+    assert export_error is None
+
+    uploader = _key(app.get("file_uploader"), "v2_json_upload")
+    app = uploader.upload(
+        "portable.json", json_text.encode("utf-8"), "application/json"
+    ).run(timeout=30)
+    confirm = next(
+        button for button in app.button if button.label == "確認覆蓋目前設定"
+    )
+    app = confirm.click().run(timeout=30)
+
+    assert not app.exception
+    assert app.session_state.v2_continuation_active is False
+    assert app.session_state.v2_derived_from_official_version_id is None
+    assert "v2_source_official_version_id" not in app.session_state
+    assert _key(app.radio, "v2_requested_work_source").value == "建立全新推估"
+    assert not _key(app.button, "v2_release_imported_outflow").disabled

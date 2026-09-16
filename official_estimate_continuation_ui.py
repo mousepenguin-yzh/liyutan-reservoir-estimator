@@ -360,6 +360,10 @@ def apply_portable_batch_to_session(
         "v2_active_annual_error",
     ):
         state.pop(key, None)
+    # The radio widget is rendered before the JSON importer. Removing its
+    # widget key lets the next rerun derive the new-work selection from the
+    # now non-continuation domain state without mutating an instantiated widget.
+    state.pop("v2_requested_work_source", None)
     state["v2_widget_version"] = int(state.get("v2_widget_version", 0)) + 1
     invalidate_working_artifacts(state)
 

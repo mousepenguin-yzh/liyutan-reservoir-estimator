@@ -281,6 +281,7 @@ def test_portable_import_uses_atomic_batch_sync_and_clears_official_lineage():
         v2_source_official_version_id="estimate-source-y",
         v2_source_official_metadata={"version_id": "estimate-source-y"},
         v2_derived_from_official_version_id="estimate-source-y",
+        v2_requested_work_source="從正式版本接續",
     )
 
     apply_portable_batch_to_session(
@@ -293,6 +294,7 @@ def test_portable_import_uses_atomic_batch_sync_and_clears_official_lineage():
     assert state["v2_continuation_active"] is False
     assert state["v2_derived_from_official_version_id"] is None
     assert "v2_source_official_version_id" not in state
+    assert "v2_requested_work_source" not in state
     assert state["v2_active_annual_data_version_id"] == ANNUAL_B
     assert "v2_batch_results" not in state
     assert state["v2_comparison_results"] == {"keep": {"result": "comparison"}}
