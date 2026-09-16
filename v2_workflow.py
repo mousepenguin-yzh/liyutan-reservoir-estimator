@@ -25,6 +25,22 @@ UNIT_10K_TON_DAY = "10k_ton_per_day"
 LEGACY_SHILIN_DIVERSION_LIMIT_CMS = 33.0
 
 
+def inflow_cell_from_editor(record: dict, default_source: str) -> dict:
+    """Normalize an editor row, retiring pending provenance when filled."""
+    raw = record["入流 (cms)"]
+    value = None if pd.isna(raw) else _finite_nonnegative(raw, "入流")
+    source = record["資料來源"] or default_source
+    if value is not None and source == "待填":
+        source = "人工輸入"
+    return {
+        "cms": value,
+        "source_type": source,
+        "source_unit": UNIT_CMS,
+        "source_value": value,
+        "note": record["備註"] or "",
+    }
+
+
 def new_id() -> str:
     return str(uuid.uuid4())
 

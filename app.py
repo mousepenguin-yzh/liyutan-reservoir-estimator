@@ -83,6 +83,7 @@ from shared_storage_reader import (
 from shared_storage_schema import StorageValidationError, validate_official_save_eligibility
 from software_provenance import load_software_provenance
 from v2_workflow import (
+    inflow_cell_from_editor,
     SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario, apply_q_inflows,
     apply_shared_paste, change_shared_period_count, copy_scenario, delete_scenario, expand_shared_inflows,
     current_session_results, daily_outflow_frame, find_override_overlaps, import_batch,
@@ -2090,10 +2091,7 @@ with tab_inflow:
                 disabled=["旬別"], key=editor_key,
                 column_config={"入流 (cms)": st.column_config.NumberColumn(min_value=0.0, format="%.4f")})
             for record in edited.to_dict("records"):
-                value = record["入流 (cms)"]
-                cells[record["旬別"]] = {"cms": None if pd.isna(value) else float(value),
-                    "source_type": record["資料來源"] or default_source, "source_unit": UNIT_CMS,
-                    "source_value": None if pd.isna(value) else float(value), "note": record["備註"] or ""}
+                cells[record["旬別"]] = inflow_cell_from_editor(record, default_source)
 
         shared_keys = v2_periods[:batch["shared_period_count"]]
         if shared_keys:

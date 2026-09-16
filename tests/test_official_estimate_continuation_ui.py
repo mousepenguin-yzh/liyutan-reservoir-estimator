@@ -21,7 +21,12 @@ from official_estimate_continuation_ui import (
     preview_continuation_date_request,
     reset_to_new_work,
 )
-from official_estimate_date_adjustment import adjust_continuation_dates
+from official_estimate_date_adjustment import (
+    adjust_continuation_dates,
+    apply_added_period_q90,
+    confirm_initial_capacity,
+)
+from v2_workflow import inflow_cell_from_editor, validate_batch
 from official_estimate_loader import (
     OfficialEstimateLoader,
     OfficialVersionMetadata,
@@ -207,6 +212,74 @@ def test_current_adjustment_rebuilds_from_latest_batch_not_stale_copy():
 
     assert current.batch["scenarios"][0]["inflows"]["2026-9-下旬"]["cms"] == 987.0
     assert current.batch is not state["v2_batch"]
+
+
+def test_confirm_capacity_keeps_pending_shared_inflow_in_session():
+    draft = _draft(shared_count=1)
+    state = {}
+    apply_continuation_to_session(
+        state, draft, source_metadata=_metadata(draft), active_annual_validated=True
+    )
+    adjusted = adjust_continuation_dates(
+        current_continuation_draft(state), projection_start_date="2026-09-11"
+    )
+    apply_date_adjustment_to_session(state, adjusted)
+    assert state["v2_initial_capacity_requires_confirmation"] is True
+    assert state["v2_batch"]["shared_inflows"]["2026-9-中旬"]["cms"] is None
+
+    confirmed = confirm_initial_capacity(current_continuation_adjustment(state), 7654.0)
+    apply_date_adjustment_to_session(state, confirmed)
+
+    assert state["v2_initial_capacity_requires_confirmation"] is False
+    assert state["init_capacity"] == state["v2_batch"]["initial_capacity"] == 7654.0
+    assert state["v2_batch"]["shared_inflows"]["2026-9-中旬"] == {
+        "cms": None, "source_type": "待填", "source_unit": "cms",
+        "source_value": None, "note": "",
+    }
+    assert state["v2_results_stale"] is True
+    with pytest.raises(ValueError, match="共用.*入流不可缺漏"):
+        validate_batch(state["v2_batch"])
+    before = copy.deepcopy(state)
+    with pytest.raises(ValueError):
+        apply_portable_batch_to_session(
+            state, state["v2_batch"], current_annual_version_id=ANNUAL_B
+        )
+    assert state == before
+
+
+def test_editor_manual_added_inflow_provenance_survives_q90_fill():
+    draft = _draft()
+    state = {}
+    apply_continuation_to_session(
+        state, draft, source_metadata=_metadata(draft), active_annual_validated=True
+    )
+    annual = _annual()
+    adjusted = adjust_continuation_dates(
+        current_continuation_draft(state), projection_end_date="2026-10-21",
+        extension_annual_snapshot=annual,
+    )
+    apply_date_adjustment_to_session(state, adjusted)
+    scenario = state["v2_batch"]["scenarios"][2]
+    first, second = adjusted.added_periods
+    pending = scenario["inflows"][first]
+    scenario["inflows"][first] = inflow_cell_from_editor({
+        "入流 (cms)": 123.45, "資料來源": pending["source_type"], "備註": "人工研判",
+    }, "人工輸入")
+    manual = copy.deepcopy(scenario["inflows"][first])
+    assert manual == {
+        "cms": 123.45, "source_type": "人工輸入", "source_unit": "cms",
+        "source_value": 123.45, "note": "人工研判",
+    }
+    overlap = copy.deepcopy(scenario["inflows"]["2026-9-下旬"])
+    filled = apply_added_period_q90(
+        current_continuation_adjustment(state), scenario_ids=scenario["scenario_id"],
+        annual_snapshot=annual,
+    )
+    apply_date_adjustment_to_session(state, filled)
+    inflows = state["v2_batch"]["scenarios"][2]["inflows"]
+    assert inflows[first] == manual
+    assert inflows[second]["cms"] == 100.0
+    assert inflows["2026-9-下旬"] == overlap
 
 
 def test_active_annual_helpers_change_frames_but_never_reservoir_parameters():

@@ -228,23 +228,26 @@ def invalidate_working_artifacts(state: MutableMapping[str, Any]) -> None:
 
 
 def _validated_batch_for_session(
-    batch: dict, *, initial_capacity_requires_confirmation: bool
+    batch: dict, *, initial_capacity_requires_confirmation: bool,
+    allow_pending_inflows: bool = False,
 ) -> dict:
     if not isinstance(batch.get("batch_name"), str) or not batch["batch_name"].strip():
         raise ValueError("batch_name 不可空白")
-    if initial_capacity_requires_confirmation:
+    if initial_capacity_requires_confirmation or allow_pending_inflows:
         return validate_continuation_pending_batch(
-            batch, initial_capacity_requires_confirmation=True
+            batch, initial_capacity_requires_confirmation=initial_capacity_requires_confirmation
         )
     return validate_batch(batch)
 
 
 def _batch_session_patch(
-    batch: dict, *, initial_capacity_requires_confirmation: bool
+    batch: dict, *, initial_capacity_requires_confirmation: bool,
+    allow_pending_inflows: bool = False,
 ) -> dict[str, Any]:
     validated = _validated_batch_for_session(
         batch,
         initial_capacity_requires_confirmation=initial_capacity_requires_confirmation,
+        allow_pending_inflows=allow_pending_inflows,
     )
     params = validated["reservoir_parameters"]
     overrides = [
@@ -378,6 +381,7 @@ def apply_date_adjustment_to_session(
         raise ValueError("date adjustment derived lineage 與 session 不一致")
     patch = _batch_session_patch(
         adjustment.batch,
+        allow_pending_inflows=True,
         initial_capacity_requires_confirmation=(
             adjustment.initial_capacity_requires_confirmation
         ),
