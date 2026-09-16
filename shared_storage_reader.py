@@ -72,6 +72,17 @@ class AnnualDataSnapshot:
     parameter_metadata: dict[str, dict]
 
 
+class AnnualDataVersionLoadError(RuntimeError):
+    """Public error raised by an exact immutable annual-version read."""
+
+    def __init__(self, error: StorageError) -> None:
+        super().__init__(error.message)
+        self.error = error
+        self.code = error.code
+        self.message = error.message
+        self.detail = error.detail
+
+
 @dataclass(frozen=True)
 class OfficialEstimateSummary:
     current: dict
@@ -256,6 +267,77 @@ class SharedStorageReader:
             )
         raise AssertionError("unreachable")
 
+    def load_annual_version(self, version_id: str) -> AnnualDataSnapshot:
+        """Read one exact immutable annual version without consulting current.
+
+        This is a read-only working-baseline API.  It validates ``system.json``,
+        the safe exact version path, every required file, checksums, and the
+        existing annual bundle schema.  It never inventories sibling versions
+        and never changes ``current.json``.
+        """
+
+        try:
+            self._validate_root()
+            assert self.root is not None
+            system_bytes = self._read_file(
+                self.root / "system.json",
+                StorageErrorCode.SYSTEM_MISSING,
+                "system.json 不存在",
+            )
+            try:
+                validate_system(deserialize_json(system_bytes))
+            except StorageValidationError as exc:
+                raise self._invalid(
+                    StorageErrorCode.SYSTEM_INVALID,
+                    "system.json 格式或內容錯誤",
+                    exc,
+                ) from exc
+            try:
+                safe_id = validate_safe_id(version_id, "annual version_id")
+            except StorageValidationError as exc:
+                raise self._invalid(
+                    StorageErrorCode.UNSAFE_VERSION_ID,
+                    "年度版本 ID 不安全",
+                    exc,
+                ) from exc
+            bundle = self._read_version_bundle(
+                "annual-data", safe_id, ANNUAL_REQUIRED_FILES
+            )
+            annual_data = self._validate_bundle(bundle, annual=True)
+            if annual_data["version"]["version_id"] != safe_id:
+                raise _ReadFailure(
+                    StorageError(
+                        StorageErrorCode.VERSION_ID_MISMATCH,
+                        "年度資料 bundle version_id 與指定版本不一致。",
+                    )
+                )
+            return AnnualDataSnapshot(
+                current={},
+                version=annual_data["version"],
+                hydrology=tuple(annual_data["hydrology"]),
+                outflow_demand=tuple(annual_data["outflow_demand"]),
+                reservoir_parameters=annual_data["reservoir_parameters"],
+                parameter_metadata=annual_data["parameter_metadata"],
+            )
+        except _ReadFailure as exc:
+            raise AnnualDataVersionLoadError(exc.error) from exc
+        except PermissionError as exc:
+            raise AnnualDataVersionLoadError(
+                StorageError(
+                    StorageErrorCode.PERMISSION_DENIED,
+                    "沒有讀取指定年度版本的權限。",
+                    str(exc),
+                )
+            ) from exc
+        except OSError as exc:
+            raise AnnualDataVersionLoadError(
+                StorageError(
+                    StorageErrorCode.READ_FAILED,
+                    "讀取指定年度版本時發生系統錯誤。",
+                    str(exc),
+                )
+            ) from exc
+
     def _failure(
         self,
         read_at: str,
@@ -421,7 +503,7 @@ class SharedStorageReader:
                 raise _ReadFailure(
                     StorageError(
                         StorageErrorCode.VERSION_DIRECTORY_MISSING,
-                        f"current pointer 指向的版本資料夾不存在：{safe_id}。請聯絡系統維護人員。",
+                        f"指定的版本資料夾不存在：{safe_id}。請聯絡系統維護人員。",
                     )
                 )
         except PermissionError as exc:
@@ -560,3 +642,16 @@ def load_shared_storage(
         read_bytes=read_bytes,
         max_attempts=max_attempts,
     ).load()
+
+
+def load_annual_data_version(
+    root: str | os.PathLike[str],
+    version_id: str,
+    *,
+    read_bytes: Callable[[Path], bytes] | None = None,
+) -> AnnualDataSnapshot:
+    """Public exact-ID wrapper for an immutable validated annual snapshot."""
+
+    return SharedStorageReader(root, read_bytes=read_bytes).load_annual_version(
+        version_id
+    )

@@ -383,6 +383,7 @@ def apply_added_period_quantile(
     scenario_ids: str | Iterable[str],
     quantile: str,
     annual_snapshot: AnnualDataSnapshot,
+    period_keys: Iterable[str] | None = None,
 ) -> ContinuationDateAdjustment:
     """Fill only currently blank cells in this adjustment's added periods."""
 
@@ -399,6 +400,20 @@ def apply_added_period_quantile(
             "快速套用只允許 Q80 或 Q90。",
         )
     selected_ids = _scenario_ids(scenario_ids)
+    target_periods = (
+        tuple(adjustment.added_periods)
+        if period_keys is None
+        else tuple(period_keys)
+    )
+    if (
+        not target_periods
+        or len(target_periods) != len(set(target_periods))
+        or not set(target_periods) <= set(adjustment.added_periods)
+    ):
+        raise ContinuationDateAdjustmentError(
+            ContinuationDateAdjustmentErrorCode.INVALID_QUANTILE,
+            "Q80/Q90 target periods 必須是本次 added_periods 的非空子集合。",
+        )
     known_ids = {item["scenario_id"] for item in adjustment.batch["scenarios"]}
     unknown = set(selected_ids) - known_ids
     if unknown:
@@ -417,7 +432,7 @@ def apply_added_period_quantile(
 
     working = copy.deepcopy(adjustment.batch)
     shared_keys = set(working["periods"][: int(working["shared_period_count"])])
-    added_shared = tuple(key for key in adjustment.added_periods if key in shared_keys)
+    added_shared = tuple(key for key in target_periods if key in shared_keys)
     blank_added_shared = tuple(
         key for key in added_shared if working["shared_inflows"][key].get("cms") is None
     )
@@ -459,7 +474,7 @@ def apply_added_period_quantile(
     for scenario in working["scenarios"]:
         if scenario["scenario_id"] not in selected:
             continue
-        for key in adjustment.added_periods:
+        for key in target_periods:
             if key in shared_keys:
                 continue
             if scenario["inflows"][key].get("cms") is None:
@@ -495,12 +510,14 @@ def apply_added_period_q80(
     *,
     scenario_ids: str | Iterable[str],
     annual_snapshot: AnnualDataSnapshot,
+    period_keys: Iterable[str] | None = None,
 ) -> ContinuationDateAdjustment:
     return apply_added_period_quantile(
         adjustment,
         scenario_ids=scenario_ids,
         quantile="Q80",
         annual_snapshot=annual_snapshot,
+        period_keys=period_keys,
     )
 
 
@@ -509,12 +526,14 @@ def apply_added_period_q90(
     *,
     scenario_ids: str | Iterable[str],
     annual_snapshot: AnnualDataSnapshot,
+    period_keys: Iterable[str] | None = None,
 ) -> ContinuationDateAdjustment:
     return apply_added_period_quantile(
         adjustment,
         scenario_ids=scenario_ids,
         quantile="Q90",
         annual_snapshot=annual_snapshot,
+        period_keys=period_keys,
     )
 
 

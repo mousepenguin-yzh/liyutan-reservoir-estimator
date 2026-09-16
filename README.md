@@ -31,6 +31,7 @@
 - 2-6A 正式版本唯讀載入器已完成：`official_estimate_loader.py` 只以已驗證的 `current.json` 與各版 `manifest.previous_official_version_id` 建立 current-first 正式歷史，可取得清單 metadata 與鏈上指定版本完整 snapshot；不掃描或混入 orphan，不建立 working batch、不修改 session，也不寫入共享儲存區。
 - 2-6B 正式 snapshot 接續轉換已完成：`official_estimate_continuation.py` 將 2-6A 已驗證的 `OfficialEstimateSnapshot` deep copy 為全新 working batch，只重建 `batch_id`、預設接續名稱與 UTC `created_at`；來源 scenario IDs、工作條件與 annual-data version 原樣保留，`derived_from` 固定為實際選取的正式版本，publication `previous` 尚未決定，正式結果不會成為 active results。
 - 2-6C 日期調整 domain rules 已完成：`official_estimate_date_adjustment.py` 依年月旬 key 與日期保留 overlap working inputs，只為 brand-new period 建立待填入流及 caller 明確提供之 annual baseline 去年同期出流；Q80/Q90 必須由 caller 明確套用且只填本次新增、仍空白的 cells。projection start 改變會清空起始庫容並進入待確認狀態；所有實質設定變更均移除 runtime results 並標記需重算。
+- 2-6D Streamlit 接線已完成：第一階段可由 2-6A normal history 選擇、預覽 current 或歷史正式版本，再經明確確認與 2-6B 建立新 working batch；日期修改採 staged confirmation 並只呼叫 2-6C，新增旬必須明確選擇目前 annual baseline，新增空白旬可按 scenario 或共用旬套 Q90／Q80，projection start 改變時會阻止計算直到重新確認起始庫容。active annual 與 annual current 分開管理，權威出流、derived lineage、結果／candidate invalidation 及正式保存 annual context 均已接通；受控人工步驟見 [Phase 2-6D 驗收文件](docs/PHASE_2_6D_ACCEPTANCE.md)。
 - 既有水文或出流工作階段上傳只會套用於當次 Streamlit 工作階段，並持續標示為非年度基準資料，不會永久更新 annual-data；若底層共享年度基準健康且版本一致，當次真正使用的上傳值可以納入正式推估 candidate。
 - 暫存情境也只存在當次工作階段，關閉或重啟工作階段後可能消失。
 - JSON 設定檔可由使用者手動下載、帶到另一台電腦再載入，但不會自動同步或自動恢復。
@@ -48,8 +49,9 @@ Phase 2 近期里程碑：
 - 2-6A ✅
 - 2-6B ✅
 - 2-6C ✅
+- 2-6D ✅（implementation 與受控 synthetic-root 人工驗收於 2026-09-16 完成）
 
-下一階段：2-6D Streamlit UI。2-6E 最終整合及公司多電腦／真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收均尚未完成；實機 acceptance 仍留在 2-8。
+下一階段：2-6E 最終整合。2-6D 受控 synthetic-root 人工驗收已完成；2-6E 最終整合及公司多電腦／真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收尚未完成；實機 acceptance 仍留在 2-8。
 
 
 ## V2 多情境工作流程（第一階段已完成）
@@ -60,7 +62,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 本階段完成 1～N 個入流情境、共用 0 旬至全部推估旬、共用出流、批次演算、步驟四單一情境詳情，以及步驟五跨批次比較相容；核心水量平衡公式未改動。
 
-第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。2-4 年度資料、2-5A～2-5D 正式保存，以及 2-6A～2-6C 的唯讀載入、新 working batch 與日期遷移 domain logic 均已完成，2-5 也已通過受控單機／多 session 測試區人工驗收。2-6D Streamlit UI 尚未實作；公司多電腦、真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收仍留在 2-8。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
+第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。2-4 年度資料、2-5A～2-5D 正式保存，以及 2-6A～2-6D 的正式版本唯讀載入、新 working batch、日期遷移與 Streamlit 接線均已完成，2-5 也已通過受控單機／多 session 測試區人工驗收。2-6D 受控 synthetic-root 人工驗收已於 2026-09-16 完成，下一步為 2-6E 最終整合；公司多電腦、真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收仍留在 2-8。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
 
 ## 技術與單位
 
@@ -150,9 +152,9 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 | --- | --- | --- |
 | Streamlit `session_state` | 同一次工作階段內保留輸入、情境及演算結果 | 關閉／逾時／重啟後仍保留；跨瀏覽器或跨電腦同步 |
 | JSON 設定檔 | 手動下載後，可在同一台或另一台電腦載入並重新演算 | 自動保存、自動載入、多人共用最新版 |
-| 公司內網共享資料夾正式資料 | 讀取目前年度版本與最近正式推估摘要；建立／啟用 immutable 年度版本；產生正式保存預覽；在獨立 feature flag 與健康 capability 下經最後確認後安全發布正式推估 | 尚無 official recovery／repair／orphan 操作與跨裝置載入正式推估工作區；公司 SMB acceptance 留在 2-8 |
+| 公司內網共享資料夾正式資料 | 讀取 current-first 正式歷史、預覽並以正式 snapshot 建立新工作；沿用歷史 annual、明確延長／填值／重算；建立／啟用 immutable 年度版本；預覽並安全發布正式推估 | 尚無 official recovery／repair／orphan 操作；2-6D 受控人工驗收完成；2-6E 與公司 SMB acceptance 尚待執行 |
 
-因此，目前若要換電腦接續工作，必須先下載 JSON，再於另一台電腦手動載入。網站不會自動記得上一次推估條件，也不會辨識使用者或裝置。
+共享模式且正式資料完整驗證成功時，可在另一台電腦從 current 或 publication history 中的正式版本建立新工作；來源正式版本不會被修改，且新工作仍須重新演算。非正式或尚未保存的工作仍不會自動跨電腦同步；JSON 仍可作手動攜帶格式，且目前不保存 continuation lineage。
 
 ## 第二階段永久保存方向
 
@@ -311,11 +313,11 @@ repair audit 使用獨立 `annual-data-current-repair` event type，明確記錄
 ## 自動化測試
 
 ```bash
-python -m compileall -q app.py v2_workflow.py ten_day_period.py shared_storage_schema.py shared_storage_reader.py official_estimate_loader.py official_estimate_continuation.py official_estimate_date_adjustment.py official_estimate_candidate.py official_estimate_publisher.py official_estimate_workflow.py annual_data_excel.py annual_data_preview_ui.py annual_data_version_writer.py annual_data_activation.py annual_data_maintenance.py annual_data_diagnostics.py annual_data_recovery.py annual_data_current_repair.py software_provenance.py scripts tests
+python -m compileall -q app.py v2_workflow.py ten_day_period.py shared_storage_schema.py shared_storage_reader.py official_estimate_loader.py official_estimate_continuation.py official_estimate_continuation_ui.py official_estimate_date_adjustment.py official_estimate_candidate.py official_estimate_publisher.py official_estimate_workflow.py annual_data_excel.py annual_data_preview_ui.py annual_data_version_writer.py annual_data_activation.py annual_data_maintenance.py annual_data_diagnostics.py annual_data_recovery.py annual_data_current_repair.py software_provenance.py scripts tests
 python -m pytest -q
 ```
 
-測試另涵蓋既有 annual-data 建立、啟用、diagnostics 與 recovery 全流程，以及 2-5A/2-5B contract、candidate 與 Streamlit preview。2-5C1 測試涵蓋第一／後續正式版本、相同 batch 新版、candidate/annual/current 重驗、current 缺失時的空 inventory first-publish guard、current 與唯一 publish audit 的 revision/version/previous/manifest checksum consistency、ambiguous/invalid/missing audit recovery guard、逐檔 bytes 與 checksum、`COMMITTED.json` 最後寫入、完整 staging readback、append-only rename、雙欄位 conflict、fake lock concurrency/timeout、atomic current temp/replace/readback、嚴格 audit schema/唯一命名/不可覆寫，以及 rename 前、rename 後 current 前、current 後 audit 前的 fault injection。2-5C2 另涵蓋 feature flag／platform capability、最後確認、preview observed pair（包含 A→B→A revision）、SESSION_UPLOAD 健康基準、success receipt/candidate 消耗、同 batch 重新 preview，以及各 publisher error code 的 UI 行為。2-6A 測試涵蓋 current-only、current-first 多版 publication chain、名稱／mtime 無關、完整歷史 snapshot、metadata、missing/corrupt broken link、cycle、orphan 排除、讀取期間 current 改變與共享 root 零寫入。2-6B 測試涵蓋 loader→continuation、全新 UUID／UTC identity、actual-source derived lineage、無 publication previous、source scenario/input/annual baseline 保留、runtime results 清除、nested deep-copy、歷史版接續、零 filesystem writes 與錯誤輸入。2-6C 測試涵蓋 key-based overlap、新增／縮短／同旬／跨年日期遷移、explicit annual A→B、去年同期旬與逐日出流、Q80/Q90 added+blank 限制、多情境／共用旬、起始庫容 pending/confirm、override 保留、結果失效、deep-copy、atomic failure 與 shared root 零寫入。自動化測試只使用 pytest `tmp_path`、synthetic data 與 fake/injected dependencies，不存取 `U:`。
+測試另涵蓋既有 annual-data 建立、啟用、diagnostics 與 recovery 全流程，以及 2-5A/2-5B contract、candidate 與 Streamlit preview。2-5C1 測試涵蓋第一／後續正式版本、相同 batch 新版、candidate/annual/current 重驗、current 缺失時的空 inventory first-publish guard、current 與唯一 publish audit 的 revision/version/previous/manifest checksum consistency、ambiguous/invalid/missing audit recovery guard、逐檔 bytes 與 checksum、`COMMITTED.json` 最後寫入、完整 staging readback、append-only rename、雙欄位 conflict、fake lock concurrency/timeout、atomic current temp/replace/readback、嚴格 audit schema/唯一命名/不可覆寫，以及 rename 前、rename 後 current 前、current 後 audit 前的 fault injection。2-5C2 另涵蓋 feature flag／platform capability、最後確認、preview observed pair（包含 A→B→A revision）、SESSION_UPLOAD 健康基準、success receipt/candidate 消耗、同 batch 重新 preview，以及各 publisher error code 的 UI 行為。2-6A 測試涵蓋 current-only、current-first 多版 publication chain、名稱／mtime 無關、完整歷史 snapshot、metadata、missing/corrupt broken link、cycle、orphan 排除、讀取期間 current 改變與共享 root 零寫入。2-6B 測試涵蓋 loader→continuation、全新 UUID／UTC identity、actual-source derived lineage、無 publication previous、source scenario/input/annual baseline 保留、runtime results 清除、nested deep-copy、歷史版接續、零 filesystem writes 與錯誤輸入。2-6C 測試涵蓋 key-based overlap、新增／縮短／同旬／跨年日期遷移、explicit annual A→B、去年同期旬與逐日出流、Q80/Q90 added+blank 限制、多情境／共用旬、起始庫容 pending/confirm、override 保留、結果失效、deep-copy、atomic failure 與 shared root 零寫入。2-6D 測試涵蓋 normal-history UI model、原子 session sync、current／歷史版本接續、active annual A 與 current B 分離、staged date confirmation、explicit extension、scenario Q90/Q80、capacity pending/confirm、authoritative outflow、結果與 candidate cleanup、comparison 保留、歷史 annual 正式保存資格、publish-time previous lineage，以及歷史 annual 缺失時不 fallback。自動化測試只使用 pytest `tmp_path`、synthetic data 與 fake/injected dependencies，不存取 `U:`。
 
 Repository 亦包含 `.github/workflows/tests.yml`，每次 push 與 Pull Request 都會使用 Python 3.12 執行 compileall 與完整 pytest 測試。
 
