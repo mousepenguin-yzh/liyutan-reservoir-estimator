@@ -646,7 +646,7 @@ def render_official_save_preparation(
     details[0].write(
         f"**推估期間：** {preview['projection_start_date']} 至 {display_end.isoformat()}"
     )
-    details[1].write(f"**年度資料版本：** {preview['annual_data_version_id']}")
+    details[1].write("**年度資料：** 本次工作使用的年度資料")
     details[0].write(
         "**當次自訂／調整資料：** "
         + ("有" if preview["has_custom_or_adjusted_data"] else "無明確調整標記")
@@ -654,10 +654,7 @@ def render_official_save_preparation(
     details[1].write(f"**操作人：** {preview['operator_display_name']}（人工填報）")
     st.write(f"**備註：** {preview['note']}")
     if preview["derived_from_official_version_id"]:
-        st.write(
-            "**衍生來源正式版本：** "
-            f"{preview['derived_from_official_version_id']}"
-        )
+        st.write("**工作來源：** 正式版本接續")
 
     summary_frame = pd.DataFrame(
         [
@@ -675,9 +672,10 @@ def render_official_save_preparation(
         ]
     )
     st.dataframe(summary_frame, hide_index=True, use_container_width=True)
-    st.caption("此候選內容只保存在目前 Streamlit session；重新啟動後會消失。")
+    st.caption("此預覽尚未正式保存；重新啟動後需重新產生。")
 
     with st.expander("進階資訊"):
+        st.write("annual_data_version_id：", preview["annual_data_version_id"])
         st.code(f"candidate estimate_version_id: {preview['version_id']}")
         st.code(f"inputs_fingerprint: {preview['inputs_fingerprint']}")
         st.code(f"Git commit: {preview['software']['git_commit']}")
@@ -1482,22 +1480,21 @@ if st.session_state.get("v2_continuation_active"):
     active_id = st.session_state.get("v2_active_annual_data_version_id")
     st.info(
         "目前工作來源：正式版本接續｜"
-        f"{source_metadata.get('batch_name', '未命名批次')}｜"
-        f"工作年度基準 {active_id or '無法確認'}｜"
-        f"系統目前年度基準 {current_shared_annual_version_id or '無法讀取'}"
+        f"{source_metadata.get('batch_name', '未命名批次')}"
     )
     if active_id and current_shared_annual_version_id and active_id != current_shared_annual_version_id:
         st.caption(
-            f"本工作批次沿用正式版本的年度基準 {active_id}；"
-            f"目前系統基準為 {current_shared_annual_version_id}。"
+            "本次工作使用接續版本的歷史年度資料，與系統目前年度資料不同。"
             "既有輸入不會自動改寫。"
         )
     if not st.session_state.get("v2_active_annual_validated"):
         st.warning(
-            "工作批次仍可查看，但使用年度基準的填值協助與正式保存已停用："
-            f"{st.session_state.get('v2_active_annual_error', '歷史年度版本無法完整驗證')}"
+            "本工作批次使用的年度版本無法讀取或驗證。"
+            "工作批次仍可查看，但年度資料填值協助與正式保存已停用。"
         )
     with st.expander("目前工作來源進階資訊"):
+        if st.session_state.get("v2_active_annual_error"):
+            st.write("年度版本讀取詳細資訊：", st.session_state.v2_active_annual_error)
         st.write(
             "**source official version_id：** "
             f"{st.session_state.get('v2_source_official_version_id')}"
@@ -1513,6 +1510,13 @@ if st.session_state.get("v2_continuation_active"):
             "**current annual_data_version_id：** "
             f"{current_shared_annual_version_id}"
         )
+else:
+    st.info("目前工作來源：建立全新推估")
+    st.caption(f"本次工作使用的年度資料：{source_decision.label}")
+    if st.session_state.get("v2_batch"):
+        with st.expander("目前工作來源進階資訊"):
+            st.write(f"**working batch_id：** {st.session_state.v2_batch['batch_id']}")
+            st.write("**annual_data_version_id：**", st.session_state.get("v2_active_annual_data_version_id"))
 
 tab_config, tab_inflow, tab_outflow, tab_simulation, tab_products = st.tabs([
     "⚙️ 第一階段：推估需求基礎資料設定", 
@@ -1593,22 +1597,17 @@ with tab_config:
                     f"**建立時間（UTC）：** {official_preview.created_at}"
                 )
                 st.write(f"**正式備註：** {official_preview.note}")
-                st.write(
-                    "**來源年度基準：** "
-                    f"{official_preview.source_annual_data_version_id}"
-                )
                 if official_preview.annual_versions_differ:
                     st.info(
-                        "此正式版本使用年度基準 "
-                        f"{official_preview.source_annual_data_version_id}；"
-                        "目前系統年度基準為 "
-                        f"{official_preview.current_annual_data_version_id}。"
+                        "此正式版本使用的歷史年度資料與系統目前年度資料不同。"
                         "載入後會先完整沿用來源基準，不會自動改成目前基準；"
                         "若延長新增旬，系統會要求明確確認後才使用目前基準。"
                     )
                 else:
                     st.info("此正式版本與目前系統使用相同年度基準。")
                 with st.expander("正式版本預覽進階資訊"):
+                    st.write("**source annual_data_version_id：**", official_preview.source_annual_data_version_id)
+                    st.write("**current annual_data_version_id：**", official_preview.current_annual_data_version_id)
                     st.write(f"**完整 version_id：** {official_preview.version_id}")
                     st.write(
                         "**derived_from_official_version_id：** "
@@ -1752,14 +1751,12 @@ with tab_config:
                         st.write("新增旬：" + "、".join(date_preview.added_periods))
                         active_before = st.session_state.get("v2_active_annual_data_version_id")
                         st.warning(
-                            "新增旬入流將保持待填；新增旬出流會使用目前系統年度基準 "
-                            f"{current_shared_annual_version_id or '（不可用）'} 的去年同期資料。"
+                            "新增旬入流將保持待填；新增旬出流會使用系統目前年度資料的去年同期出流。"
                             "原有旬資料不會重算。"
                         )
                         if active_before != current_shared_annual_version_id:
                             st.caption(
-                                f"確認後，本工作批次年度基準將由 {active_before} 切換為 "
-                                f"{current_shared_annual_version_id}。"
+                                "確認後，本次工作使用的年度資料將切換為系統目前年度資料。"
                             )
                         extension_ready = bool(
                             current_shared_annual_snapshot is not None
@@ -1979,7 +1976,7 @@ with tab_inflow:
             st.markdown("### 接續版本新增旬快速填值")
             st.caption(
                 "只會處理最近日期調整新增、且目前仍空白的旬；不會覆蓋既有旬或人工值。"
-                f" 工作年度基準：{st.session_state.get('v2_active_annual_data_version_id')}"
+                " 填值來源為本次工作使用的年度資料。"
             )
             st.write("最近新增旬：" + "、".join(latest_added))
             quick_fill_ready = bool(
@@ -2367,7 +2364,9 @@ with tab_inflow:
         st.markdown("#### ⚙️ 工作階段水文資料套用與還原")
         
         # 顯示狀態字卡
-        if st.session_state.hydrology_source_status == "系統基準資料":
+        if v2_continuation_active and st.session_state.get("v2_active_annual_validated"):
+            st.info("當前水文資料：本次工作使用的年度資料（已驗證）")
+        elif st.session_state.hydrology_source_status == "系統基準資料":
             st.success(f"📊 當前水文資料：🟢 **{st.session_state.hydrology_source_status}**")
         elif st.session_state.hydrology_source_status.startswith("內建備援"):
             st.warning(f"📊 當前水文資料：🚨 **{st.session_state.hydrology_source_status}**")
@@ -2384,7 +2383,7 @@ with tab_inflow:
                 disabled=v2_continuation_active,
             )
             if v2_continuation_active:
-                st.caption("正式版本接續期間，水文協助工具固定使用工作批次的 active annual baseline。")
+                st.caption("正式版本接續期間，水文協助工具使用本次工作使用的年度資料。")
             
             # 處理上傳與多重解碼覆寫邏輯
             if uploaded_hydrology_file is not None:
@@ -2481,14 +2480,14 @@ with tab_inflow:
 with tab_outflow:
     st.subheader("🚰 出流標的設定與抗旱調整")
     if st.session_state.get("v2_outflows_authoritative") and st.session_state.get("v2_batch"):
-        st.success("目前使用正式版本接續／匯入設定的權威出流；下方工作區僅供參考。")
+        st.success("目前採用接續版本／匯入的出流設定；下方工作區僅供參考。")
         imported_daily = daily_outflow_frame(st.session_state.v2_batch)
         imported_summary = imported_daily.groupby(["年份", "月份", "旬別"], sort=False).agg(
             上灌區加權均值=("上灌區當日流量(cms)", "mean"), 下灌區加權均值=("下灌區當日流量(cms)", "mean"),
             公共給水加權均值=("公共供水當日水量(萬噸)", "mean"), 覆寫日數=("調度狀態", lambda x: x.astype(str).str.contains("覆寫").sum())).reset_index()
         st.dataframe(imported_summary, hide_index=True, use_container_width=True)
         if st.session_state.v2_batch.get("date_overrides"):
-            st.caption("權威工作批次的逐日覆寫規則")
+            st.caption("目前採用的逐日出流調整規則")
             st.dataframe(pd.DataFrame(st.session_state.v2_batch["date_overrides"]), hide_index=True, use_container_width=True)
         authoritative_outflow_takeover_disabled = bool(
             st.session_state.get("v2_continuation_active")
@@ -2496,10 +2495,10 @@ with tab_outflow:
         )
         if authoritative_outflow_takeover_disabled:
             st.warning(
-                "工作批次年度基準目前無法驗證，不能使用年度出流協助資料覆蓋權威出流。"
+                "本工作批次使用的年度版本無法讀取或驗證，不能使用年度出流協助資料覆蓋目前採用的出流設定。"
             )
         if st.button(
-            "改用目前步驟三工作區並覆蓋權威出流",
+            "改用目前步驟三工作區並覆蓋現有出流設定",
             key="v2_release_imported_outflow",
             disabled=authoritative_outflow_takeover_disabled,
         ):
@@ -2839,7 +2838,9 @@ with tab_outflow:
     with st.expander("🛠️ 前一年度出流需求工作階段上傳（不會正式更新）", expanded=False):
         st.markdown("#### ⚙️ 工作階段出流需求套用與還原")
         
-        if st.session_state.demand_source_status == "系統基準資料":
+        if v2_continuation_active and st.session_state.get("v2_active_annual_validated"):
+            st.info("當前出流需求：本次工作使用的年度資料（已驗證）")
+        elif st.session_state.demand_source_status == "系統基準資料":
             st.success(f"📊 當前出流需求：🟢 **{st.session_state.demand_source_status}**")
         elif st.session_state.demand_source_status.startswith("內建備援"):
             st.warning(f"📊 當前出流需求：🚨 **{st.session_state.demand_source_status}**")
@@ -2856,7 +2857,7 @@ with tab_outflow:
                 disabled=v2_continuation_active,
             )
             if v2_continuation_active:
-                st.caption("正式版本接續期間，出流協助工具固定使用工作批次的 active annual baseline。")
+                st.caption("正式版本接續期間，出流協助工具使用本次工作使用的年度資料。")
             
             if uploaded_demand_file is not None:
                 file_name = uploaded_demand_file.name

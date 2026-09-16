@@ -1,6 +1,6 @@
 # Phase 2-6D 正式版本接續 UI 受控人工驗收
 
-狀態：待執行。這份文件只規劃 synthetic shared root／受控 test root 的單機驗收；不得使用正式 `U:` 根目錄。真正雙電腦、SMB lock pressure、斷線、rename／replace timeout 與營運驗收留在 Phase 2-8。
+狀態：受控人工驗收完成（2026-09-16）。以下為已執行的 synthetic shared root 單機驗收流程；正式 `U:` 根目錄未使用。真正多電腦、SMB lock pressure、斷線、rename／replace timeout 與營運驗收仍留在 Phase 2-8，尚未完成。
 
 ## 前置條件與安全界線
 
@@ -78,10 +78,13 @@
 
 ## 驗收紀錄
 
-- 執行日期：待填
-- 執行人：待填
-- synthetic/test root：待填（不得為正式 `U:`）
-- 測試 commit：待填
-- A～J 結果：待填
-- 發現事項／截圖位置：待填
-- 結論：待執行；未完成前不得宣稱 2-6E 或 Phase 2-8 acceptance 已通過。
+- 執行日期：2026-09-16。
+- 執行人：使用者人工操作並回報驗收結果；本紀錄不代表代理自動執行人工驗收。
+- synthetic root：`C:\Users\mousepenguin\AppData\Local\Temp\liyutan-reservoir-estimator\phase-2-6d-acceptance\shared-root`。
+- 核心驗收 commit：`cdb5ca086d119da3b9d22757edb9642d26c0cb7c`（包含人工驗收發現的兩項 defect 修正）。
+- 正式 `U:\經管科\水庫庫容推估系統\鯉魚潭` 未使用或修改。
+- A～J 主流程：全部通過；E2 同旬延長、D5 Annual A unavailable 分支均通過。
+- Defect a：initial capacity confirm 後 shared inflow 仍 pending，session adapter 誤用 strict validator 造成 crash。已改由 continuation pending validator 驗證，庫容確認與 shared pending 分開管理；strict 計算／正式保存規則不變。
+- Defect b：新增旬人工填入數值後 provenance 仍為「待填」。已同步更新為「人工輸入」、cms 單位與實際值；Q80/Q90 不覆蓋人工值。
+- D5 fixture 復原：`annual-synthetic-2027` 已原樣移回 `annual-data/versions/annual-synthetic-2027`。依 `..\d5-isolation-20260916-150108\isolation-manifest.json` 核對完整 6 個檔案清單、大小與 SHA-256，隔離前後一致；annual current 檔案 checksum 不變，仍為 `annual-phase-2-6d-current-b`。
+- 結論：2-6D implementation 與受控人工驗收完成；下一步為 2-6E 最終整合。Phase 2 尚未全部完成，Phase 2-8 真實多電腦／SMB acceptance 尚未完成。

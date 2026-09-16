@@ -103,7 +103,7 @@ def build_official_history_view(
             f"{prefix}｜{_taipei_created_label(metadata.created_at)}｜"
             f"{metadata.batch_name}｜{metadata.projection_start_date}～"
             f"{metadata.projection_end_date}｜{len(metadata.scenarios)} 情境｜"
-            f"{metadata.operator_display_name}｜年度 {metadata.annual_data_version_id}"
+            f"{metadata.operator_display_name}"
         )
         items.append(
             OfficialHistoryItemView(

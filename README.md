@@ -49,9 +49,9 @@ Phase 2 近期里程碑：
 - 2-6A ✅
 - 2-6B ✅
 - 2-6C ✅
-- 2-6D ✅（受控 synthetic-root 人工驗收待執行）
+- 2-6D ✅（implementation 與受控 synthetic-root 人工驗收於 2026-09-16 完成）
 
-下一階段：2-6E 最終整合。2-6D 受控 synthetic-root 人工驗收、2-6E 最終整合及公司多電腦／真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收均尚未完成；實機 acceptance 仍留在 2-8。
+下一階段：2-6E 最終整合。2-6D 受控 synthetic-root 人工驗收已完成；2-6E 最終整合及公司多電腦／真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收尚未完成；實機 acceptance 仍留在 2-8。
 
 
 ## V2 多情境工作流程（第一階段已完成）
@@ -62,7 +62,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 
 本階段完成 1～N 個入流情境、共用 0 旬至全部推估旬、共用出流、批次演算、步驟四單一情境詳情，以及步驟五跨批次比較相容；核心水量平衡公式未改動。
 
-第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。2-4 年度資料、2-5A～2-5D 正式保存，以及 2-6A～2-6D 的正式版本唯讀載入、新 working batch、日期遷移與 Streamlit 接線均已完成，2-5 也已通過受控單機／多 session 測試區人工驗收。2-6D 受控 synthetic-root 人工驗收與 2-6E 最終整合尚待執行；公司多電腦、真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收仍留在 2-8。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
+第二階段改採「每台公司電腦本機執行 Streamlit＋公司內網共享資料夾保存正式資料」。2-4 年度資料、2-5A～2-5D 正式保存，以及 2-6A～2-6D 的正式版本唯讀載入、新 working batch、日期遷移與 Streamlit 接線均已完成，2-5 也已通過受控單機／多 session 測試區人工驗收。2-6D 受控 synthetic-root 人工驗收已於 2026-09-16 完成，下一步為 2-6E 最終整合；公司多電腦、真實 SMB 斷線、鎖競爭與中斷／恢復實機驗收仍留在 2-8。完整方向請見 [本機 Streamlit＋內網共享資料夾永久保存規格](docs/LOCAL_SHARED_STORAGE_SPEC.md)。
 
 ## 技術與單位
 
@@ -152,7 +152,7 @@ V2 第一階段已於 2026-08-14 完成實作、測試及人工驗收，合併�
 | --- | --- | --- |
 | Streamlit `session_state` | 同一次工作階段內保留輸入、情境及演算結果 | 關閉／逾時／重啟後仍保留；跨瀏覽器或跨電腦同步 |
 | JSON 設定檔 | 手動下載後，可在同一台或另一台電腦載入並重新演算 | 自動保存、自動載入、多人共用最新版 |
-| 公司內網共享資料夾正式資料 | 讀取 current-first 正式歷史、預覽並以正式 snapshot 建立新工作；沿用歷史 annual、明確延長／填值／重算；建立／啟用 immutable 年度版本；預覽並安全發布正式推估 | 尚無 official recovery／repair／orphan 操作；2-6D 受控人工驗收與公司 SMB acceptance 尚待執行 |
+| 公司內網共享資料夾正式資料 | 讀取 current-first 正式歷史、預覽並以正式 snapshot 建立新工作；沿用歷史 annual、明確延長／填值／重算；建立／啟用 immutable 年度版本；預覽並安全發布正式推估 | 尚無 official recovery／repair／orphan 操作；2-6D 受控人工驗收完成；2-6E 與公司 SMB acceptance 尚待執行 |
 
 共享模式且正式資料完整驗證成功時，可在另一台電腦從 current 或 publication history 中的正式版本建立新工作；來源正式版本不會被修改，且新工作仍須重新演算。非正式或尚未保存的工作仍不會自動跨電腦同步；JSON 仍可作手動攜帶格式，且目前不保存 continuation lineage。
 

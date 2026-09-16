@@ -112,9 +112,12 @@ def test_old_annual_stays_active_until_explicit_extension_and_q_fill(
     )
     assert app.session_state.max_capacity == 11584.0
     assert any(
-        ANNUAL_ID in str(item.value) and annual_b in str(item.value)
+        "本次工作使用的年度資料（已驗證）" in str(item.value)
         for item in app.info
     )
+    assert not any("當前水文資料" in str(item.value) or "當前出流需求" in str(item.value) for item in app.warning)
+    assert any(ANNUAL_ID in str(item.value) for item in app.markdown)
+    assert any(annual_b in str(item.value) for item in app.markdown)
     source_batch = copy.deepcopy(app.session_state.v2_batch)
 
     _key(app.date_input, "v2_requested_projection_end_date").set_value(
@@ -225,9 +228,10 @@ def test_missing_source_annual_keeps_work_viewable_without_silent_switch(
     takeover = _key(app.button, "v2_release_imported_outflow")
     assert takeover.disabled
     assert any(
-        "工作批次年度基準目前無法驗證" in str(item.value)
+        "本工作批次使用的年度版本無法讀取或驗證" in str(item.value)
         for item in app.warning
     )
+    assert "current pointer" not in app.session_state.v2_active_annual_error
 
 
 def test_corrupt_source_annual_disables_authoritative_outflow_takeover(
@@ -248,6 +252,7 @@ def test_corrupt_source_annual_disables_authoritative_outflow_takeover(
     assert app.session_state.v2_active_annual_validated is False
     assert app.session_state.v2_outflows_authoritative is True
     assert _key(app.button, "v2_release_imported_outflow").disabled
+    assert any("本工作批次使用的年度版本無法讀取或驗證" in str(item.value) for item in app.warning)
 
 
 def test_portable_import_returns_work_source_radio_to_new_estimate(
@@ -275,4 +280,5 @@ def test_portable_import_returns_work_source_radio_to_new_estimate(
     assert app.session_state.v2_derived_from_official_version_id is None
     assert "v2_source_official_version_id" not in app.session_state
     assert _key(app.radio, "v2_requested_work_source").value == "建立全新推估"
+    assert any("目前工作來源：建立全新推估" in str(item.value) for item in app.info)
     assert not _key(app.button, "v2_release_imported_outflow").disabled

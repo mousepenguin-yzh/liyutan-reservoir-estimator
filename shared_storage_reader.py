@@ -503,7 +503,7 @@ class SharedStorageReader:
                 raise _ReadFailure(
                     StorageError(
                         StorageErrorCode.VERSION_DIRECTORY_MISSING,
-                        f"current pointer 指向的版本資料夾不存在：{safe_id}。請聯絡系統維護人員。",
+                        f"指定的版本資料夾不存在：{safe_id}。請聯絡系統維護人員。",
                     )
                 )
         except PermissionError as exc:

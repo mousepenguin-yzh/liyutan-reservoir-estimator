@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅；2-6A 正式版本唯讀載入器 ✅；2-6B 正式 snapshot 建立新 working batch ✅；2-6C 日期調整與年度基準延長 domain rules ✅；2-6D 正式接續 Streamlit UI 接線 ✅。2-6D 受控 synthetic-root 人工驗收與 2-6E 最終整合尚待執行。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
+狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅；2-6A 正式版本唯讀載入器 ✅；2-6B 正式 snapshot 建立新 working batch ✅；2-6C 日期調整與年度基準延長 domain rules ✅；2-6D 正式接續 Streamlit UI 接線 ✅。2-6D 受控 synthetic-root 人工驗收已於 2026-09-16 完成；下一步為 2-6E 最終整合。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -789,7 +789,7 @@ projection start 只要改變，舊 `initial_capacity` 就真正清為 `None`，
 
 任何實質日期設定變更、Q80/Q90 套值或起始庫容確認，都在新 copy 移除 `results`／`results_fingerprint` 並標記 `requires_recalculation=True`；batch ID、scenario IDs、created time、derived lineage 與 overrides 均不改變。所有 failure（缺 annual、缺 month/旬 row、非法 annual identity、非法 Q/scenario、非法 capacity 或 migration validation）均在回傳前失敗，原 draft 不受 mutation。2-6C domain contract 已由下節 2-6D 接入 Streamlit；2-6E 最終整合與 2-8 真實 SMB multi-machine acceptance 仍未實作。
 
-#### 2-6D：正式版本接續與日期延長 Streamlit UI（已完成接線，受控人工驗收待執行）
+#### 2-6D：正式版本接續與日期延長 Streamlit UI（implementation 與受控人工驗收已完成）
 
 第一階段新增「建立全新推估／從正式版本接續」入口。正式接續只在 shared storage、official current/history 與年度 current 完整驗證成功時開放，選單只使用 `OfficialEstimateLoader.load_history()` 回傳的 current-first publication chain；不掃描 versions、也不顯示 orphan、staging 或 recovery remnants。選取版本只更新預覽，不覆蓋工作；預覽包含批次、日期、起始庫容、正式情境、建立時間、操作人、正式備註、來源 annual 與 derived lineage，按下明確確認後才重新載入 snapshot 並呼叫 `build_official_continuation()`。
 
@@ -803,7 +803,7 @@ continuation 的日期欄位是 staged request；使用者按確認前，active 
 
 第三階段將正式 snapshot 與延長後的 outflows、daily outflows、overrides 視為 authoritative working input，rerun 不用 current demand 重寫 overlap；只有使用者按明確 takeover 才改用目前步驟三工作區。日期調整後 batch overrides 與 UI date objects 會同步，range 外 override 仍保留。所有 load/date/Q/capacity/new-work transition 都經共用 cleanup 清除 active results、selected scenario、formal candidate 與 publish confirmation，但保留跨批次 comparison registry。
 
-第五階段正式 candidate 使用 `v2_active_annual_data_version_id`，而非無條件使用 annual current。只要 historical A 仍可從 immutable annual storage 完整驗證，A != current B 仍可在重新演算後正式保存；derived lineage 固定為實際載入的 source official version。`previous_official_version_id` 仍只由正式保存 preview 當下 observed official current 決定，不從 source manifest 帶入。2-6D 沒有修改 publish locking、official history、portable JSON lineage 或正式共享資料；受控人工驗收依 `PHASE_2_6D_ACCEPTANCE.md` 使用 synthetic/test root，2-6E 與真實雙電腦 SMB/lock-pressure/斷線驗收仍待後續 2-8。
+第五階段正式 candidate 使用 `v2_active_annual_data_version_id`，而非無條件使用 annual current。只要 historical A 仍可從 immutable annual storage 完整驗證，A != current B 仍可在重新演算後正式保存；derived lineage 固定為實際載入的 source official version。`previous_official_version_id` 仍只由正式保存 preview 當下 observed official current 決定，不從 source manifest 帶入。2-6D 沒有修改 publish locking、official history、portable JSON lineage 或正式共享資料；受控人工驗收已於 2026-09-16 依 `PHASE_2_6D_ACCEPTANCE.md` 使用 synthetic/test root 完成，正式 U: 未使用。下一步為 2-6E；真實多電腦 SMB/lock-pressure/斷線驗收仍留在 2-8，尚未完成。
 
 驗收：
 
