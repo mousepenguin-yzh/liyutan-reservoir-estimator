@@ -242,6 +242,9 @@ def apply_shared_annual_data(
 def reload_shared_annual_workspace(result) -> None:
     """Explicitly replace every annual baseline component with one validated snapshot."""
     apply_shared_annual_data(result)
+    st.session_state.v2_widget_version = (
+        int(st.session_state.get("v2_widget_version", 0)) + 1
+    )
     st.session_state.hydrology_session_upload = False
     st.session_state.demand_session_upload = False
     st.session_state.loaded_shared_annual_version_id = result.annual.version["version_id"]
