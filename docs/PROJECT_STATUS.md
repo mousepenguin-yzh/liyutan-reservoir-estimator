@@ -8,11 +8,14 @@
 
 - Phase 2-6D implementation：✅ 完成。
 - Phase 2-6D controlled synthetic-root acceptance：✅ 完成（2026-09-16）。
-- 下一步：Phase 2-6E final integration。
+- Phase 2-6E final integration：✅ 自動化整合驗證完成。
+- 下一步：Phase 2-7 桌面捷徑與一般使用者啟動。
 - Phase 2：尚未全部完成。
 - Phase 2-8 真實多電腦、SMB lock pressure、斷線／中斷／恢復 acceptance：尚未完成。
 
 Phase 2-6D 的完成表示正式版本選擇與預覽、建立新 working batch、日期調整、年度基準延長、Q80／Q90 新增旬填值、起始庫容重新確認、重新演算及正式保存 lineage 已完成受控 synthetic-root 驗收；不代表真實公司 SMB 環境已完成驗收。
+
+Phase 2-6E 以 AppTest、synthetic filesystem 與 fake lock 完成正式版本接續、調整／重算、Step 5 正式保存、全新 session 重載／再次接續的整合回歸，並驗證來源 lineage／發布 previous 分離、historical annual 不 silent rebase、revision conflict 與來源年度損壞時拒絕保存。未發現需修改產品程式的整合缺陷；未變更 schema 或正式寫入契約。測試與邊界見 [shared-storage spec 的 2-6E](LOCAL_SHARED_STORAGE_SPEC.md)。
 
 ## 仍影響後續開發的既成決策
 

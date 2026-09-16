@@ -774,7 +774,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 
 `derived_from_official_version_id` 永遠等於本次實際傳入 snapshot 的 version ID，不遞迴沿用 source manifest 的 derived ancestor。`annual_data_version_id` 永遠先保留 source snapshot 的 annual-data version，即使目前 annual current 已更新也不 silently rebase。publication `previous_official_version_id` 完全不在本階段決定，必須留到未來正式發布當下觀察 current。
 
-正式 `scenario_summaries` 與 `daily_results` 只留在 source snapshot 作 reference，不會轉成 working active results。新 batch 顯式移除 `results` 與 `results_fingerprint`，後續必須重新演算；工作輸入 `daily_outflows` 則完整保留。2-6B 不擴充 portable JSON lineage、不建立 formal candidate、不 publish、不修改 shared storage，也不接 Streamlit UI。日期調整、新增旬、Q90／Q80、去年同期出流、起始庫容失效與 annual baseline transition 已由下節 2-6C domain layer 實作；Streamlit 接線仍留給 2-6D，2-6E 最終整合與 2-8 真實 SMB multi-machine acceptance 尚未實作。
+正式 `scenario_summaries` 與 `daily_results` 只留在 source snapshot 作 reference，不會轉成 working active results。新 batch 顯式移除 `results` 與 `results_fingerprint`，後續必須重新演算；工作輸入 `daily_outflows` 則完整保留。2-6B 不擴充 portable JSON lineage、不建立 formal candidate、不 publish、不修改 shared storage，也不接 Streamlit UI。日期調整、新增旬、Q90／Q80、去年同期出流、起始庫容失效與 annual baseline transition 已由下節 2-6C domain layer 實作；Streamlit 接線與最終整合驗證見下節 2-6D／2-6E；真實 SMB multi-machine acceptance 另屬 2-8。
 
 #### 2-6C：日期調整、新增旬資料遷移與年度基準延長（已完成）
 
@@ -788,7 +788,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 
 projection start 只要改變，舊 `initial_capacity` 就真正清為 `None`，並以 `initial_capacity_requires_confirmation=True` 表示不可沿用；`confirm_initial_capacity()` 只接受有限且非負的新值後解除 flag。`validate_continuation_pending_batch()` 僅允許這個明確 intermediate state與既有 pending shared cell，透過驗證用 copy 交給嚴格 `validate_batch()`，不放寬 official/V2 schema。projection start 不變時，單改 display 或 projection end 都保留 initial capacity。
 
-任何實質日期設定變更、Q80/Q90 套值或起始庫容確認，都在新 copy 移除 `results`／`results_fingerprint` 並標記 `requires_recalculation=True`；batch ID、scenario IDs、created time、derived lineage 與 overrides 均不改變。所有 failure（缺 annual、缺 month/旬 row、非法 annual identity、非法 Q/scenario、非法 capacity 或 migration validation）均在回傳前失敗，原 draft 不受 mutation。2-6C domain contract 已由下節 2-6D 接入 Streamlit；2-6E 最終整合與 2-8 真實 SMB multi-machine acceptance 仍未實作。
+任何實質日期設定變更、Q80/Q90 套值或起始庫容確認，都在新 copy 移除 `results`／`results_fingerprint` 並標記 `requires_recalculation=True`；batch ID、scenario IDs、created time、derived lineage 與 overrides 均不改變。所有 failure（缺 annual、缺 month/旬 row、非法 annual identity、非法 Q/scenario、非法 capacity 或 migration validation）均在回傳前失敗，原 draft 不受 mutation。2-6C domain contract 已由下節 2-6D 接入 Streamlit；2-6E 最終整合驗證見下節；真實 SMB multi-machine acceptance 另屬 2-8。
 
 #### 2-6D：正式版本接續與日期延長 Streamlit UI（implementation 與受控人工驗收已完成）
 
@@ -804,7 +804,23 @@ continuation 的日期欄位是 staged request；使用者按確認前，active 
 
 第三階段將正式 snapshot 與延長後的 outflows、daily outflows、overrides 視為 authoritative working input，rerun 不用 current demand 重寫 overlap；只有使用者按明確 takeover 才改用目前步驟三工作區。日期調整後 batch overrides 與 UI date objects 會同步，range 外 override 仍保留。所有 load/date/Q/capacity/new-work transition 都經共用 cleanup 清除 active results、selected scenario、formal candidate 與 publish confirmation，但保留跨批次 comparison registry。
 
-第五階段正式 candidate 使用 `v2_active_annual_data_version_id`，而非無條件使用 annual current。只要 historical A 仍可從 immutable annual storage 完整驗證，A != current B 仍可在重新演算後正式保存；derived lineage 固定為實際載入的 source official version。`previous_official_version_id` 仍只由正式保存 preview 當下 observed official current 決定，不從 source manifest 帶入。2-6D 沒有修改 publish locking、official history、portable JSON lineage 或正式共享資料；受控人工驗收已於 2026-09-16 依 `PHASE_2_6D_ACCEPTANCE.md` 使用 synthetic/test root 完成，正式 U: 未使用。下一步為 2-6E；真實多電腦 SMB/lock-pressure/斷線驗收仍留在 2-8，尚未完成。
+第五階段正式 candidate 使用 `v2_active_annual_data_version_id`，而非無條件使用 annual current。只要 historical A 仍可從 immutable annual storage 完整驗證，A != current B 仍可在重新演算後正式保存；derived lineage 固定為實際載入的 source official version。`previous_official_version_id` 仍只由正式保存 preview 當下 observed official current 決定，不從 source manifest 帶入。2-6D 沒有修改 publish locking、official history、portable JSON lineage 或正式共享資料；受控人工驗收已於 2026-09-16 依 `PHASE_2_6D_ACCEPTANCE.md` 使用 synthetic/test root 完成，正式 U: 未使用。最終整合驗證見下節 2-6E；真實多電腦 SMB/lock-pressure/斷線驗收仍留在 2-8，目前 milestone 統一見 PROJECT_STATUS.md。
+
+#### 2-6E：接續、重新演算、正式保存與重新載入的最終整合
+
+[端到端整合測試](../tests/test_app_official_continuation_e2e.py) 以 Streamlit AppTest 串接既有 2-6A～2-6D、Step 5 candidate、真實 publisher 與唯讀 loader。所有資料都由 pytest `tmp_path` 建立；以 injected fake lock 取代 OS lock、注入 UI platform gate 與 synthetic software provenance。不把預先計算的結果或 candidate 塞入 session，不使用正式 shared root，也不修改 schema、formal-write contract 或 publisher persistence semantics。
+
+整合驗證刻意令接續來源 X 與目前正式版本 Y 不同，來源年度為 A 而年度 current 為 B，覆蓋：
+
+- 保留 historical A，或由使用者明確延長新增旬後才切至 B；延長時保留 overlap 入流與逐日出流，以 Q90／Q80 填入新增空白旬。
+- 起始日變更清除起始庫容並停用計算，明確確認新庫容後才能重算；日期變更清除舊結果、candidate 與保存確認，保留既有跨批次比較結果。
+- 從 UI 重新計算全部情境、Step 5 建立 preview 並正式保存 Z；`derived_from=X`、`previous=Y`，年度依實際工作 context 為 A 或 B。
+- 以 loader 完整重讀 Z 的 manifest、inputs、摘要與逐日結果，核對 candidate 與落盤內容一致；保存前的工作不寫入共享資料，發布不改寫既有 immutable files 或年度 current。
+- 全新 AppTest session 從 Z 建立另一個 batch，工作輸入完整還原且 active results 為空；重新演算後逐日結果與摘要一致，再保存時 `derived_from=Z`，不得沿用 Z 的祖先 X。
+- UI observation 後插入另一筆完整發布時，真實 publisher 拒絕 stale revision，不 retry、不靜默改 previous；只有明確建立新 preview 才可成功發布，derived source 仍為 X。
+- preview 後 historical annual A 損壞時，清除 candidate、停用正式保存並保留 A identity；不得改用 B 或發布新版本。
+
+本範圍依 [DEVELOPMENT_WORKFLOW.md](DEVELOPMENT_WORKFLOW.md) Tier 2 驗證。既有 publisher fault-injection／contract tests 由 final full verification 一併執行。沒有新增需要重做的人工 UI acceptance；fresh session 與 fake lock 無法代表實體多機、SMB、OS locking、斷線或權限行為，這些驗收仍依 2-8 與 PROJECT_STATUS.md 追蹤。
 
 驗收：
 
