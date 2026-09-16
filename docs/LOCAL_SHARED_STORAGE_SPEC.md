@@ -1,6 +1,6 @@
 # 本機 Streamlit＋內網共享資料夾永久保存規格
 
-狀態：2-4C2b2a diagnostics ✅；2-4C2b2b1 healthy-current safe recovery ✅；2-4C2b2b2 first-current initialization／broken-current repair ✅；2-4 年度資料 UI 收斂 ✅；2-4D 年度資料填報規則收斂 ✅；2-5A 正式推估資料契約收斂 ✅；2-5B 正式保存預覽與 bundle candidate ✅；2-5C1 正式推估安全發布核心 ✅；2-5C2 Streamlit 正式保存接線 ✅；2-5D 正式保存 UI 與驗收文件收斂 ✅；2-5 受控人工驗收 ✅；2-6A 正式版本唯讀載入器 ✅；2-6B 正式 snapshot 建立新 working batch ✅；2-6C 日期調整與年度基準延長 domain rules ✅；2-6D 正式接續 Streamlit UI 接線 ✅。2-6D 受控 synthetic-root 人工驗收已於 2026-09-16 完成；下一步為 2-6E 最終整合。Phase 2 尚未全部完成，公司多人與 SMB 中斷等實機 acceptance 仍留在 2-8。
+目前 milestone、下一步與尚未完成的 acceptance 統一見 [PROJECT_STATUS.md](PROJECT_STATUS.md)。本文件保留 shared-storage 與 formal data 的完整技術契約及歷史實作紀錄，不再於頂端重複維護 live status。
 
 適用專案：鯉魚潭水庫庫容推估系統
 
@@ -654,6 +654,7 @@ observed conflict check 通過後，只要 `before_current_version_id` 非 null�
 - 真正的年度資料、來源附件及正式推估成果只放公司內網共享資料夾，不提交 GitHub。
 - 未來公版 Excel 必須有範本版本欄位、固定工作表／欄名、明確單位、36 旬完整性驗證、重複旬與缺漏提示、非數字／負值／未知欄位錯誤提示。
 - 2-4A 已提供可重複執行的空白公版產生器；公版固定包含 `版本資訊`、`水文Q值`、`年度基準出流`、`水庫參數`，並以穩定機器代碼搭配中文名稱。所有業務數值留白，不能視為已發布或已啟用的年度資料。
+- 產生器要求明確指定輸出檔案，既有檔案只有在明確加上 `--overwrite` 時才會覆蓋：`python scripts/create_annual_data_template.py --output "<明確指定位置>/鯉魚潭年度資料匯入範本.xlsx"`。
 - 上傳後必須先顯示解析與差異預覽，再由使用者確認轉成新的正式 JSON／CSV 版本；不得直接覆蓋啟用版本。
 - 2-4B 已提供獨立、無 Streamlit 相依的 Excel 解析器，以及預設收合的「年度資料維護」介面。解析成功只建立記憶體候選資料及標準 JSON／CSV bytes；上傳內容不套用至目前推估工作區。
 - 2-4B 預覽固定標示「僅供驗證與差異預覽，尚未建立或啟用正式系統基準版本。」；只有 `system.json` 已完整驗證、`annual-data/current.json` 確實不存在，且 diagnostics 確認 versions inventory 完全為空時，才能顯示第一版完整預覽。current 缺失但已有任何 valid 或 invalid version entry 時要求 recovery 判斷；相容模式、根目錄未設定／不存在／無權限、`system.json` 尚未初始化、讀取失敗、資料損壞或版本不一致時，只能顯示候選內容並說明無法確認正式環境是否存在舊版，不得產生不可靠的新舊差異。
@@ -849,6 +850,8 @@ continuation 的日期欄位是 staged request；使用者按確認前，active 
 
 - 年度資料各欄位的正式資料來源、統計期間、來源文件索引與合理值範圍。
 - 滿庫容量、生態流量及 33 cms 引水上限的業務依據與適用期間。
+- 上、下灌區供水優先順序與核心水量平衡相關規則，仍需文件化其業務／操作依據及適用條件。
+- 蒸發、滲漏、河道旅行時間等目前模型刻意忽略項目，仍需文件化此簡化的適用性，以及何種情況需要重新評估或升級模型。
 - 哪些水利署或內部情境允許帶有機器可讀的「延長時自動套用 Q90」標記。
 - 人工填報操作人的統一格式，以及是否日後導入可驗證的公司帳號身分。
 - 公司共享資料夾 ACL：誰可讀、誰可正式寫入、誰可執行復原與人工清理。
