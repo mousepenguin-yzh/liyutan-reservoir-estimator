@@ -82,6 +82,18 @@ from shared_storage_reader import (
 )
 from shared_storage_schema import StorageValidationError, validate_official_save_eligibility
 from software_provenance import load_software_provenance
+
+# Read-only display; formal-write eligibility retains its existing checks.
+_display_provenance = load_software_provenance()
+if _display_provenance.ok:
+    _display_software = _display_provenance.software
+    st.sidebar.caption(f"程式版本：{_display_software['app_version']}")
+    st.sidebar.caption(f"Git commit：{_display_software['git_commit']}")
+    if _display_software['source_tree_dirty']:
+        st.sidebar.warning("程式目錄有未提交修改；此畫面並非純發布版本。")
+else:
+    st.sidebar.warning("無法辨識程式 Git 版本，請聯絡維護者。")
+
 from v2_workflow import (
     inflow_cell_from_editor,
     SCHEMA_NAME, SCHEMA_VERSION, UNIT_10K_TON_DAY, UNIT_CMS, add_scenario, apply_q_inflows,

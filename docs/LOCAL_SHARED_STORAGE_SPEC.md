@@ -834,7 +834,7 @@ continuation 的日期欄位是 staged request；使用者按確認前，active 
 
 範圍：提供受控啟動器／桌面捷徑、版本顯示與 GitHub 發布更新流程；一般使用者不接觸 PowerShell 或 Git。
 
-現階段本機 repository 與 GitHub 不會自動雙向同步。本機分支必須執行 push，commit 才會出現在 GitHub；GitHub Pull Request 合併後，本機 `main` 仍必須執行 fetch／pull 才會更新。供一般使用者使用的一鍵更新屬本 2-7 階段後續功能，尚未實作。
+現階段本機 repository 與 GitHub 不會自動雙向同步。本機分支必須執行 push，commit 才會出現在 GitHub；GitHub Pull Request 合併後，本機 `main` 仍必須執行 fetch／pull 才會更新。一般使用者以 [桌面啟動器](DESKTOP_LAUNCHER.md) 檢查 main 並安裝選定 commit 至獨立本機版本與 Python 環境；共享功能關閉的啟動驗證成功後才原子切換本機啟動指標。開發 checkout 不會被使用者更新流程修改，正式 shared-storage 契約不變。完成與待驗收狀態統一見 PROJECT_STATUS.md。
 
 驗收：
 

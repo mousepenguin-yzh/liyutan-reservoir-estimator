@@ -31,6 +31,7 @@ def _run_git(arguments: Sequence[str], repository_path: Path) -> str:
         encoding="utf-8",
         errors="replace",
         timeout=5,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     return completed.stdout
 
