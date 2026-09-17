@@ -5,7 +5,7 @@
 1. 在本機固定磁碟安裝 Python 3.12（含 tkinter、pip、venv），以及 Git for Windows；讓 Python 與 Git 位於使用者 PATH。先完成 GitHub repository 讀取權限／Git Credential Manager 登入，日常更新不會要求使用者輸入 Git 指令或憑證。
 2. 將本 repository 的已審核 main clone 到固定本機目錄。不要放在 U:、UNC、網路磁碟、junction、同步的正式資料目錄。這份 checkout 是穩定啟動器，請保留；不要從暫時開發分支安裝。
 3. 維護者執行 `powershell -NoProfile -File scripts/install_desktop_shortcut.ps1`，建立桌面 **Liyutan Estimator** 捷徑。如公司執行政策阻擋，交由 IT 核准，勿要求一般使用者繞過政策。
-4. 雙擊捷徑，按「檢查更新」及「安裝顯示的版本」。第一次需要 GitHub 與 Python 套件來源連線。完成後按「啟動程式」。
+4. 雙擊捷徑，按「檢查更新」及「安裝顯示的版本」。第一次需要 GitHub 與 PyPI 套件來源連線。完成後按「啟動程式」。
 5. 公司正式使用前，由維護者依 [shared-storage spec](LOCAL_SHARED_STORAGE_SPEC.md) 設定使用者環境變數並重新開啟啟動器。啟動器繼承既有 LIYUTAN 設定，不新增或自動開啟 formal-write、annual-write、recovery capability。未設定共享模式時是明示的相容模式。
 
 更新來源固定為本專案 GitHub 的 main；合併 PR 才發布至一般使用者。啟動器不更新開發 checkout。GitHub branch protection 與合併前 CI 應由維護者管理。
@@ -30,7 +30,7 @@
 - `controller.lock`：本機啟動器 OS lock，程序退出即釋放，與 shared-storage lock 無關。
 - `streamlit.log`：本機啟動輸出，可能含執行資訊，勿直接提交 repository 或任意分享。
 
-下載、pip、AppTest 或指標切換失敗均不修改原版本。更新驗證移除所有 LIYUTAN 環境設定並明確關閉共享模式；不讀取、驗證或清理任何正式 shared root。正式資料的 schema、current、revision、audit、lineage 與安全寫入契約完全不變。
+下載、pip、AppTest 或指標切換失敗均不修改原版本。更新驗證移除所有 LIYUTAN 環境設定並明確關閉共享模式；套件安裝忽略外部 PIP 環境與設定檔、停用 cache 及互動輸入，避免 target/prefix 設定將套件寫到其他位置。公司若必須使用私有套件鏡像，需先由維護者評估支援，不能以 PIP_TARGET 繞過隔離；不讀取、驗證或清理任何正式 shared root。正式資料的 schema、current、revision、audit、lineage 與安全寫入契約完全不變。
 
 | 錯誤 | 維護者處理 |
 | --- | --- |
@@ -55,4 +55,3 @@
 4. 記錄使用的 root、結果與 synthetic 資料保留／清理決定。
 
 不進行 multi-PC、SMB lock pressure、斷線恢復、ACL 或 formal-write/recovery 驗收。目前完成狀態只見 [PROJECT_STATUS](PROJECT_STATUS.md)。
-

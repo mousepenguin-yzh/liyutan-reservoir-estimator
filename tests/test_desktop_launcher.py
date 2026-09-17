@@ -55,3 +55,36 @@ def test_installer_creates_shortcut_in_synthetic_directory(tmp_path):
     assert "desktop_launcher.py" in result.stdout
     assert str(script.parent.parent) in result.stdout
 
+
+def test_launcher_starts_real_loopback_streamlit(tmp_path, monkeypatch):
+    import queue
+    import sys
+    from desktop_runtime import DesktopRuntime
+    (tmp_path / "app.py").write_text("import streamlit as st\nst.title('Synthetic launcher')\n")
+    runtime = DesktopRuntime(tmp_path)
+    active = {"commit": "a" * 40, "release": "b" * 32}
+    monkeypatch.setattr(runtime, "active", lambda: active)
+    monkeypatch.setattr(runtime, "validate_active", lambda _: None)
+    monkeypatch.setattr(runtime, "repository", lambda _: tmp_path)
+    monkeypatch.setattr(runtime, "python", lambda _: Path(sys.executable))
+    monkeypatch.setenv("LIYUTAN_ENABLE_SHARED_STORAGE", "0")
+    monkeypatch.delenv("LIYUTAN_SHARED_ROOT", raising=False)
+    opened = []
+    monkeypatch.setattr(desktop_launcher.webbrowser, "open", lambda url: opened.append(url))
+    launcher = Launcher.__new__(Launcher)
+    launcher.runtime = runtime
+    launcher.process = None
+    launcher.log = None
+    launcher.events = queue.Queue()
+    launcher.work = lambda action: action()
+    try:
+        launcher.start()
+        assert launcher.process.poll() is None
+        assert opened == [launcher.url]
+        assert launcher.url.startswith("http://127.0.0.1:")
+    finally:
+        if launcher.process and launcher.process.poll() is None:
+            launcher.process.terminate()
+            launcher.process.wait(timeout=10)
+        if launcher.log:
+            launcher.log.close()

@@ -41,11 +41,14 @@ def build_environment(*, application: bool = False) -> dict[str, str]:
     env = dict(os.environ)
     for key in list(env):
         upper = key.upper()
-        if upper.startswith(("PYTHON", "STREAMLIT_", "GIT_")) or (
+        if upper.startswith(("PYTHON", "STREAMLIT_", "GIT_", "PIP_")) or (
             not application and upper.startswith("LIYUTAN_")
         ):
             del env[key]
-    env.update(GIT_TERMINAL_PROMPT="0", PYTHONUTF8="1")
+    env.update(
+        GIT_TERMINAL_PROMPT="0", GCM_INTERACTIVE="Never", PYTHONUTF8="1",
+        PIP_CONFIG_FILE=os.devnull, PIP_NO_INPUT="1", PIP_NO_CACHE_DIR="1",
+    )
     if not application:
         env["LIYUTAN_ENABLE_SHARED_STORAGE"] = "0"
     return env

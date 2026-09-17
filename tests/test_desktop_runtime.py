@@ -1,5 +1,6 @@
 """Synthetic local installs only; no production root or remote network access."""
 import json
+import os
 from pathlib import Path
 import subprocess
 import sys
@@ -113,9 +114,15 @@ def test_update_environment_removes_every_shared_capability(monkeypatch):
     monkeypatch.setenv("LIYUTAN_ENABLE_ANNUAL_WRITES", "1")
     monkeypatch.setenv("PYTHONPATH", "untrusted")
     monkeypatch.setenv("GIT_DIR", "untrusted")
+    monkeypatch.setenv("PIP_TARGET", "never-write-this")
+    monkeypatch.setenv("PIP_CONFIG_FILE", "never-read-this")
     env = desktop.build_environment()
     assert {k: v for k, v in env.items() if k.startswith("LIYUTAN_")} == {"LIYUTAN_ENABLE_SHARED_STORAGE": "0"}
     assert "PYTHONPATH" not in env and "GIT_DIR" not in env
+    assert "PIP_TARGET" not in env
+    assert env["PIP_CONFIG_FILE"] == os.devnull
+    assert env["PIP_NO_INPUT"] == "1"
+    assert env["PIP_NO_CACHE_DIR"] == "1"
     launch = desktop.build_environment(application=True)
     assert launch["LIYUTAN_SHARED_ROOT"] == "never-access-this"
     assert launch["LIYUTAN_ENABLE_FORMAL_WRITES"] == "1"
@@ -228,4 +235,3 @@ def test_modified_existing_install_blocks_all_downloads(tmp_path, monkeypatch):
     with pytest.raises(desktop.DesktopError):
         runtime.install(NEW)
     assert runtime.active() == previous
-
