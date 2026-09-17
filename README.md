@@ -42,7 +42,9 @@
 
 ## 啟動方式
 
-目前需在 repository 目錄中啟動：
+一般使用者：由維護者完成[桌面啟動器安裝](docs/DESKTOP_LAUNCHER.md)後，雙擊 **Liyutan Estimator** 捷徑，按「啟動程式」。檢查版本與一鍵更新也在此視窗操作，不需 PowerShell 或 Git。
+
+開發者仍可在 repository 目錄中啟動：
 
 ```bash
 pip install -r requirements.txt
@@ -71,7 +73,7 @@ streamlit run app.py
 ## 目前限制
 
 - 本模型是例行操作的簡化模型，未明確納入蒸發、滲漏與河道旅行時間等項目。
-- 尚未提供一般使用者的一鍵桌面啟動與自動更新流程。
+- 桌面啟動器需由維護者一次性安裝；公司實機驗收狀態見專案目前狀態。
 - 非正式工作不會自動跨瀏覽器、跨工作階段或跨電腦同步。
 - 操作人名稱是人工填報，不代表已登入或已驗證身分。
 - 真實 Windows／SMB、多電腦環境的目前驗收狀態請見 [專案目前狀態](docs/PROJECT_STATUS.md)。

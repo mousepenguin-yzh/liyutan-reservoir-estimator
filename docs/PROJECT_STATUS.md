@@ -1,6 +1,6 @@
 # 專案目前狀態
 
-更新日期：2026-09-16
+更新日期：2026-09-17
 
 本文件是目前 milestone、下一步與未完成驗收的唯一 source of truth。
 
@@ -9,7 +9,8 @@
 - Phase 2-6D implementation：✅ 完成。
 - Phase 2-6D controlled synthetic-root acceptance：✅ 完成（2026-09-16）。
 - Phase 2-6E final integration：✅ 自動化整合驗證完成。
-- 下一步：Phase 2-7 桌面捷徑與一般使用者啟動。
+- Phase 2-7 桌面啟動與安全更新：實作與自動化測試已加入；公司電腦／網路最小人工驗收待回公司執行，見 [操作文件](DESKTOP_LAUNCHER.md)。
+- 下一步：Phase 2-7 公司環境最小人工驗收；不提前執行 Phase 2-8。
 - Phase 2：尚未全部完成。
 - Phase 2-8 真實多電腦、SMB lock pressure、斷線／中斷／恢復 acceptance：尚未完成。
 
