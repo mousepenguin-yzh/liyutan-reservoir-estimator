@@ -47,7 +47,7 @@
 
 自動化使用 pytest tmp_path、synthetic Git repository、injected subprocess／replace failure，以及共享功能關閉的 AppTest。Windows CI 驗證本機 lock 與更新流程；Linux CI 執行 repository full verification。這些不是公司實機驗收證據。
 
-回公司後只做 Phase 2-7 最小人工驗收：
+Phase 2-7 公司環境最小人工驗收範圍如下；已執行結果見 [驗收紀錄](PHASE_2_7_ACCEPTANCE.md)，目前狀態統一見 [PROJECT_STATUS](PROJECT_STATUS.md)：
 
 1. 在一台公司電腦完成維護者安裝；一般使用者雙擊桌面捷徑，確認瀏覽器、中文顯示與 commit。
 2. 確認公司網路可檢查／安裝 main 版本，以及明確顯示成功或需維護者處理的連線錯誤。

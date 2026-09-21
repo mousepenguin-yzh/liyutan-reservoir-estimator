@@ -1,6 +1,6 @@
 # 專案目前狀態
 
-更新日期：2026-09-17
+更新日期：2026-09-21
 
 本文件是目前 milestone、下一步與未完成驗收的唯一 source of truth。
 
@@ -9,8 +9,8 @@
 - Phase 2-6D implementation：✅ 完成。
 - Phase 2-6D controlled synthetic-root acceptance：✅ 完成（2026-09-16）。
 - Phase 2-6E final integration：✅ 自動化整合驗證完成。
-- Phase 2-7 桌面啟動與安全更新：實作與自動化測試已加入；公司電腦／網路最小人工驗收待回公司執行，見 [操作文件](DESKTOP_LAUNCHER.md)。
-- 下一步：Phase 2-7 公司環境最小人工驗收；不提前執行 Phase 2-8。
+- Phase 2-7 桌面啟動與安全更新：✅ 完成；公司環境最小人工驗收於 2026-09-21 通過，見 [驗收紀錄](PHASE_2_7_ACCEPTANCE.md) 與 [操作文件](DESKTOP_LAUNCHER.md)。
+- 下一步：Phase 2-8 多人、中斷、復原與營運驗收；須依核准範圍另行安排。
 - Phase 2：尚未全部完成。
 - Phase 2-8 真實多電腦、SMB lock pressure、斷線／中斷／恢復 acceptance：尚未完成。
 
@@ -45,6 +45,7 @@ Phase 2-8 仍須在核准的真實環境，以最小充分範圍驗證：
 - [V2 多情境 business spec](V2_MULTI_SCENARIO_SPEC.md)
 - [Phase 2-5 受控驗收](PHASE_2_5_ACCEPTANCE.md)
 - [Phase 2-6D 受控驗收](PHASE_2_6D_ACCEPTANCE.md)
+- [Phase 2-7 公司環境最小人工驗收](PHASE_2_7_ACCEPTANCE.md)
 - [開發與驗證流程](DEVELOPMENT_WORKFLOW.md)
 
 **current milestone 只在此文件更新；README 與長篇 spec 不再重複維護完整 current-status list。**
